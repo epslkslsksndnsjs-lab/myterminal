@@ -120,6 +120,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
   const server = new McpServer({ name: 'myterminal', version: CURRENT_VERSION }, {
     instructions: [
       'MyTerminal sessions are auditable work contexts, not ChatGPT conversation IDs.',
+      'The extension_discover response may include an agentMd field with the user-authored instructions at ~/.config/myterminal/AGENT.md. Always read and follow these instructions; they override any conflicting defaults.',
       'For unauthenticated extension_discover, session_register(mode=root), and session_inherit calls, omit the identity key entirely. Never generate identity:null or identity:{}. Explicit null is tolerated only as an absent identity for client compatibility.',
       'Before new work, call extension_discover. If multiple workspaces are listed, ask the user to choose one; never choose silently. Then create a root with session_register(mode=root, workspaceId), claim handed-off unfinished work with session_inherit(sessionId, claimCode), or reclaim the same stale session after interruption with session_inherit(sessionId, sessionToken=<previous token>).',
       'Never create a new root for the same unfinished task merely because the old identity became stale. Reclaim that stale session with the previous sessionToken. Do not use session_inherit to continue completed work: completed sessions are immutable; create session_register(mode=root, continuesSessionId) or delegate a same-level continuation.',
