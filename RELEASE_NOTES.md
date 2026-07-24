@@ -7,6 +7,7 @@ MyTerminal v0.1.1 focuses on long-task continuity, optional non-blocking executi
 
 ## Highlights
 
+- **User-authored agent context (AGENT.md)**. Create `~/.config/myterminal/AGENT.md` with preferences, habits, or cross-project instructions. MyTerminal injects the full content into every `extension_discover` response via the `agentMd` field — analogous to `CLAUDE.md` in Claude Code. When the file is absent, the field is gracefully omitted.
 - The optional Actions long-task harness is **off by default**. `adaptive` enforces 1–3 exact next calls, while `next-call` and `lookahead-3` provide deterministic diagnostic modes. Mode changes emit `requirements_changed`; discovery returns the current contract.
 - Optional non-blocking tasks are independent and **off by default**. When enabled, calls exceeding the 200ms response budget continue locally and return a `taskId`; `task_poll` follows them to a terminal result.
 - Background results are bounded by a 30-minute lifetime, 100 retained tasks, and 24 MiB of serialized responses. Runtime shutdown cancels owned command trees and closes their audit records.
@@ -84,6 +85,7 @@ MyTerminal v0.1.1 重点完善长任务持续执行、可选非阻塞任务、�
 
 本版本主要变化：
 
+- **用户自定义 Agent 上下文（AGENT.md）**。创建 `~/.config/myterminal/AGENT.md`（Windows 为 `%APPDATA%\myterminal\AGENT.md`），写入个人偏好、习惯或跨项目指令。MyTerminal 将完整内容注入每次 `extension_discover` 响应的 `agentMd` 字段——类比 Claude Code 的 `CLAUDE.md`。文件不存在时字段自动消失。
 - Actions 长任务增强 Harness 默认关闭。`adaptive` 强制 1–3 个准确后续调用，`next-call` 与 `lookahead-3` 用于确定性诊断；切换模式后会发送 `requirements_changed`，模型应重新 discovery 当前合约。
 - 非阻塞任务是独立开关且默认关闭。开启后，超过 200ms 的调用会在本机继续并返回 `taskId`，由 `task_poll` 轮询到终态；结果缓存具有 30 分钟、100 项和 24 MiB 三重上限。
 - Apps 保留完整通用 facade，包括任意命令、覆盖写入、patch 和自定义扩展，同时继续提供窄接口工具与内容寻址 Blob。
