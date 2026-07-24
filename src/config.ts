@@ -236,6 +236,25 @@ function archivedLegacyStateDirs(configDir: string): string[] {
     .filter((candidate) => existsSync(candidate));
 }
 
+function draftAgentMd(configDir: string): void {
+  const file = path.join(configDir, 'AGENT.md');
+  if (existsSync(file)) return;
+  const template = [
+    '# MyTerminal Agent 指令',
+    '#',
+    '# 在这里写入你的自定义规则。每次 ChatGPT 连接时，这些内容',
+    '# 会自动注入，模型会读取并遵循。',
+    '#',
+    '# 示例:',
+    '# - 永远使用 pnpm，不要用 npm',
+    '# - 修改文件前先检查 git_status',
+    '# - 完成后自动提交代码',
+    '# - 用中文回复',
+    '',
+  ].join('\n');
+  writeFileSync(file, template, { mode: 0o600 });
+}
+
 export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTerminalConfig {
   const stored = readMyTerminalSettings(env);
   const base = stored || createDefaultSettings(path.resolve(envWorkspace(env) || defaultWorkspaceForCwd()));
@@ -246,6 +265,7 @@ export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTe
   if (environment.status !== 'valid') throw new Error(environment.message);
   const workspaceDir = realpathSync(settings.workspaceDir);
   const configDir = path.dirname(settingsPath(env));
+  draftAgentMd(configDir);
   const stateDir = workspaceStateDir(configDir, workspaceDir);
   const legacyGlobalStateDir = path.join(configDir, 'state');
   const migratedGlobalStateDir = path.join(configDir, 'state.migrated');
