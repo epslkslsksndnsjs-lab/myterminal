@@ -1,0 +1,50 @@
+{
+  "name": "myterminal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first ChatGPT development bridge with auditable multi-session collaboration, Apps and Actions adapters, extensions, and a full OpenTUI interface.",
+  "type": "module",
+  "main": "dist/cli.js",
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-CN.md",
+    "SECURITY.md",
+    "docs",
+    "scripts"
+  ],
+  "bin": {
+    "myterminal": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "bunx tsc -p tsconfig.json",
+    "build:binary": "bun build --compile --minify src/cli.ts --outfile release/myterminal",
+    "dev": "bun run src/cli.ts",
+    "start": "bun run dist/cli.js",
+    "test": "bun run build && bun test --timeout 120000 test/*.test.mjs",
+    "perf:regression": "bun run build && bun scripts/performance-regression.mjs",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "packageManager": "bun@1.3.14",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opentui/core": "0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/react": "0.4.5",
+    "express": "^5.2.1",
+    "react": "19.2.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.0",
+    "@types/react": "19.2.14",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "fast-uri": "3.1.4"
+  }
+}

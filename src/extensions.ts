@@ -1,0 +1,559 @@
+import { randomUUID } from 'node:crypto';
+import type { MyTerminalConfig } from './types.js';
+import { MyTerminalError, type MyTerminalStore } from './store.js';
+import { renderTemplate, resolveWorkspacePath, validateJsonSchema } from './security.js';
+import { runCommand } from './core-tools.js';
+import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
+import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
+
+const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
+const RESERVED_NAMES = new Set(['extension_discover', 'extension_register', 'extension_call']);
+const CONTROL_TOOLS = new Set(['session_checkpoint', 'session_release', 'session_unregister', 'session_events_ack', 'session_inherit', 'task_poll']);
+const FAST_RETURN_MS = 200;
+const BACKGROUND_TASK_RETENTION_MS = 30 * 60_000;
+const BACKGROUND_TASK_MAX_COUNT = 100;
+const BACKGROUND_TASK_MAX_BYTES = 24 * 1024 * 1024;
+
+type BackgroundTask = {
+  id: string;
+  sessionId: string;
+  tool: string;
+  input: JsonObject;
+  source: InvocationContext['transport'];
+  startedAt: number;
+  status: 'running' | 'completed' | 'failed' | 'timeout';
+  completedAt?: string;
+  response?: ToolResponse;
+};
+
+type ResultProblem = { code: string; message: string; retryable: boolean };
+
+function objectValue(value: unknown, label: string): JsonObject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new MyTerminalError('INVALID_INPUT', `${label} must be an object.`);
+  return value as JsonObject;
+}
+
+function jsonObjectValue(value: unknown, label: string): JsonObject {
+  if (typeof value !== 'string') return objectValue(value, label);
+  try { return objectValue(JSON.parse(value), label); }
+  catch (error) { if (error instanceof SyntaxError) throw new MyTerminalError('INVALID_INPUT', `${label} must contain a valid JSON object.`); throw error; }
+}
+
+function callArguments(input: JsonObject): JsonObject {
+  const legacy = input.arguments === undefined ? {} : jsonObjectValue(input.arguments, 'arguments');
+  const fallback = input.inputJson === undefined ? {} : jsonObjectValue(input.inputJson, 'inputJson');
+  const preferred = input.input === undefined ? {} : jsonObjectValue(input.input, 'input');
+  return { ...legacy, ...fallback, ...preferred };
+}
+
+function validateSpec(value: unknown, builtins: Map<string, ToolDefinition>): CustomExtensionSpec {
+  const spec = objectValue(value, 'spec') as unknown as CustomExtensionSpec;
+  if (typeof spec.name !== 'string' || !EXTENSION_NAME.test(spec.name) || RESERVED_NAMES.has(spec.name)) throw new MyTerminalError('INVALID_INPUT', 'Extension name must match [a-z][a-z0-9_]{2,63} and cannot use a facade name.');
+  if (typeof spec.title !== 'string' || !spec.title.trim() || spec.title.length > 100) throw new MyTerminalError('INVALID_INPUT', 'Extension title must contain 1-100 characters.');
+  if (typeof spec.description !== 'string' || spec.description.length < 10 || spec.description.length > 800) throw new MyTerminalError('INVALID_INPUT', 'Extension description must contain 10-800 characters.');
+  if (!spec.inputSchema || spec.inputSchema.type !== 'object' || spec.inputSchema.additionalProperties !== false) throw new MyTerminalError('INVALID_INPUT', 'inputSchema must be an object schema with additionalProperties=false.');
+  if (!spec.annotations || typeof spec.annotations.readOnlyHint !== 'boolean' || typeof spec.annotations.destructiveHint !== 'boolean' || typeof spec.annotations.openWorldHint !== 'boolean') throw new MyTerminalError('INVALID_INPUT', 'annotations must declare readOnlyHint, destructiveHint, and openWorldHint.');
+  if (!spec.handler || (spec.handler.kind !== 'builtin' && spec.handler.kind !== 'command')) throw new MyTerminalError('INVALID_INPUT', 'handler.kind must be builtin or command.');
+  if (spec.handler.kind === 'builtin') {
+    if (!builtins.has(spec.handler.target)) throw new MyTerminalError('INVALID_INPUT', `Unknown builtin target: ${spec.handler.target}`);
+  } else {
+    if (typeof spec.handler.executable !== 'string' || !spec.handler.executable.trim() || spec.handler.executable.includes('\0') || spec.handler.executable.includes('{{')) throw new MyTerminalError('INVALID_INPUT', 'Command extension requires a fixed executable name without templates.');
+    if (spec.handler.args && (!Array.isArray(spec.handler.args) || spec.handler.args.length > 100 || spec.handler.args.some((item) => typeof item !== 'string' || item.length > 10_000))) throw new MyTerminalError('INVALID_INPUT', 'Command args must be an array of at most 100 strings.');
+    if (spec.handler.timeoutSec !== undefined && (!Number.isInteger(spec.handler.timeoutSec) || spec.handler.timeoutSec < 1 || spec.handler.timeoutSec > 3600)) throw new MyTerminalError('INVALID_INPUT', 'timeoutSec must be an integer from 1 to 3600.');
+  }
+  return structuredClone(spec);
+}
+
+function failure(error: unknown): ToolResponse {
+  if (error instanceof MyTerminalError) return { ok: false, error: { code: error.code, message: error.message, retryable: error.retryable, details: error.details } };
+  const message = error instanceof Error ? error.message : String(error);
+  const code = message.includes('not found') ? 'NOT_FOUND' : message.includes('required') || message.includes('must') ? 'INVALID_INPUT' : 'EXTENSION_ERROR';
+  return { ok: false, error: { code, message, retryable: false } };
+}
+
+function resultProblem(value: unknown): ResultProblem | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as JsonObject;
+  const commandResult = typeof record.command === 'string'
+    && typeof record.cwd === 'string'
+    && Object.prototype.hasOwnProperty.call(record, 'exitCode')
+    && typeof record.durationMs === 'number';
+  if (commandResult && record.cancelled === true) return { code: 'ACTION_CANCELLED', message: 'The action was cancelled because the runtime is shutting down.', retryable: true };
+  if (commandResult && record.timedOut === true) return { code: 'ACTION_TIMEOUT', message: 'The action exceeded its configured timeout.', retryable: true };
+  if (record.passed === false) return { code: 'CHECKS_FAILED', message: 'One or more project checks failed.', retryable: false };
+  if (Object.prototype.hasOwnProperty.call(record, 'exitCode') && record.exitCode !== 0) {
+    return { code: 'NON_ZERO_EXIT', message: `The command exited with code ${String(record.exitCode)}.`, retryable: false };
+  }
+  return record.result === undefined ? undefined : resultProblem(record.result);
+}
+
+function explicitIdentity(input: JsonObject): SessionIdentity | undefined {
+  if (input.identity === undefined || input.identity === null) return undefined;
+  const identity = objectValue(input.identity, 'identity');
+  if (typeof identity.sessionId !== 'string' || typeof identity.sessionToken !== 'string') throw new MyTerminalError('INVALID_INPUT', 'identity requires sessionId and sessionToken.');
+  return { sessionId: identity.sessionId, sessionToken: identity.sessionToken };
+}
+
+export class ExtensionService {
+  private readonly activeActions = new Map<string, { sessionId: string; action: string; source: InvocationContext['transport']; args: JsonObject; startedAt: number }>();
+  private readonly backgroundTasks = new Map<string, BackgroundTask>();
+  private readonly closedActionIds = new Set<string>();
+  private readonly operationControllers = new Map<string, AbortController>();
+  private readonly operationPromises = new Map<string, Promise<JsonObject>>();
+  private readonly maintenanceTimer: ReturnType<typeof setInterval>;
+  private accepting = true;
+  private shutdownPromise?: Promise<void>;
+
+  constructor(
+    private readonly config: MyTerminalConfig,
+    private readonly store: MyTerminalStore,
+    private readonly builtins: Map<string, ToolDefinition>,
+    private readonly onAudit?: (event: ToolAuditEvent) => void,
+  ) {
+    this.store.activateHarnessContract({ mode: config.actionsContinuationMode ?? 'off', revision: HARNESS_CONTRACT_REVISION, updatedAt: new Date().toISOString() });
+    this.maintenanceTimer = setInterval(() => this.trimBackgroundTasks(), 60_000);
+    this.maintenanceTimer.unref();
+  }
+
+  activeActionCount(): number { return this.activeActions.size; }
+
+  async shutdown(graceMs = 4_000): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.accepting = false;
+    clearInterval(this.maintenanceTimer);
+    this.shutdownPromise = (async () => {
+      for (const controller of this.operationControllers.values()) controller.abort();
+      const operations = [...this.operationPromises.values()];
+      if (operations.length) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          Promise.allSettled(operations),
+          new Promise<void>((resolve) => { timer = setTimeout(resolve, graceMs); }),
+        ]);
+        if (timer) clearTimeout(timer);
+      }
+      const error = { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime stopped before the action reached a terminal result.' };
+      for (const task of this.backgroundTasks.values()) {
+        if (task.status !== 'running') continue;
+        task.status = 'failed';
+        task.completedAt = new Date().toISOString();
+        task.response = { ok: false, error: { ...error, retryable: true } };
+      }
+      for (const [id, action] of [...this.activeActions]) {
+        this.finishAudit(action.sessionId, id, action.source, action.action, action.args, action.startedAt, 'failed', { ok: false, error }, error);
+      }
+    })();
+    return this.shutdownPromise;
+  }
+
+  pendingActions(): Array<{ id: string; sessionId: string; action: string; startedAt: string }> {
+    return [...this.activeActions.entries()].map(([id, action]) => ({
+      id, sessionId: action.sessionId, action: action.action, startedAt: new Date(action.startedAt).toISOString(),
+    }));
+  }
+
+  expirePendingActions(maxAgeMs: number, reason = 'Pending action expired during runtime recovery.'): number {
+    const now = Date.now();
+    let cleared = 0;
+    for (const [id, action] of this.activeActions) {
+      if (now - action.startedAt < maxAgeMs) continue;
+      const error = { code: 'PENDING_ACTION_CLEARED', message: reason };
+      this.finishAudit(action.sessionId, id, action.source, action.action, action.args, action.startedAt, 'failed', { ok: false, error }, error);
+      cleared += 1;
+    }
+    return cleared;
+  }
+
+  private beginAudit(sessionId: string, actionId: string, source: InvocationContext['transport'], action: string, args: JsonObject, started: number): void {
+    this.activeActions.set(actionId, { sessionId, action, source, args: structuredClone(args), startedAt: started });
+    const event: ToolAuditEvent = {
+      id: actionId, timestamp: new Date(started).toISOString(), source, action, status: 'running', durationMs: 0,
+      workspace: this.config.workspaceDir, session: sessionId, args,
+    };
+    const persisted = this.store.auditEvent(sessionId, event);
+    this.onAudit?.(persisted);
+  }
+
+  private finishAudit(
+    sessionId: string,
+    actionId: string,
+    source: InvocationContext['transport'],
+    action: string,
+    args: JsonObject,
+    started: number,
+    status: Exclude<ToolAuditEvent['status'], 'running'>,
+    result: unknown,
+    error?: { code: string; message?: string },
+  ): void {
+    if (this.closedActionIds.has(actionId)) return;
+    const completedAt = new Date().toISOString();
+    const event: ToolAuditEvent = {
+      id: actionId, timestamp: new Date(started).toISOString(), completedAt, source, action, status, durationMs: Date.now() - started, error,
+      workspace: this.config.workspaceDir, session: sessionId, args, result,
+    };
+    const persisted = this.store.auditEvent(sessionId, event);
+    this.onAudit?.(persisted);
+    this.activeActions.delete(actionId);
+    this.closedActionIds.add(actionId);
+    if (this.closedActionIds.size > 2000) this.closedActionIds.delete(this.closedActionIds.values().next().value!);
+  }
+
+  async discover(input: JsonObject = {}, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
+    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
+    let auditStarted = false;
+    try {
+      const authenticated = this.authenticate(input, context, true);
+      if (!authenticated) {
+        return { ok: true, data: {
+          identityRequired: true,
+          instructions: {
+            root: 'First call extension_discover with the identity key omitted. Never generate identity:null or identity:{}. If it lists multiple workspaces, ask the user to choose one and pass its workspaceId to session_register(mode=root), again with the identity key omitted. Never choose a workspace silently. Save the returned sessionId + sessionToken.',
+            inherit: 'Claim handed-off/released/revoked unfinished work with session_inherit(sessionId,claimCode), or reclaim the same stale session after interruption with session_inherit(sessionId,sessionToken=<previous token>). It does not continue a completed session.',
+            continue: 'Continue immutable completed work by creating session_register(mode=root,continuesSessionId), or a delegated same-level continuation.',
+            handoff: 'Handoff a live session with session_release; give its one-time claimCode to the next controller, which then calls session_inherit.',
+            next: 'After identity is established, pass identity={sessionId,sessionToken} on every Actions facade call. Apps may omit it only after a verified openai/session binding exists.',
+            actionsContinuation: harnessRequirement(this.config.actionsContinuationMode),
+            apps: 'Apps exposes both narrow direct tools and the full extension_call/extension_register facade. Use direct tools when their schema fits; use the facade for arbitrary commands, overwriting writes, patches, and custom extensions.',
+          },
+          bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
+        } };
+      }
+      sessionId = authenticated.id;
+      this.store.acknowledgeHarnessRequirements(authenticated.id);
+      this.store.touchControl(authenticated.id);
+      this.beginAudit(authenticated.id, actionId, context.transport, 'extension_discover', input, started);
+      auditStarted = true;
+      const query = typeof input.query === 'string' ? input.query.toLowerCase() : '';
+      const includeSchemas = input.includeSchemas !== false;
+      const builtins = [...this.builtins.values()].map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'builtin', annotations: tool.annotations, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
+      builtins.push({
+        name: 'task_poll', title: 'Poll background task', description: 'Poll a MyTerminal operation that exceeded the 200ms fast-return budget. Keep polling the returned taskId until status is completed, failed, or timeout.', kind: 'builtin',
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+        ...(includeSchemas ? { inputSchema: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false } } : {}),
+      });
+      const custom = this.store.listExtensions().map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'custom', annotations: tool.annotations, handlerKind: tool.handler.kind, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
+      const catalog = [...builtins, ...custom];
+      const matches = catalog.filter((tool) => !query || `${tool.name} ${tool.title} ${tool.description}`.toLowerCase().includes(query));
+      const tools = query && matches.length === 0 ? catalog : matches;
+      const response: ToolResponse = { ok: true, data: {
+        tools, total: tools.length,
+        instructions: {
+          identity: 'Every concrete call and registry change belongs to the authenticated MyTerminal session. Never use openai/session as MyTerminal identity.',
+          discover: 'Call extension_discover when you need the exact capability or input schema.',
+          register: 'Call extension_register with action=validate before action=upsert.',
+          call: `Actions calls extension_call with an exact concrete tool name, identity, and input. Facade operation names do not belong in nextCalls. ${harnessRequirement(this.config.actionsContinuationMode)}`,
+          collaboration: 'Delegate by domain and parallel workload rather than assigning an entire large objective to one child. Sessions must keep working until their acceptance criteria are complete, explicitly blocked, or waiting on external input. Collaboration is active, not one-way supervision: safely complete non-conflicting work and hand results to the responsible session. Before completion, coordinate via message_send and checkpoints; do not emit a completion-style user report.',
+          completion: 'A root cannot complete until every direct child is terminal and all child messages/events are reviewed. CHILD_REVIEW_REQUIRED returns current time, child status, recent operations, message timing, and mustContinue=true; continue work and do not end with a user-facing final summary.',
+          history: 'Continuation context is bounded by design. Use paginated session_history for permanent structured history. Message responses include sent/observed timestamps, age, audited operations since send, and possible delay notices.',
+          background: this.config.nonBlockingTasksEnabled
+            ? 'Non-blocking tasks are enabled. Calls that exceed 200ms return status=running and taskId; call task_poll until terminal, then follow the returned continuation nextCall.'
+            : 'Non-blocking tasks are disabled. Tool calls remain attached to the request until completion or timeout.',
+        },
+        harness: harnessContract(this.config.actionsContinuationMode) as unknown as JsonObject,
+        registrationSchema: {
+          name: 'lower_snake_case, 3-64 characters', title: 'human-readable title', description: 'when to use the tool and what it changes',
+          inputSchema: 'JSON Schema object with additionalProperties=false',
+          annotations: { readOnlyHint: 'boolean', destructiveHint: 'boolean', openWorldHint: 'boolean', idempotentHint: 'optional boolean' },
+          handlers: [{ kind: 'builtin', target: 'existing builtin name', defaults: 'optional object' }, { kind: 'command', executable: 'binary name', args: ['literal', '{{input.field}}'], cwd: 'optional workspace-relative directory', timeoutSec: '1-3600' }],
+        },
+        query: query ? { value: query, matched: matches.length, usedFullCatalogFallback: matches.length === 0 } : undefined,
+      } };
+      const completed = this.attachEvents(response, authenticated.id);
+      this.finishAudit(authenticated.id, actionId, context.transport, 'extension_discover', input, started, 'completed', completed);
+      return completed;
+    } catch (error) {
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const failed = failure(error);
+      const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, 'extension_discover', input, started, 'failed', response, auditError);
+      return response;
+    } finally {
+      this.activeActions.delete(actionId);
+    }
+  }
+
+  async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
+    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
+    let auditStarted = false;
+    try {
+      const authenticated = this.authenticate(input, context, false)!; sessionId = authenticated.id;
+      this.store.beforeOrdinaryCall(sessionId);
+      this.beginAudit(sessionId, actionId, context.transport, 'extension_register', input, started);
+      auditStarted = true;
+      const action = typeof input.action === 'string' ? input.action : '';
+      let data: JsonObject;
+      if (action === 'remove') {
+        if (typeof input.name !== 'string') throw new MyTerminalError('INVALID_INPUT', 'name is required for remove.');
+        this.store.removeExtension(input.name); data = { action, name: input.name, removed: true };
+      } else {
+        if (action !== 'validate' && action !== 'upsert') throw new MyTerminalError('INVALID_INPUT', 'action must be validate, upsert, or remove.');
+        const rawSpec = input.spec ?? input.specJson;
+        const spec = validateSpec(typeof rawSpec === 'string' ? jsonObjectValue(rawSpec, 'specJson') : rawSpec, this.builtins);
+        if (action === 'upsert') this.store.upsertExtension(spec);
+        data = { action, valid: true, registered: action === 'upsert', spec };
+      }
+      const response = this.attachEvents({ ok: true, data }, sessionId);
+      this.finishAudit(sessionId, actionId, context.transport, 'extension_register', input, started, 'completed', response);
+      return response;
+    } catch (error) {
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const response = this.attachEvents(failure(error), sessionId);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, 'extension_register', input, started, 'failed', response, auditError);
+      return response;
+    } finally {
+      this.activeActions.delete(actionId);
+    }
+  }
+
+  async registerFromTui(input: JsonObject): Promise<ToolResponse> {
+    try {
+      const action = typeof input.action === 'string' ? input.action : '';
+      if (action === 'remove') {
+        if (typeof input.name !== 'string') throw new MyTerminalError('INVALID_INPUT', 'name is required for remove.');
+        this.store.removeExtension(input.name);
+        return { ok: true, data: { action, name: input.name, removed: true } };
+      }
+      if (action !== 'validate' && action !== 'upsert') throw new MyTerminalError('INVALID_INPUT', 'action must be validate, upsert, or remove.');
+      const rawSpec = input.spec ?? input.specJson;
+      const spec = validateSpec(typeof rawSpec === 'string' ? jsonObjectValue(rawSpec, 'specJson') : rawSpec, this.builtins);
+      if (action === 'upsert') this.store.upsertExtension(spec);
+      return { ok: true, data: { action, valid: true, registered: action === 'upsert', spec } };
+    } catch (error) { return failure(error); }
+  }
+
+  async call(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
+    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    this.trimBackgroundTasks();
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
+    const action = typeof input.tool === 'string' ? input.tool : 'extension_call';
+    let args: JsonObject = {};
+    let auditStarted = false;
+    let detached = false;
+    try {
+      if (typeof input.tool !== 'string') throw new MyTerminalError('INVALID_INPUT', 'tool is required.');
+      args = callArguments(input);
+      const bootstrapRoot = input.tool === 'session_register' && args.mode !== 'delegate';
+      const bootstrapInherit = input.tool === 'session_inherit';
+      const authenticated = bootstrapRoot || bootstrapInherit ? undefined : this.authenticate(input, context, false)!;
+      sessionId = authenticated?.id;
+      const controller = new AbortController();
+      const invocationContext: InvocationContext = { ...context, identity: explicitIdentity(input), authenticatedSession: authenticated, signal: controller.signal };
+      if (authenticated) {
+        this.beginAudit(authenticated.id, actionId, context.transport, input.tool, args, started);
+        auditStarted = true;
+        this.assertContinuation(authenticated.id, input.tool, args, context.transport);
+        if (!CONTROL_TOOLS.has(input.tool)) this.store.beforeOrdinaryCall(authenticated.id); else this.store.touchControl(authenticated.id);
+      }
+      if (input.tool === 'task_poll') {
+        if (!authenticated) throw new MyTerminalError('IDENTITY_REQUIRED', 'task_poll requires an authenticated session.');
+        const response = this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, response.ok ? 'completed' : 'failed', response, response.error);
+        return response;
+      }
+      const operation = this.trackOperation(actionId, controller, this.invokeTool(input.tool, args, invocationContext));
+      if (authenticated && !CONTROL_TOOLS.has(input.tool) && this.config.nonBlockingTasksEnabled) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+          operation.then((result) => ({ kind: 'result' as const, result }), (error: unknown) => ({ kind: 'error' as const, error })),
+          new Promise<{ kind: 'detach' }>((resolve) => { timer = setTimeout(() => resolve({ kind: 'detach' }), FAST_RETURN_MS); }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (outcome.kind === 'detach') {
+          detached = true;
+          const task: BackgroundTask = { id: actionId, sessionId: authenticated.id, tool: input.tool, input: structuredClone(args), source: context.transport, startedAt: started, status: 'running' };
+          this.backgroundTasks.set(task.id, task);
+          void operation.then(
+            (result) => this.completeBackgroundTask(task, result),
+            (error: unknown) => this.failBackgroundTask(task, error),
+          );
+          return this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
+            reason: 'background_task_running',
+            nextCall: { tool: 'task_poll', input: { taskId: task.id }, purpose: 'Confirm the detached operation completed before advancing the continuation plan.' },
+          }, context.transport), authenticated.id);
+        }
+        if (outcome.kind === 'error') throw outcome.error;
+        const result = outcome.result;
+        const problem = resultProblem(result);
+        if (!problem) this.store.completeContinuationCall(authenticated.id, input.tool, args);
+        const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
+        const response = this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed', response, problem);
+        return response;
+      }
+      const result = await operation;
+      if (!sessionId && result.identity && typeof result.identity === 'object') sessionId = String((result.identity as JsonObject).sessionId || '');
+      if (sessionId && context.transport === 'apps' && context.clientSessionKey) this.store.bindApp(context.clientSessionKey, sessionId);
+      if (sessionId && !auditStarted) {
+        this.beginAudit(sessionId, actionId, context.transport, input.tool, args, started);
+        auditStarted = true;
+      }
+      if (sessionId) {
+        const problem = resultProblem(result);
+        if (!problem) this.store.completeContinuationCall(sessionId, input.tool, args);
+        const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
+        const response = this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId);
+        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed', response, problem);
+        return response;
+      }
+      return this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId);
+    } catch (error) {
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const failed = failure(error);
+      const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, 'failed', response, auditError);
+      return response;
+    } finally {
+      if (!detached && !this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
+    }
+  }
+
+  private assertContinuation(sessionId: string, tool: string, input: JsonObject, transport: InvocationContext['transport']): void {
+    if (transport !== 'actions' || tool === 'task_poll' || !continuationPolicy(this.config.actionsContinuationMode).enabled) return;
+    const expected = this.store.expectedContinuationCall(sessionId);
+    if (!expected) return;
+    if (tool === 'session_checkpoint') {
+      const phase = input.phase;
+      if (['waiting', 'blocked', 'cancelled'].includes(String(phase)) || (phase === 'working' && typeof input.replanReason === 'string' && input.replanReason.trim())) return;
+    }
+    this.store.assertContinuationCall(sessionId, tool, input);
+  }
+
+  private decorateContinuation(response: ToolResponse, sessionId: string, override?: { reason: string; nextCall?: { tool: string; input: JsonObject; purpose?: string } }, transport: InvocationContext['transport'] = 'actions'): ToolResponse {
+    if (transport !== 'actions' && !override) return response;
+    const policy = continuationPolicy(this.config.actionsContinuationMode);
+    if (!policy.enabled && !override?.nextCall) return response;
+    const session = this.store.session(sessionId);
+    const expected = override?.nextCall || (policy.enabled ? this.store.expectedContinuationCall(sessionId) : undefined);
+    const terminal = session.phase === 'completed' || session.phase === 'cancelled';
+    const paused = session.phase === 'waiting' || session.phase === 'blocked';
+    const continuationMode = this.config.actionsContinuationMode;
+    const callRequirement = policy.exactCalls ? `exactly ${policy.exactCalls} nextCalls` : `${policy.minCalls}-${policy.maxCalls} exact concrete nextCalls`;
+    const continuation: JsonObject = terminal
+      ? { status: session.phase, mustContinue: false, taskComplete: session.phase === 'completed' }
+      : paused
+        ? { status: session.phase, mustContinue: false, taskComplete: false }
+        : expected
+          ? {
+              status: 'working', mustContinue: true, taskComplete: false, continuationMode,
+              reason: override?.reason || 'planned_call_pending', nextCall: expected as unknown as JsonObject,
+              instruction: 'Immediately execute nextCall in this same assistant turn. Do not answer the user and do not stop after a working checkpoint or running task.',
+            }
+          : {
+              status: 'working', mustContinue: true, taskComplete: false, continuationMode, reason: override?.reason || 'continuation_plan_exhausted',
+              nextCallRequired: `Call session_checkpoint now with phase=working, an accurate summary, and ${callRequirement}; then immediately execute the returned nextCall.`,
+              instruction: 'The task is not finished. Do not answer the user or stop.',
+            };
+    return {
+      ...response,
+      data: { ...(response.data ?? {}), continuation },
+      ...(!response.ok && response.error ? { error: { ...response.error, details: { ...(response.error.details ?? {}), continuation } } } : {}),
+    };
+  }
+
+  private completeBackgroundTask(task: BackgroundTask, result: JsonObject): void {
+    if (task.status !== 'running') return;
+    const problem = resultProblem(result);
+    if (!problem) this.store.completeContinuationCall(task.sessionId, task.tool, task.input);
+    task.status = problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed';
+    task.completedAt = new Date().toISOString();
+    const base: ToolResponse = problem ? { ok: false, data: { tool: task.tool, result }, error: problem } : { ok: true, data: { tool: task.tool, result } };
+    task.response = this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source);
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, task.response, problem);
+    this.trimBackgroundTasks();
+  }
+
+  private failBackgroundTask(task: BackgroundTask, error: unknown): void {
+    if (task.status !== 'running') return;
+    const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+    task.status = 'failed';
+    task.completedAt = new Date().toISOString();
+    task.response = this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source);
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', task.response, auditError);
+    this.trimBackgroundTasks();
+  }
+
+  private pollBackgroundTask(sessionId: string, input: JsonObject, transport: InvocationContext['transport']): ToolResponse {
+    if (typeof input.taskId !== 'string') throw new MyTerminalError('INVALID_INPUT', 'taskId is required.');
+    const task = this.backgroundTasks.get(input.taskId);
+    if (!task || task.sessionId !== sessionId) throw new MyTerminalError('NOT_FOUND', 'Background task not found for this session.');
+    if (task.status === 'running') return this.decorateContinuation({ ok: true, data: { tool: 'task_poll', result: { taskId: task.id, status: task.status, startedAt: new Date(task.startedAt).toISOString(), elapsedMs: Date.now() - task.startedAt } } }, sessionId, {
+      reason: 'background_task_running', nextCall: { tool: 'task_poll', input: { taskId: task.id }, purpose: 'Keep polling until the detached operation reaches a terminal status.' },
+    }, transport);
+    return this.decorateContinuation({ ok: true, data: { tool: 'task_poll', result: { taskId: task.id, status: task.status, startedAt: new Date(task.startedAt).toISOString(), completedAt: task.completedAt, operation: task.response } } }, sessionId, undefined, transport);
+  }
+
+  private trimBackgroundTasks(): void {
+    const cutoff = Date.now() - BACKGROUND_TASK_RETENTION_MS;
+    for (const task of this.backgroundTasks.values()) {
+      if (task.status !== 'running' && task.completedAt && Date.parse(task.completedAt) < cutoff) this.backgroundTasks.delete(task.id);
+    }
+    const completed = [...this.backgroundTasks.values()]
+      .filter((task) => task.status !== 'running')
+      .sort((left, right) => Date.parse(left.completedAt || '') - Date.parse(right.completedAt || ''));
+    const responseBytes = (task: BackgroundTask) => task.response ? Buffer.byteLength(JSON.stringify(task.response)) : 0;
+    let retainedBytes = completed.reduce((sum, task) => sum + responseBytes(task), 0);
+    for (const task of completed) {
+      if (this.backgroundTasks.size <= BACKGROUND_TASK_MAX_COUNT && retainedBytes <= BACKGROUND_TASK_MAX_BYTES) break;
+      retainedBytes -= responseBytes(task);
+      this.backgroundTasks.delete(task.id);
+    }
+  }
+
+  private trackOperation(id: string, controller: AbortController, operation: Promise<JsonObject>): Promise<JsonObject> {
+    this.operationControllers.set(id, controller);
+    this.operationPromises.set(id, operation);
+    const cleanup = () => {
+      this.operationControllers.delete(id);
+      this.operationPromises.delete(id);
+    };
+    void operation.then(cleanup, cleanup);
+    return operation;
+  }
+
+  private authenticate(input: JsonObject, context: InvocationContext, allowMissing: boolean) {
+    const identity = explicitIdentity(input);
+    if (identity) {
+      const session = this.store.authenticate(identity);
+      if (context.transport === 'apps' && context.clientSessionKey) this.store.bindApp(context.clientSessionKey, session.id);
+      return session;
+    }
+    if (context.transport === 'apps' && context.clientSessionKey) {
+      const bound = this.store.resolveAppBinding(context.clientSessionKey);
+      if (bound) return bound;
+    }
+    if (allowMissing) return undefined;
+    throw new MyTerminalError('IDENTITY_REQUIRED', 'This operation requires identity={sessionId,sessionToken}. Register or inherit a session first.');
+  }
+
+  private async invokeTool(name: string, args: JsonObject, context: InvocationContext): Promise<JsonObject> {
+    const builtin = this.builtins.get(name);
+    if (builtin) {
+      const errors = validateJsonSchema(builtin.inputSchema, args); if (errors.length) throw new MyTerminalError('INVALID_INPUT', errors.join('; '));
+      return await builtin.invoke(args, context);
+    }
+    const custom = this.store.listExtensions().find((item) => item.name === name);
+    if (!custom) throw new MyTerminalError('NOT_FOUND', `Extension not found: ${name}`);
+    const errors = validateJsonSchema(custom.inputSchema, args); if (errors.length) throw new MyTerminalError('INVALID_INPUT', errors.join('; '));
+    if (custom.handler.kind === 'builtin') {
+      const target = this.builtins.get(custom.handler.target)!; const merged = { ...(custom.handler.defaults ?? {}), ...args };
+      const targetErrors = validateJsonSchema(target.inputSchema, merged); if (targetErrors.length) throw new MyTerminalError('INVALID_INPUT', targetErrors.join('; '));
+      return { target: target.name, result: await target.invoke(merged, context) };
+    }
+    const cwd = resolveWorkspacePath(this.config.workspaceDir, this.config.stateDir, custom.handler.cwd || '.');
+    return await runCommand({ executable: renderTemplate(custom.handler.executable, args), argv: (custom.handler.args ?? []).map((arg) => renderTemplate(arg, args)), cwd, timeoutSec: custom.handler.timeoutSec ?? this.config.commandTimeoutSec, maxOutputChars: this.config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
+  }
+
+  private attachEvents(response: ToolResponse, sessionId?: string): ToolResponse {
+    if (!sessionId) return response;
+    const events = this.store.pendingEvents(sessionId, 5);
+    return events.length ? { ...response, events } : response;
+  }
+}

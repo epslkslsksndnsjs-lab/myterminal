@@ -1,0 +1,178 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-x64
+            runner: macos-15-intel
+            target: bun-darwin-x64-baseline
+            executable: myterminal
+            asset: myterminal-darwin-x64.tar.gz
+          - platform: darwin-arm64
+            runner: macos-14
+            target: bun-darwin-arm64
+            executable: myterminal
+            asset: myterminal-darwin-arm64.tar.gz
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: bun-linux-x64-baseline
+            executable: myterminal
+            asset: myterminal-linux-x64.tar.gz
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+            executable: myterminal
+            asset: myterminal-linux-arm64.tar.gz
+          - platform: windows-x64
+            runner: windows-2022
+            target: bun-windows-x64-baseline
+            executable: myterminal.exe
+            asset: myterminal-windows-x64.zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        if: runner.os != 'Windows'
+        with:
+          bun-version: 1.3.14
+      - uses: oven-sh/setup-bun@v2
+        if: runner.os == 'Windows'
+        with:
+          bun-download-url: https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-windows-x64-baseline.zip
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun test --timeout 120000 test/*.test.mjs
+        shell: bash
+      - name: Build standalone executable
+        if: runner.os != 'Windows'
+        run: bun build --compile --minify --target=${{ matrix.target }} src/cli.ts --outfile release/${{ matrix.executable }}
+        shell: bash
+      - name: Build standalone executable with baseline Bun
+        if: runner.os == 'Windows'
+        run: bun build --compile --minify src/cli.ts --outfile release/${{ matrix.executable }}
+        shell: bash
+      - name: Smoke test executable
+        run: |
+          release/${{ matrix.executable }} --help
+          if [[ "${{ runner.os }}" != "macOS" ]]; then release/${{ matrix.executable }} --verify-installation; fi
+        shell: bash
+      - name: Package Unix asset
+        if: runner.os != 'Windows'
+        run: |
+          chmod 755 release/${{ matrix.executable }}
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            cp scripts/mac-one-shot-awake-lock.swift release/mac-one-shot-awake-lock.swift
+            tar -czf release/${{ matrix.asset }} -C release ${{ matrix.executable }} mac-one-shot-awake-lock.swift
+            tar -tzf release/${{ matrix.asset }} | grep -Fxq mac-one-shot-awake-lock.swift
+          else
+            tar -czf release/${{ matrix.asset }} -C release ${{ matrix.executable }}
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum release/${{ matrix.asset }} | sed 's#release/##' > release/${{ matrix.asset }}.sha256
+          else
+            shasum -a 256 release/${{ matrix.asset }} | sed 's#release/##' > release/${{ matrix.asset }}.sha256
+          fi
+        shell: bash
+      - name: Package Windows asset
+        if: runner.os == 'Windows'
+        run: |
+          $source = "release/${{ matrix.executable }}"
+          $archive = "release/${{ matrix.asset }}"
+          $lastError = $null
+          for ($attempt = 1; $attempt -le 10; $attempt++) {
+            try {
+              Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+              Compress-Archive -LiteralPath $source -DestinationPath $archive -Force
+              $lastError = $null
+              break
+            } catch {
+              $lastError = $_
+              Start-Sleep -Milliseconds 750
+            }
+          }
+          if ($lastError) { throw $lastError }
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$archive.sha256", "$hash  ${{ matrix.asset }}`n", [Text.UTF8Encoding]::new($false))
+        shell: powershell
+      - name: Exercise packaged installer on Unix
+        if: runner.os != 'Windows'
+        run: |
+          test_root="$RUNNER_TEMP/myterminal-real-install"
+          rm -rf "$test_root"
+          mkdir -p "$test_root/home" "$test_root/downloads"
+          cp "release/${{ matrix.asset }}" "$test_root/${{ matrix.asset }}"
+          cp "release/${{ matrix.asset }}.sha256" "$test_root/${{ matrix.asset }}.sha256"
+          head -c 4096 "$test_root/${{ matrix.asset }}" > "$test_root/downloads/${{ matrix.asset }}.part"
+          installer="scripts/install-linux.sh"
+          [[ "${{ runner.os }}" == "macOS" ]] && installer="scripts/install-macos.sh"
+          HOME="$test_root/home" SHELL=/bin/bash             MYTERMINAL_HOME="$test_root/app"             MYTERMINAL_BIN_DIR="$test_root/bin"             MYTERMINAL_DOWNLOAD_DIR="$test_root/downloads"             MYTERMINAL_ASSET_URL="file://$test_root/${{ matrix.asset }}"             MYTERMINAL_CHECKSUM_URL="file://$test_root/${{ matrix.asset }}.sha256"             MYTERMINAL_INSTALL_ONLY=1             bash "$installer"
+          "$test_root/bin/myterminal" --verify-installation
+          mkdir -p "$test_root/incomplete/releases"
+          HOME="$test_root/home" SHELL=/bin/bash             MYTERMINAL_HOME="$test_root/incomplete"             MYTERMINAL_BIN_DIR="$test_root/bin2"             MYTERMINAL_DOWNLOAD_DIR="$test_root/downloads2"             MYTERMINAL_ASSET_URL="file://$test_root/${{ matrix.asset }}"             MYTERMINAL_CHECKSUM_URL="file://$test_root/${{ matrix.asset }}.sha256"             MYTERMINAL_INSTALL_ONLY=1             bash "$installer"
+          "$test_root/bin2/myterminal" --verify-installation
+        shell: bash
+      - name: Exercise packaged installer on Windows
+        if: runner.os == 'Windows'
+        run: |
+          $tokens=$null; $errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile("scripts/install-windows.ps1",[ref]$tokens,[ref]$errors)>$null
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          $testRoot = Join-Path $env:RUNNER_TEMP "myterminal-real-install"
+          Remove-Item $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $testRoot,(Join-Path $testRoot "downloads") | Out-Null
+          Copy-Item "release/${{ matrix.asset }}" (Join-Path $testRoot "${{ matrix.asset }}")
+          Copy-Item "release/${{ matrix.asset }}.sha256" (Join-Path $testRoot "${{ matrix.asset }}.sha256")
+          $bytes = [IO.File]::ReadAllBytes((Join-Path $testRoot "${{ matrix.asset }}"))[0..4095]
+          [IO.File]::WriteAllBytes((Join-Path $testRoot "downloads\${{ matrix.asset }}.part"), $bytes)
+          $env:MYTERMINAL_HOME = Join-Path $testRoot "app"
+          $env:MYTERMINAL_BIN_DIR = Join-Path $testRoot "bin"
+          $env:MYTERMINAL_DOWNLOAD_DIR = Join-Path $testRoot "downloads"
+          $env:MYTERMINAL_ASSET_URL = ([Uri](Join-Path $testRoot "${{ matrix.asset }}")).AbsoluteUri
+          $env:MYTERMINAL_CHECKSUM_URL = ([Uri](Join-Path $testRoot "${{ matrix.asset }}.sha256")).AbsoluteUri
+          $env:MYTERMINAL_INSTALL_ONLY = "1"
+          & scripts/install-windows.ps1
+          & (Join-Path $env:MYTERMINAL_BIN_DIR "myterminal.cmd") --verify-installation
+          $env:MYTERMINAL_HOME = Join-Path $testRoot "incomplete"
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:MYTERMINAL_HOME "releases") | Out-Null
+          $env:MYTERMINAL_BIN_DIR = Join-Path $testRoot "bin2"
+          $env:MYTERMINAL_DOWNLOAD_DIR = Join-Path $testRoot "downloads2"
+          & scripts/install-windows.ps1
+          & (Join-Path $env:MYTERMINAL_BIN_DIR "myterminal.cmd") --verify-installation
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: |
+            release/${{ matrix.asset }}
+            release/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*
+          generate_release_notes: false
+          body_path: RELEASE_NOTES.md

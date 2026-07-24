@@ -1,0 +1,111 @@
+name: MyTerminal CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run build
+      - run: bun test --timeout 300000 test/*.test.mjs
+        shell: bash
+      - run: bun audit
+      - name: Build and exercise Unix installer
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/myterminal-installer-test"
+          rm -rf "$root"
+          mkdir -p "$root/release" "$root/home" "$root/downloads"
+          bun build --compile --minify src/cli.ts --outfile "$root/release/myterminal"
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            asset="myterminal-darwin-$( [[ "$(uname -m)" == arm64 ]] && echo arm64 || echo x64 ).tar.gz"
+            cp scripts/mac-one-shot-awake-lock.swift "$root/release/mac-one-shot-awake-lock.swift"
+            tar -czf "$root/$asset" -C "$root/release" myterminal mac-one-shot-awake-lock.swift
+          else
+            asset="myterminal-linux-x64.tar.gz"
+            tar -czf "$root/$asset" -C "$root/release" myterminal
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$root/$asset" | awk -v a="$asset" '{print $1 "  " a}' > "$root/$asset.sha256"
+          else
+            shasum -a 256 "$root/$asset" | awk -v a="$asset" '{print $1 "  " a}' > "$root/$asset.sha256"
+          fi
+          head -c 4096 "$root/$asset" > "$root/downloads/$asset.part"
+          installer="scripts/install-linux.sh"
+          [[ "${{ runner.os }}" == "macOS" ]] && installer="scripts/install-macos.sh"
+          HOME="$root/home" SHELL=/bin/bash \
+            MYTERMINAL_HOME="$root/app" \
+            MYTERMINAL_BIN_DIR="$root/bin" \
+            MYTERMINAL_DOWNLOAD_DIR="$root/downloads" \
+            MYTERMINAL_ASSET_URL="file://$root/$asset" \
+            MYTERMINAL_CHECKSUM_URL="file://$root/$asset.sha256" \
+            MYTERMINAL_INSTALL_ONLY=1 \
+            bash "$installer"
+          "$root/bin/myterminal" --help | grep -Fq 'v0.1.0'
+          "$root/bin/myterminal" --verify-installation
+          mkdir -p "$root/incomplete/releases"
+          HOME="$root/home" SHELL=/bin/bash \
+            MYTERMINAL_HOME="$root/incomplete" \
+            MYTERMINAL_BIN_DIR="$root/bin2" \
+            MYTERMINAL_DOWNLOAD_DIR="$root/downloads2" \
+            MYTERMINAL_ASSET_URL="file://$root/$asset" \
+            MYTERMINAL_CHECKSUM_URL="file://$root/$asset.sha256" \
+            MYTERMINAL_INSTALL_ONLY=1 \
+            bash "$installer"
+          "$root/bin2/myterminal" --verify-installation
+      - name: Build and exercise Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null; $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile('scripts/install-windows.ps1',[ref]$tokens,[ref]$errors) > $null
+          if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          $root = Join-Path $env:RUNNER_TEMP 'myterminal-installer-test'
+          Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+          $release = Join-Path $root 'release'
+          $downloads = Join-Path $root 'downloads'
+          New-Item -ItemType Directory -Force -Path $release,$downloads | Out-Null
+          $exe = Join-Path $release 'myterminal.exe'
+          bun build --compile --minify src/cli.ts --outfile $exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows binary build failed' }
+          $asset = 'myterminal-windows-x64.zip'
+          $archive = Join-Path $root $asset
+          Compress-Archive -LiteralPath $exe -DestinationPath $archive -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          "$hash  $asset" | Set-Content -Encoding Ascii "$archive.sha256"
+          $allBytes = [IO.File]::ReadAllBytes($archive)
+          [IO.File]::WriteAllBytes((Join-Path $downloads "$asset.part"), $allBytes[0..4095])
+          $env:MYTERMINAL_HOME = Join-Path $root 'app'
+          $env:MYTERMINAL_BIN_DIR = Join-Path $root 'bin'
+          $env:MYTERMINAL_DOWNLOAD_DIR = $downloads
+          $env:MYTERMINAL_ASSET_URL = ([Uri](Resolve-Path $archive).Path).AbsoluteUri
+          $env:MYTERMINAL_CHECKSUM_URL = ([Uri](Resolve-Path "$archive.sha256").Path).AbsoluteUri
+          $env:MYTERMINAL_INSTALL_ONLY = '1'
+          & scripts/install-windows.ps1
+          & (Join-Path $env:MYTERMINAL_BIN_DIR 'myterminal.cmd') --help | Select-String 'v0.1.0'
+          & (Join-Path $env:MYTERMINAL_BIN_DIR 'myterminal.cmd') --verify-installation
+          $env:MYTERMINAL_HOME = Join-Path $root 'incomplete'
+          New-Item -ItemType Directory -Force -Path (Join-Path $env:MYTERMINAL_HOME 'releases') | Out-Null
+          $env:MYTERMINAL_BIN_DIR = Join-Path $root 'bin2'
+          $env:MYTERMINAL_DOWNLOAD_DIR = Join-Path $root 'downloads2'
+          & scripts/install-windows.ps1
+          & (Join-Path $env:MYTERMINAL_BIN_DIR 'myterminal.cmd') --verify-installation
