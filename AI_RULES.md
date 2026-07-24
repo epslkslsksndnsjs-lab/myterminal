@@ -1,5 +1,6 @@
-# Development constraints
+# AI Rules for MyTerminal Development
 
+Rules for AI coding assistants working on this project.
 
 ## User-facing copy
 

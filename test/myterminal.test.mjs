@@ -1500,7 +1500,7 @@ test('message composer does not open when no active recipient exists', () => {
 });
 
 test('project copy constraints forbid exposing implementation requirements as UI copy', () => {
-  const constraints = fs.readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
+  const constraints = fs.readFileSync(new URL('../AI_RULES.md', import.meta.url), 'utf8');
   assert.match(constraints, /must not be shown as user-facing UI copy/);
 });
 
@@ -1538,7 +1538,7 @@ test('release installers resume partial downloads and repair incomplete layouts'
 
 test('macOS binary release packages and resolves the passive-lock helper source', () => {
   const resources = fs.readFileSync(new URL('../src/session-resources.ts', import.meta.url), 'utf8');
-  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const workflow = fs.readFileSync(new URL('../.github/workflows/release.yaml', import.meta.url), 'utf8');
   assert.match(resources, /path\.dirname\(process\.execPath\)/);
   assert.match(workflow, /mac-one-shot-awake-lock\.swift/);
   assert.match(workflow, /--verify-installation/);
