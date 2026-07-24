@@ -182,7 +182,6 @@ export function saveMyTerminalSettings(settings: MyTerminalSettings, env: NodeJS
   const temporaryPath = `${configPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
   try {
     writeFileSync(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
-    chmodSync(temporaryPath, 0o600);
     renameSync(temporaryPath, configPath);
     chmodSync(configPath, 0o600);
   } catch (error) {
