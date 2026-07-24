@@ -237,22 +237,26 @@ function archivedLegacyStateDirs(configDir: string): string[] {
 }
 
 function draftAgentMd(configDir: string): void {
-  const file = path.join(configDir, 'AGENT.md');
-  if (existsSync(file)) return;
-  const template = [
-    '# MyTerminal Agent 指令',
-    '#',
-    '# 在这里写入你的自定义规则。每次 ChatGPT 连接时，这些内容',
-    '# 会自动注入，模型会读取并遵循。',
-    '#',
-    '# 示例:',
-    '# - 永远使用 pnpm，不要用 npm',
-    '# - 修改文件前先检查 git_status',
-    '# - 完成后自动提交代码',
-    '# - 用中文回复',
-    '',
-  ].join('\n');
-  writeFileSync(file, template, { mode: 0o600 });
+  try {
+    const file = path.join(configDir, 'AGENT.md');
+    if (existsSync(file)) return;
+    const template = [
+      '# MyTerminal Agent 指令',
+      '#',
+      '# 在这里写入你的自定义规则。每次 ChatGPT 连接时，这些内容',
+      '# 会自动注入，模型会读取并遵循。',
+      '#',
+      '# 示例:',
+      '# - 永远使用 pnpm，不要用 npm',
+      '# - 修改文件前先检查 git_status',
+      '# - 完成后自动提交代码',
+      '# - 用中文回复',
+      '',
+    ].join('\n');
+    writeFileSync(file, template, 'utf8');
+  } catch {
+    // best-effort: AGENT.md creation must never block startup
+  }
 }
 
 export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTerminalConfig {
