@@ -844,7 +844,7 @@ export class MyTerminalStore {
     return event;
   }
 
-  private findSession(id: string): MyTerminalSession | undefined { return this.state.sessions.find((item) => item.id === id || item.name === id); }
+  private findSession(id: string): MyTerminalSession | undefined { return this.state.sessions.find((item) => item.id === id) ?? this.state.sessions.find((item) => item.name === id); }
   private requireSession(id: string): MyTerminalSession { const session = this.findSession(id); if (!session) throw new MyTerminalError('NOT_FOUND', `Session not found: ${id}`); return session; }
   private iso(): string { return new Date(this.now()).toISOString(); }
   private historyPath(sessionId: string): string { return path.join(this.historyDir, `${sessionId}.jsonl`); }

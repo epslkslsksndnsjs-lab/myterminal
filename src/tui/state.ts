@@ -93,7 +93,8 @@ function playAttentionSound(): void {
 }
 
 function notifySystem(title: string, message: string): void {
-  if (process.platform === 'darwin') bestEffortSpawn('osascript', ['-e', `display notification "${message.replace(/["\\]/g, '')}" with title "${title.replace(/["\\]/g, '')}"`]);
+  const ase = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  if (process.platform === 'darwin') bestEffortSpawn('osascript', ['-e', `display notification "${ase(message)}" with title "${ase(title)}"`]);
   else if (process.platform === 'linux') bestEffortSpawn('notify-send', [title, message]);
   else if (process.platform === 'win32') bestEffortSpawn('msg.exe', ['*', `${title}: ${message}`]);
 }
@@ -188,7 +189,8 @@ export class TuiController {
         const prompt = this.currentRuntime.store.handoffForTui(session.id);
         if (prompt) void this.rememberAndCopy(session.id, prompt);
       }
-      const times = this.remindedAt.get(session.id) || { sound: now, notification: now };
+      const pendingSince = Math.min(now, Date.parse(session.updatedAt));
+      const times = this.remindedAt.get(session.id) || { sound: pendingSince, notification: pendingSince };
       if (now - times.sound >= 60_000) { playAttentionSound(); times.sound = now; }
       if (now - times.notification >= 300_000) {
         notifySystem('MyTerminal', `${session.name} ${this.text('still needs a controller.', '仍等待 ChatGPT 接管。')}`);

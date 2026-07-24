@@ -59,6 +59,7 @@ export function validateJsonSchema(schema: JsonSchema, value: unknown, label = '
       const child = schema.properties?.[key];
       if (child) errors.push(...validateJsonSchema(child, item, `${label}.${key}`));
       else if (schema.additionalProperties === false) errors.push(`${label}.${key} is not allowed`);
+      else if (schema.additionalProperties && typeof schema.additionalProperties === 'object') errors.push(...validateJsonSchema(schema.additionalProperties, item, `${label}.${key}`));
     }
   }
   return errors;

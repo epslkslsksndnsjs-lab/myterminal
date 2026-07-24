@@ -374,7 +374,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     ['git_log', ['log', '--oneline', '-n', '30']],
   ] as const) {
     add({
-      name: gitTool[0], title: gitTool[0].replace('_', ' '), description: `Run bounded ${gitTool[0]} in the workspace.`,
+      name: gitTool[0], title: gitTool[0].replace('_', ' '), description: `Run bounded ${gitTool[0].replace('_', ' ')} in the workspace.`,
       inputSchema: { type: 'object', properties: { cwd: { type: 'string' } }, additionalProperties: false }, annotations: readOnly,
       invoke: async (input, context) => await runCommand({ executable: 'git', argv: [...gitTool[1]], cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject,
     });
@@ -415,7 +415,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: {
       type: 'object', properties: {
         mode: { type: 'string', enum: ['root', 'delegate'], default: 'root' }, name: { type: 'string', minLength: 1, maxLength: 80 }, role: { type: 'string', maxLength: 80 },
-        continuesSessionId: { type: 'string' }, task: { type: 'object', properties: taskProperties, required: ['objective', 'background', 'deliverables', 'acceptanceCriteria', 'constraints'], additionalProperties: false },
+        continuesSessionId: { type: 'string' }, workspaceId: { type: 'string' }, task: { type: 'object', properties: taskProperties, required: ['objective', 'background', 'deliverables', 'acceptanceCriteria', 'constraints'], additionalProperties: false },
       }, required: ['mode', 'name'], additionalProperties: false,
     }, annotations: localCreate,
     invoke: async (input, context) => {
