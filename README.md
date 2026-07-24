@@ -83,6 +83,10 @@ The small Actions surface keeps the imported OpenAPI configuration stable while 
 
 ChatGPT Apps exposes both the same generic `extension_call` / `extension_register` capabilities and narrow direct MCP tools. The generic facade preserves arbitrary commands, overwriting writes, patches, and custom extensions as first-class product capabilities. Direct tools give common session, read, Git, messaging, polling, and Blob operations smaller schemas without replacing the generic path. Apps can stage UTF-8 or base64 content with `blob_create`; `blob_write_file` creates a missing file, treats an identical existing file as an idempotent success, and rejects an existing file with different content. Overwriting remains available through `extension_call` → `write_file` or `apply_patch`.
 
+### Agent context (AGENT.md)
+
+Create `~/.config/myterminal/AGENT.md` (or `%APPDATA%\myterminal\AGENT.md` on Windows) with user-authored preferences, habits, or cross-project instructions. MyTerminal injects the full content into every `extension_discover` response via the `agentMd` field so each ChatGPT session reads it automatically — analogous to `CLAUDE.md` in Claude Code. The file is optional; when absent, the field is gracefully omitted.
+
 ```text
 ChatGPT
   └─ extensionCall

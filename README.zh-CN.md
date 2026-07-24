@@ -83,6 +83,10 @@ GPT Actions 始终只看到三个稳定 facade 操作：
 
 ChatGPT Apps 同时暴露通用 `extension_call` / `extension_register` 能力和窄接口 MCP 工具。通用 facade 将任意命令、覆盖写入、patch 和自定义扩展保留为产品基础能力；直接工具为常用 session、读取、Git、消息、轮询与 Blob 操作提供更小的 schema，但不取代通用入口。Apps 可用 `blob_create` 暂存 UTF-8 或 base64 内容；`blob_write_file` 会创建缺失文件、把内容相同的已有文件视为幂等成功，并拒绝覆盖内容不同的已有文件。需要覆盖时仍可使用 `extension_call` → `write_file` 或 `apply_patch`。
 
+### Agent 上下文（AGENT.md）
+
+创建 `~/.config/myterminal/AGENT.md`（Windows 为 `%APPDATA%\myterminal\AGENT.md`），用户可在其中写入个人偏好、习惯或跨项目指令。MyTerminal 会将完整内容注入每次 `extension_discover` 响应的 `agentMd` 字段，每个 ChatGPT 会话自动读取——类比 Claude Code 的 `CLAUDE.md`。该文件为完全可选；不存在时字段自动消失。
+
 ```text
 ChatGPT
   └─ extensionCall

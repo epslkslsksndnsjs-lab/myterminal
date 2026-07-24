@@ -38,6 +38,9 @@ Bootstrap 正反例：
 - 注册自定义扩展时：先 discover 注册格式，再调用 extensionRegister(action="validate", spec={...})，修正错误后才调用 extensionRegister(action="upsert", spec={...})。
 - 以工具响应为准；失败时报告错误码，不得声称成功。
 
+Agent 上下文
+- extensionDiscover 响应可能包含 agentMd 字段，内容为用户在 ~/.config/myterminal/AGENT.md 中写入的自定义指令。始终读取并遵循这些指令；它们补充或覆盖下方默认规则。
+
 续执行与后台任务
 - OpenAI 可能把类似 summary 的 Actions 返回当成结束点，即使任务仍未完成。不能只依赖“继续工作”等自然语言；必须读取 discovery 返回的续执行合约。`off` 模式在 working checkpoint 后按普通流程继续工作；增强模式才执行下面的强制调用队列。
 - discover 会声明四种模式之一：`off` 保持核心 harness 且不强制 nextCalls；`adaptive` 要求 1–3 项（可预测步骤优先 3 项，等待不确定证据前使用 1 项）；`next-call` 恰好 1 项；`lookahead-3` 恰好 3 项有序调用。
