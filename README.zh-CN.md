@@ -4,7 +4,7 @@
 
 MyTerminal 的核心目的，是让 **ChatGPT 的普通 Chat 对话模式也能以可控方式在本地电脑上工作**。通过为自定义 GPT 配置 Action，或接入 ChatGPT App，普通 ChatGPT 对话就可以查看和编辑获准的本地项目、运行受约束的工具、协调多个工作 session 并汇报进展；用户始终通过本地 TUI 保留控制权。MyTerminal 是 ChatGPT Chat 与本地电脑之间的桥梁，不是另一个聊天客户端。
 
-MyTerminal 0.1.0 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、Git 风格实时 diff，以及覆盖整个终端窗口的中英双语 OpenTUI 界面。
+MyTerminal 0.1.1 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、Git 风格实时 diff，以及覆盖整个终端窗口的中英双语 OpenTUI 界面。
 
 ![MyTerminal session 层级](docs/assets/tui/sessions-zh-CN.svg)
 
@@ -12,24 +12,24 @@ MyTerminal 0.1.0 通过可审计、可继承的工作 session 层提供这座桥
 
 ### 第一次安装
 
-无需提前安装 Git、Node.js、Bun 或其他编程环境。安装脚本会下载与当前平台和 CPU 架构匹配的 `v0.1.0` 独立可执行文件，校验 SHA-256，把 `myterminal` 注册成当前用户的全局命令，然后启动 TUI。发行安装不再下载臃肿的源码包或安装运行时依赖。
+无需提前安装 Git、Node.js、Bun 或其他编程环境。安装脚本会下载与当前平台和 CPU 架构匹配的 `v0.1.1` 独立可执行文件，校验 SHA-256，把 `myterminal` 注册成当前用户的全局命令，然后启动 TUI。发行安装不再下载臃肿的源码包或安装运行时依赖。
 
 #### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-macos.sh)"
 ```
 
 #### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-linux.sh)"
 ```
 
 #### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-windows.ps1 | iex"
 ```
 
 > [!IMPORTANT]
@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 ### 第二次及以后快速启动
 
-重新打开一个终端、PowerShell 或命令提示符窗口，直接输入安装器为当前用户注册的全局命令。启动器通过版本化 `releases/<版本>` 目录和原子的 `current` 指针定位当前二进制。已经安装 GitHub `v1.0.1`、开发过程中的中间源码版本或旧二进制版本的用户，直接再次运行上面的 `v0.1.0` 命令即可无损迁移；用户配置、凭据、workspace、session、消息和历史不会被删除。
+重新打开一个终端、PowerShell 或命令提示符窗口，直接输入安装器为当前用户注册的全局命令。启动器通过版本化 `releases/<版本>` 目录和原子的 `current` 指针定位当前二进制。已经安装 GitHub `v1.0.1`、开发过程中的中间源码版本或旧二进制版本的用户，直接再次运行上面的 `v0.1.1` 命令即可无损迁移；用户配置、凭据、workspace、session、消息和历史不会被删除。
 
 ```text
 myterminal
@@ -174,7 +174,7 @@ bun run start -- --headless
 
 ## 更新
 
-MyTerminal 会在 TUI 启动时检查 GitHub 最新发行版。设置页会显示当前版本和最新版本；有新版本时按 `U` 可一键安装。更新器下载当前平台的预编译二进制与 SHA-256，安装到新的版本目录，再原子切换 `current` 指针；失败时保留原版本并自动回滚。Git 源码工作区不会被一键更新覆盖。完整迁移和后续更新说明见 [v0.1.0 发布说明](RELEASE_NOTES.md)。
+MyTerminal 会在 TUI 启动时检查 GitHub 最新发行版。设置页会显示当前版本和最新版本；有新版本时按 `U` 可一键安装。更新器下载当前平台的预编译二进制与 SHA-256，安装到新的版本目录，再原子切换 `current` 指针；失败时保留原版本并自动回滚。Git 源码工作区不会被一键更新覆盖。完整迁移和后续更新说明见 [v0.1.1 发布说明](RELEASE_NOTES.md)。
 
 工作区状态迁移采用可重复执行的增量合并：现有目标状态、旧全局状态、`state.migrated` 和工作区 `.myterminal` 会按稳定 ID 合并，session 历史文件会去重并完整保留。
 ## 共享端口与工作区路由

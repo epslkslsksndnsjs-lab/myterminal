@@ -1,6 +1,6 @@
-# MyTerminal v0.1.0
+# MyTerminal v0.1.1
 
-MyTerminal v0.1.0 focuses on long-task continuity, optional non-blocking execution, bounded history performance, Apps capability completeness, and Windows process reliability. Existing settings, credentials, workspaces, sessions, messages, extensions, and history are preserved.
+MyTerminal v0.1.1 focuses on long-task continuity, optional non-blocking execution, bounded history performance, Apps capability completeness, and Windows process reliability. Existing settings, credentials, workspaces, sessions, messages, extensions, and history are preserved.
 
 > [!IMPORTANT]
 > **Known Windows limitation:** the supported PowerShell TUI path is keyboard-only compatibility mode. Mouse capture is disabled by default because it can become unresponsive or freeze under Windows PowerShell and PowerShell 7. All pages, forms, and exact session selectors remain keyboard-operable with arrows, `PgUp/PgDn`, `Home/End`, `Enter`, and page shortcuts. `MYTERMINAL_WINDOWS_TUI_MODE=mouse` is experimental and is not recommended for critical work.
@@ -54,19 +54,19 @@ Each archive has a matching SHA-256 file. The x64 assets use Bun baseline target
 ### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-macos.sh)"
 ```
 
 ### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-linux.sh)"
 ```
 
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-windows.ps1 | iex"
 ```
 
 The installers preserve configuration and workspace state, install into a versioned release directory, verify the downloaded asset and installed executable, and atomically update the `current` pointer. Running processes continue using their loaded version until restarted; in a shared-port group, restart members one at a time and the current leader last.
@@ -77,7 +77,7 @@ The release candidate passed TypeScript checking, 88 automated tests, documentat
 
 ## 中文说明
 
-MyTerminal v0.1.0 重点完善长任务持续执行、可选非阻塞任务、有界历史性能、Apps 完整能力以及 Windows 进程可靠性。升级会保留已有配置、凭据、工作区、session、消息、扩展和历史。
+MyTerminal v0.1.1 重点完善长任务持续执行、可选非阻塞任务、有界历史性能、Apps 完整能力以及 Windows 进程可靠性。升级会保留已有配置、凭据、工作区、session、消息、扩展和历史。
 
 > [!IMPORTANT]
 > **Windows 已知限制：** PowerShell TUI 正式支持的是纯键盘兼容模式。鼠标捕获默认关闭，因为它在 Windows PowerShell 与 PowerShell 7 中可能无响应或导致界面卡死。所有页面、表单和精确 session 选择都可使用方向键、`PgUp/PgDn`、`Home/End`、`Enter` 与页面快捷键完成。`MYTERMINAL_WINDOWS_TUI_MODE=mouse` 仅供实验，不建议用于关键任务。

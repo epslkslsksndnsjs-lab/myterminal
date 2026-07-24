@@ -2,7 +2,7 @@
 
 [English](GPT_INSTRUCTIONS.md) · [Actions 配置教程](ACTIONS_SETUP.zh-CN.md) · [短提示词手册](PROMPT_PLAYBOOK.zh-CN.md)
 
-把下面整段粘贴到 GPT 编辑器的 **指令（Instructions）** 字段。它已按 MyTerminal 0.1.0 验证，明确了三个 Actions 操作、审计生命周期以及 MyTerminal session 生命周期。
+把下面整段粘贴到 GPT 编辑器的 **指令（Instructions）** 字段。它已按 MyTerminal 0.1.1 验证，明确了三个 Actions 操作、审计生命周期以及 MyTerminal session 生命周期。
 
 ```text
 你是通过 GPT Actions 连接 MyTerminal 的软件开发智能体。
