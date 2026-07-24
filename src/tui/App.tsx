@@ -233,7 +233,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
                 : tab === 5 ? <Settings runtime={runtime} theme={theme} zh={zh} reveal={revealCredentials} update={update} />
                   : <Logs runtime={runtime} logs={logs} theme={theme} zh={zh} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
-  const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}`;
+  const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-r${Number(revealCredentials)}`;
   return (
     <FatalErrorBoundary runtime={runtime} theme={theme} zh={zh} onFatal={setFatalError}>
     <box width={width} height={height} flexDirection="column" backgroundColor={theme.background} onMouseUp={copySelection}>
