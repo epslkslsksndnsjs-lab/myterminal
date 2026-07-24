@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="${MYTERMINAL_VERSION:-v0.1.0}"
+version="${MYTERMINAL_VERSION:-v0.1.1}"
 repository="epslkslsksndnsjs-lab/myterminal"
 install_dir="${MYTERMINAL_HOME:-$HOME/MyTerminal}"
 launcher_dir="${MYTERMINAL_BIN_DIR:-$HOME/.local/bin}"
