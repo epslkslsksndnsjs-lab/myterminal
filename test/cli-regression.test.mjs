@@ -39,16 +39,16 @@ test('stateless CLI commands bypass invalid settings, missing workspace, and act
     const before = fs.readFileSync(path.join(configDir, 'config.json'), 'utf8');
     const version = run(['--version'], configDir);
     assert.equal(version.status, 0, version.stderr);
-    assert.equal(version.stdout.trim(), '0.1.0');
+    assert.equal(version.stdout.trim(), '0.1.1');
 
     const shortVersion = run(['-v'], configDir);
     assert.equal(shortVersion.status, 0, shortVersion.stderr);
-    assert.equal(shortVersion.stdout.trim(), '0.1.0');
+    assert.equal(shortVersion.stdout.trim(), '0.1.1');
 
     for (const flag of ['--help', '-h']) {
       const help = run([flag], configDir);
       assert.equal(help.status, 0, help.stderr);
-      assert.match(help.stdout, /MyTerminal v0\.1\.0/);
+      assert.match(help.stdout, /MyTerminal v0\.1\.1/);
       assert.match(help.stdout, /Usage:/);
       assert.doesNotMatch(help.stderr, /Workspace|lock|Invalid MyTerminal settings/);
     }
