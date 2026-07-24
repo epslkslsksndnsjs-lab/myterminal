@@ -25,17 +25,19 @@ Usage:
   bun run dist/cli.js --headless Start after TUI setup, without terminal controls
 
 The TUI manages workspace, network, limits, and connection credentials.
-Optional environment overrides for automation:
+Environment variables for automation and CI:
   MYTERMINAL_WORKSPACE_DIR, MYTERMINAL_HOST, MYTERMINAL_PORT, MYTERMINAL_PUBLIC_BASE_URL,
   MYTERMINAL_ACTIONS_TOKEN, MYTERMINAL_CONNECTOR_KEY, MYTERMINAL_MAX_OUTPUT_CHARS,
-  MYTERMINAL_COMMAND_TIMEOUT_SEC
+  MYTERMINAL_COMMAND_TIMEOUT_SEC, MYTERMINAL_ACTIONS_CONTINUATION_MODE,
+  MYTERMINAL_NON_BLOCKING_TASKS
 `);
 }
 
 const RUNTIME_OVERRIDE_KEYS = [
   'MYTERMINAL_WORKSPACE_DIR', 'MYTERMINAL_HOST', 'MYTERMINAL_PORT', 'MYTERMINAL_PUBLIC_BASE_URL',
   'MYTERMINAL_ACTIONS_TOKEN', 'MYTERMINAL_CONNECTOR_KEY', 'MYTERMINAL_MAX_OUTPUT_CHARS',
-  'MYTERMINAL_COMMAND_TIMEOUT_SEC',
+  'MYTERMINAL_COMMAND_TIMEOUT_SEC', 'MYTERMINAL_ACTIONS_CONTINUATION_MODE',
+  'MYTERMINAL_NON_BLOCKING_TASKS',
 ] as const;
 
 function effectiveEnvironment(headless: boolean): NodeJS.ProcessEnv {
@@ -58,7 +60,6 @@ async function ensureSettings(headless: boolean, env: NodeJS.ProcessEnv): Promis
   const configured = await runSetupTui(defaults, catalog.snapshot());
   saveMyTerminalSettings(configured, env);
 }
-
 
 class StartupCancelled extends Error {
   constructor() { super('Startup cancelled.'); this.name = 'StartupCancelled'; }
