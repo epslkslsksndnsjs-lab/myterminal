@@ -127,6 +127,13 @@ async function safeFatalShutdown(error: unknown): Promise<void> {
   return fatalShutdown;
 }
 
+function gracefulSignalShutdown(signal: string): void {
+  if (!activeRuntime) { process.exit(0); return; }
+  activeRuntime.log(`${signal} received, shutting down gracefully`, 'info');
+  const timeout = setTimeout(() => process.exit(0), 3000).unref();
+  activeRuntime.close().finally(() => { clearTimeout(timeout); process.exit(0); });
+}
+
 async function main(): Promise<void> {
   if (process.argv.includes('--verify-installation')) {
     console.log(JSON.stringify(verifyRuntimeResources()));
@@ -146,6 +153,7 @@ async function main(): Promise<void> {
   if (!headless && !(await chooseWorkspace(env))) return;
   let runtime = await startRuntime(env, !headless);
   activeRuntime = runtime;
+  process.once('SIGHUP', () => gracefulSignalShutdown('SIGHUP'));
   if (!headless) {
     const { MyTerminalTui } = await import('./tui/index.js');
     const reconfigure: RuntimeReconfigure = async (next: MyTerminalSettings) => {
@@ -183,6 +191,7 @@ async function main(): Promise<void> {
   const stop = async () => { await runtime.close(); activeRuntime = undefined; process.exit(0); };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  process.once('SIGHUP', stop);
 }
 
 function fatalErrorReport(error: unknown): string {
