@@ -17,19 +17,19 @@ MyTerminal 0.1.0 通过可审计、可继承的工作 session 层提供这座桥
 #### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-macos.sh)"
 ```
 
 #### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-linux.sh)"
 ```
 
 #### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
 ```
 
 > [!IMPORTANT]

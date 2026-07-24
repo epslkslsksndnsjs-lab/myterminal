@@ -26,19 +26,19 @@ flowchart LR
 ### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-macos.sh)"
 ```
 
 ### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-linux.sh)"
 ```
 
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
 ```
 
 安装脚本会下载与当前平台匹配的独立可执行文件和 SHA-256 文件，完成校验后写入版本化 release 目录，把 `myterminal` 注册到当前用户的 PATH，然后打开 TUI。它不会安装 Git、Node.js、Bun 或包依赖。如果组织不允许直接运行远端脚本，请先打开仓库中的脚本检查内容。第二次及以后只需重新打开终端并输入：

