@@ -67,9 +67,11 @@ function mergeHistory(targetDir: string, sources: string[]): void {
     }
     const unique = new Map<string, string>();
     for (const line of lines) unique.set(stableKey(line), line);
-    const sorted = [...unique.values()].sort((a, b) => {
-      try { return String(JSON.parse(a).at || '').localeCompare(String(JSON.parse(b).at || '')); } catch { return a.localeCompare(b); }
+    const parsed = [...unique.values()].map((line) => {
+      try { return { line, at: String(JSON.parse(line).at || '') }; } catch { return { line, at: line }; }
     });
+    parsed.sort((a, b) => a.at.localeCompare(b.at));
+    const sorted = parsed.map((entry) => entry.line);
     writeFileSync(path.join(targetHistory, name), sorted.length ? `${sorted.join('\n')}\n` : '', { mode: 0o600 });
   }
 }
