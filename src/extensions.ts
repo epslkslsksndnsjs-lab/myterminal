@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, type MyTerminalStore } from './store.js';
 import { renderTemplate, resolveWorkspacePath, validateJsonSchema } from './security.js';
@@ -13,6 +15,15 @@ const FAST_RETURN_MS = 200;
 const BACKGROUND_TASK_RETENTION_MS = 30 * 60_000;
 const BACKGROUND_TASK_MAX_COUNT = 100;
 const BACKGROUND_TASK_MAX_BYTES = 24 * 1024 * 1024;
+
+function loadAgentMd(settingsPath: string): string | undefined {
+  try {
+    const file = path.join(path.dirname(settingsPath), 'AGENT.md');
+    if (!existsSync(file)) return undefined;
+    const content = readFileSync(file, 'utf8').trim();
+    return content || undefined;
+  } catch { return undefined; }
+}
 
 type BackgroundTask = {
   id: string;
@@ -208,6 +219,7 @@ export class ExtensionService {
       const authenticated = this.authenticate(input, context, true);
       if (!authenticated) {
         return { ok: true, data: {
+          agentMd: loadAgentMd(this.config.settingsPath),
           identityRequired: true,
           instructions: {
             root: 'First call extension_discover with the identity key omitted. Never generate identity:null or identity:{}. If it lists multiple workspaces, ask the user to choose one and pass its workspaceId to session_register(mode=root), again with the identity key omitted. Never choose a workspace silently. Save the returned sessionId + sessionToken.',
@@ -239,6 +251,7 @@ export class ExtensionService {
       const matches = catalog.filter((tool) => !query || `${tool.name} ${tool.title} ${tool.description}`.toLowerCase().includes(query));
       const tools = query && matches.length === 0 ? catalog : matches;
       const response: ToolResponse = { ok: true, data: {
+        agentMd: loadAgentMd(this.config.settingsPath),
         tools, total: tools.length,
         instructions: {
           identity: 'Every concrete call and registry change belongs to the authenticated MyTerminal session. Never use openai/session as MyTerminal identity.',
