@@ -71,7 +71,6 @@ export function assessRuntimeEnvironment(settings: MyTerminalSettings, env: Node
   return { status: 'valid' };
 }
 
-
 export function isValidPublicBaseUrl(value: string): boolean {
   if (!value) return true;
   try {
@@ -101,7 +100,6 @@ export function createDefaultSettings(workspaceDir = defaultWorkspaceForCwd()): 
   };
 }
 
-
 export function validateSettings(settings: MyTerminalSettings): string[] {
   const errors: string[] = [];
   if (typeof settings.workspaceDir !== 'string' || !settings.workspaceDir.trim()) errors.push('Workspace cannot be empty.');
@@ -118,7 +116,6 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
   if (typeof settings.nonBlockingTasksEnabled !== 'boolean') errors.push('Non-blocking tasks enabled must be boolean.');
   return errors;
 }
-
 
 export async function validateSettingsFeasibility(settings: MyTerminalSettings, current?: { host: string; port: number }): Promise<string[]> {
   const errors = validateSettings(settings);
@@ -225,7 +222,6 @@ export function settingsWithEnvironment(settings: MyTerminalSettings, env: NodeJ
       : /^(1|true|yes|on)$/i.test(env.MYTERMINAL_NON_BLOCKING_TASKS),
   };
 }
-
 
 function archivedLegacyStateDirs(configDir: string): string[] {
   const root = path.join(configDir, 'install-backups');
