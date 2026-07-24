@@ -81,7 +81,15 @@ function AuditRow({ entry, theme, zh }: { entry: DisplayEntry; theme: Theme; zh:
 
 const PAGE_SIZE = 100;
 
+function formatContext(chars: number): string {
+  if (!chars) return 'N/A';
+  if (chars < 1000) return String(chars);
+  return `${(chars / 1000).toFixed(1)}K`;
+}
+
 export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { runtime: MyTerminalRuntime; logs: RuntimeLog[]; theme: Theme; zh: boolean; showAudit: boolean; page: number; anchorAt?: string }) {
+  const activeSession = runtime.store.listSessions().find((s) => s.presence === 'claimed' && !['completed', 'cancelled'].includes(s.phase));
+  const cumulativeContext = runtime.store.cumulativeContextChars(activeSession?.id);
   const anchoredLogs = anchorAt ? logs.filter((entry) => entry.at <= anchorAt) : logs;
   const localEnd = Math.max(0, anchoredLogs.length - page * PAGE_SIZE);
   const localStart = Math.max(0, localEnd - PAGE_SIZE);
@@ -145,6 +153,7 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
         <Heading theme={theme}>{zh ? '本机工作区日志' : 'Local workspace logs'}</Heading>
         <text fg={showAudit ? theme.good : theme.muted}>{showAudit ? (zh ? '调用审计：开启' : 'audit: ON') : (zh ? '调用审计：关闭' : 'audit: OFF')}</text>
         <text fg={theme.muted}>{zh ? `第 ${page + 1} 页 · PgUp/PgDn 翻页` : `Page ${page + 1} · PgUp/PgDn`}</text>
+        <text fg={theme.warn}>{zh ? `累积模型上下文: ${formatContext(cumulativeContext)}` : `Cumulative ctx: ${formatContext(cumulativeContext)}`}</text>
       </box>
       <box flexDirection="row" gap={1} marginBottom={1}>
         <text fg={theme.muted}>{zh ? '时间' : 'TIME'}</text>

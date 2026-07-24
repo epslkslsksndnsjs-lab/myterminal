@@ -607,6 +607,11 @@ export class MyTerminalStore {
     return structuredClone(this.auditCache.slice(-Math.max(1, Math.min(5000, limit))));
   }
 
+  cumulativeContextChars(sessionId?: string): number {
+    const facts = this.auditFacts(5000).filter((f) => !sessionId || f.sessionId === sessionId);
+    return facts.reduce((sum, f) => sum + JSON.stringify(f.args || {}).length + JSON.stringify(f.result || {}).length, 0);
+  }
+
   auditEvent(sessionId: string, event: ToolAuditEvent): ToolAuditEvent {
     const session = this.requireSession(sessionId);
     const sensitiveValues = this.collectSensitiveValues(event.args);

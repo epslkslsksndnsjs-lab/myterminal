@@ -7,6 +7,12 @@ import { Heading, Line } from './shared.js';
 export function Overview({ runtime, state, theme, zh, reveal }: { runtime: MyTerminalRuntime; state: StoredState; theme: Theme; zh: boolean; reveal: boolean }) {
   return (
     <box flexDirection="column" width="100%" padding={1} gap={0}>
+      <text fg={theme.warn}>     ╭─────╮</text>
+      <text fg={theme.warn}>    ╭╯ ◔ ◔ ╰╮</text>
+      <text fg={theme.warn}>    ╰╮  ◡  ╭╯</text>
+      <text fg={theme.warn}>     ╰─────╯</text>
+      <text fg={theme.text}>   MyTerminal</text>
+      <text> </text>
       <Heading theme={theme}>{zh ? '服务' : 'Server'}</Heading>
       <Line color={theme.text}>{`${zh ? '监听' : 'Bind'}: ${runtime.config.host}:${runtime.port}`}</Line>
       <Line color={theme.text}>{`${zh ? '工作区' : 'Workspace'}: ${runtime.config.workspaceDir}`}</Line>
