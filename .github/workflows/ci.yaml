@@ -60,7 +60,7 @@ jobs:
             MYTERMINAL_INSTALL_ONLY=1 \
             bash "$installer"
           bin="$root/bin/myterminal"
-          version=$("$bin" --version)
+          version=$("$bin" --version | tr -d '\n\r ')
           "$bin" --help | grep -Fq "v$version"
           "$bin" --verify-installation
           mkdir -p "$root/incomplete/releases"
