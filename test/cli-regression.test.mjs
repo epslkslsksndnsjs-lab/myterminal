@@ -48,7 +48,7 @@ test('stateless CLI commands bypass invalid settings, missing workspace, and act
     for (const flag of ['--help', '-h']) {
       const help = run([flag], configDir);
       assert.equal(help.status, 0, help.stderr);
-      assert.match(help.stdout, /MyTerminal v1\.1\.2/);
+      assert.match(help.stdout, /MyTerminal v0\.1\.0/);
       assert.match(help.stdout, /Usage:/);
       assert.doesNotMatch(help.stderr, /Workspace|lock|Invalid MyTerminal settings/);
     }
