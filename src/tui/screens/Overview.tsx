@@ -7,18 +7,20 @@ import { Heading, Line } from './shared.js';
 export function Overview({ runtime, state, theme, zh, reveal }: { runtime: MyTerminalRuntime; state: StoredState; theme: Theme; zh: boolean; reveal: boolean }) {
   return (
     <box flexDirection="column" width="100%" padding={1} gap={0}>
-      <text fg={theme.warn}>     ╭─────╮</text>
-      <text fg={theme.warn}>    ╭╯ ◔ ◔ ╰╮</text>
-      <text fg={theme.warn}>    ╰╮  ◡  ╭╯</text>
-      <text fg={theme.warn}>     ╰─────╯</text>
-      <text fg={theme.text}>   MyTerminal</text>
+      <box flexDirection="column" alignItems="center" width="100%">
+        <text fg={theme.warn}>╭─────╮</text>
+        <text fg={theme.warn}>╭╯ ◔ ◔ ╰╮</text>
+        <text fg={theme.warn}>╰╮  ◡  ╭╯</text>
+        <text fg={theme.warn}>╰─────╯</text>
+        <text fg={theme.text}>MyTerminal</text>
+      </box>
       <text> </text>
       <Heading theme={theme}>{zh ? '服务' : 'Server'}</Heading>
       <Line color={theme.text}>{`${zh ? '监听' : 'Bind'}: ${runtime.config.host}:${runtime.port}`}</Line>
       <Line color={theme.text}>{`${zh ? '工作区' : 'Workspace'}: ${runtime.config.workspaceDir}`}</Line>
-      <Line color={theme.text}>{`Apps MCP URL: ${hiddenAppsUrl(runtime, reveal)}`}</Line>
+      <text fg={theme.text} wrapMode="none">{`Apps MCP URL: ${hiddenAppsUrl(runtime, reveal)}`}</text>
       <Line color={theme.text}>{`Actions OpenAPI: ${runtime.openApiUrl}`}</Line>
-      <Line color={theme.text}>{`Actions token: ${visibleActionsToken(runtime, reveal)}`}</Line>
+      <text fg={theme.text} wrapMode="none">{`Actions token: ${visibleActionsToken(runtime, reveal)}`}</text>
       <text> </text>
       <Heading theme={theme}>{zh ? '实时状态' : 'Live state'}</Heading>
       <Line color={theme.text}>{`${zh ? '逻辑会话' : 'Logical sessions'}: ${logicalSessionGroups(state.sessions).length}`}</Line>

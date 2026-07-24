@@ -107,6 +107,7 @@ export function FormDialog({ questions, preamble, theme, width, height, zh, mous
         { key: 'down', cmd: () => { moveOption(1); return true; } },
         ...(question.multiSelect ? [{ key: 'space', cmd: () => { toggleCurrent(); return true; } }] : []),
         { key: 'return', cmd: () => { void submit(optionAnswer(question, optionIndexRef.current, selectedOptionsRef.current)); return true; } },
+        { key: 'enter', cmd: () => { void submit(optionAnswer(question, optionIndexRef.current, selectedOptionsRef.current)); return true; } },
       ]),
     ],
   }), [onCancel, question, answers, index, options]);

@@ -28,8 +28,8 @@ export function Settings({ runtime, theme, zh, reveal, update }: { runtime: MyTe
       <Line color={update.restartRequired || update.updateAvailable ? theme.warn : update.error ? theme.bad : theme.good}>{update.checking ? (zh ? '更新：检查中…' : 'Update: checking…') : update.restartRequired ? `${zh ? '更新已安装，等待逐个重启' : 'Update installed; restart members one by one'}${update.runningClusterVersions?.length ? ` · ${zh ? '运行版本' : 'running'}: ${update.runningClusterVersions.join(', ')}` : ''}` : update.updateAvailable ? `${zh ? '可更新' : 'Update available'}: ${update.currentVersion} → ${update.latestVersion} · U ${zh ? '一键更新' : 'install'}` : update.error ? `${zh ? '更新检查失败' : 'Update check failed'}: ${update.error}` : `${zh ? '版本' : 'Version'}: ${update.currentVersion} · ${zh ? '已是最新' : 'up to date'}`}</Line>
       <text> </text>
       <Heading theme={theme}>{zh ? '连接凭据' : 'Connection credentials'}</Heading>
-      <Line color={theme.text}>{`Apps connector: ${reveal ? config.connectorKey : '••••••••'}`}</Line>
-      <Line color={theme.text}>{`Actions token: ${reveal ? config.actionsToken : maskCredential(config.actionsToken)}`}</Line>
+      <text fg={theme.text} wrapMode="none">{`Apps connector: ${reveal ? config.connectorKey : '••••••••'}`}</text>
+      <text fg={theme.text} wrapMode="none">{`Actions token: ${reveal ? config.actionsToken : maskCredential(config.actionsToken)}`}</text>
       <Line color={theme.warn}>{zh ? '轮换凭据会使现有 Apps 与 Actions 连接失效。' : 'Rotating credentials disconnects existing Apps and Actions clients.'}</Line>
     </box>
   );
