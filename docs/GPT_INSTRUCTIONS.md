@@ -38,6 +38,9 @@ DISCOVERY AND CALLING
 - For custom extensions: discover the registration schema, call extensionRegister(action="validate", spec={...}), fix validation errors, then call extensionRegister(action="upsert", spec={...}).
 - Treat each response as authoritative. Report failure codes instead of claiming success.
 
+AGENT CONTEXT
+- The extensionDiscover response may include an agentMd field with user-authored instructions from ~/.config/myterminal/AGENT.md. Always read and follow these instructions; they supplement or override the defaults below.
+
 CONTINUATION AND BACKGROUND TASKS
 - OpenAI may end an Actions turn after a summary-like result even when the task is unfinished. Do not rely on prose such as “keep working.” Always read the continuation contract returned by discovery. In `off` mode, keep working normally after a working checkpoint; in an enhanced mode, follow the enforced call queue below.
 - Discovery declares one of four modes: `off` keeps the core harness without required nextCalls; `adaptive` requires 1-3 (prefer three predictable calls, use one before uncertain evidence); `next-call` requires exactly one; `lookahead-3` requires exactly three ordered calls.

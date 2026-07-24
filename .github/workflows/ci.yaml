@@ -59,7 +59,7 @@ jobs:
             MYTERMINAL_CHECKSUM_URL="file://$root/$asset.sha256" \
             MYTERMINAL_INSTALL_ONLY=1 \
             bash "$installer"
-          "$root/bin/myterminal" --help | grep -Fq 'v0.1.0'
+          "$root/bin/myterminal" --help | grep -Fq 'v0.1.1'
           "$root/bin/myterminal" --verify-installation
           mkdir -p "$root/incomplete/releases"
           HOME="$root/home" SHELL=/bin/bash \
@@ -101,7 +101,7 @@ jobs:
           $env:MYTERMINAL_CHECKSUM_URL = ([Uri](Resolve-Path "$archive.sha256").Path).AbsoluteUri
           $env:MYTERMINAL_INSTALL_ONLY = '1'
           & scripts/install-windows.ps1
-          & (Join-Path $env:MYTERMINAL_BIN_DIR 'myterminal.cmd') --help | Select-String 'v0.1.0'
+          & (Join-Path $env:MYTERMINAL_BIN_DIR 'myterminal.cmd') --help | Select-String 'v0.1.1'
           & (Join-Path $env:MYTERMINAL_BIN_DIR 'myterminal.cmd') --verify-installation
           $env:MYTERMINAL_HOME = Join-Path $root 'incomplete'
           New-Item -ItemType Directory -Force -Path (Join-Path $env:MYTERMINAL_HOME 'releases') | Out-Null
