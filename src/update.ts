@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 import { CURRENT_VERSION } from './version.js';
 import {
   executeUpdateTransaction,
-  readUpdateHistory,
   type UpdateAuditRecord,
   type UpdateRestoreResult,
 } from './update-transaction.js';

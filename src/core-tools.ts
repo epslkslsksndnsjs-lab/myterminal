@@ -212,7 +212,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'list_dir', title: 'List directory', description: 'List one directory inside the authorized workspace.',
     inputSchema: { type: 'object', properties: { path: { type: 'string', default: '.' } }, additionalProperties: false }, annotations: readOnly,
-    invoke: async (input, context) => {
+    invoke: async (input) => {
       const directory = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.');
       const entries = await readdir(directory, { withFileTypes: true });
       return { path: relative(config, directory), entries: entries.filter((entry) => !IGNORED_DIRECTORIES.has(entry.name)).slice(0, 500).map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })), truncated: entries.length > 500 };

@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import path from 'node:path';
 import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
 import { logicalSessionGroups } from '../tui-model.js';
 import type { MyTerminalRuntime, RuntimeLog } from '../server.js';
