@@ -529,6 +529,27 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false }, annotations: readOnly,
     invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
   });
+  add({
+    name: 'skill', title: 'Load skill', description: 'Read a reusable agent skill from the project skill directory. List available skills when called without arguments; load one skill at a time by passing its name (without the .md extension).',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 80 } }, additionalProperties: false }, annotations: readOnly,
+    invoke: async (input) => {
+      const skillsDir = path.join(config.workspaceDir, '.myterminal', 'skills');
+      if (!input.name) {
+        let entries: Array<{ name: string; size: number }> = [];
+        try { entries = (await readdir(skillsDir, { withFileTypes: true })).filter((e) => e.isFile() && e.name.endsWith('.md')).map((e) => ({ name: e.name.replace(/\.md$/, ''), size: 0 })); }
+        catch { /* dir doesn't exist yet */ }
+        for (const entry of entries) { try { entry.size = (await stat(path.join(skillsDir, `${entry.name}.md`))).size; } catch { entry.size = -1; } }
+        return { skills: entries, directory: skillsDir, hint: 'Call skill with a name to load one.' };
+      }
+      const name = asString(input.name, 'name').replace(/\.md$/i, '');
+      if (!/^[a-zA-Z0-9_.-]+$/.test(name)) throw new Error('Skill name must contain only alphanumeric characters, hyphens, underscores, and dots.');
+      const file = path.join(skillsDir, `${name}.md`);
+      let content: string;
+      try { content = await readFile(file, 'utf8'); } catch { throw new Error(`Skill "${name}" not found. Check available skills with skill() first.`); }
+      if (content.length > 50_000) content = `${content.slice(0, 50_000)}\n\n… content truncated …`;
+      return { name, content, bytes: Buffer.byteLength(content), path: file };
+    },
+  });
   return tools;
 }
 

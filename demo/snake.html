@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>贪吃蛇</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;display:flex;justify-content:center;align-items:center;height:100vh;font-family:monospace}
+#wrap{text-align:center}
+h1{color:#e94560;margin-bottom:8px;font-size:24px}
+#score{color:#0f3460;background:#e94560;display:inline-block;padding:4px 16px;border-radius:8px;margin-bottom:8px;font-size:18px;font-weight:bold}
+canvas{border:3px solid #e94560;border-radius:8px;background:#16213e}
+#msg{color:#e94560;margin-top:10px;height:20px;font-size:14px}
+</style>
+</head>
+<body>
+<div id="wrap">
+<h1>🐍 贪吃蛇</h1>
+<div id="score">得分: 0</div>
+<canvas id="c" width="400" height="400"></canvas>
+<div id="msg">方向键控制 · 空格暂停</div>
+</div>
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+const G=20,W=20,H=20;
+let snake=[{x:10,y:10}],dir={x:1,y:0},food={x:5,y:5},score=0,paused=false,gameOver=false,speed=100,timer;
+
+function randFood(){let f;do{f={x:Math.floor(Math.random()*W),y:Math.floor(Math.random()*H)}}while(snake.some(s=>s.x===f.x&&s.y===f.y));return f}
+
+function draw(){
+ctx.fillStyle='#16213e';ctx.fillRect(0,0,400,400);
+ctx.fillStyle='#e94560';ctx.fillRect(food.x*G-1,food.y*G-1,G-2,G-2);
+snake.forEach((s,i)=>{ctx.fillStyle=i===0?'#0f3460':'#533483';ctx.fillRect(s.x*G,s.y*G,G-1,G-1)})
+if(gameOver){ctx.fillStyle='#fff';ctx.font='28px monospace';ctx.textAlign='center';ctx.fillText('游戏结束',200,200);ctx.font='14px monospace';ctx.fillText('按R重新开始',200,230)}
+}
+
+function step(){
+if(paused||gameOver)return;
+const h={x:snake[0].x+dir.x,y:snake[0].y+dir.y};
+if(h.x<0||h.x>=W||h.y<0||h.y>=H||snake.some(s=>s.x===h.x&&s.y===h.y)){gameOver=true;clearInterval(timer);draw();document.getElementById('msg').textContent='游戏结束 · 按R重新开始';return}
+snake.unshift(h);
+if(h.x===food.x&&h.y===food.y){score++;document.getElementById('score').textContent='得分: '+score;food=randFood();if(speed>40)speed-=2;clearInterval(timer);timer=setInterval(step,speed)}else{snake.pop()}
+draw()
+}
+
+document.addEventListener('keydown',e=>{
+if(e.key==='r'||e.key==='R'){snake=[{x:10,y:10}];dir={x:1,y:0};score=0;speed=100;gameOver=false;paused=false;food=randFood();document.getElementById('score').textContent='得分: 0';document.getElementById('msg').textContent='方向键控制 · 空格暂停';if(timer)clearInterval(timer);timer=setInterval(step,speed);draw();return}
+if(gameOver)return;
+const m={ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0}};
+if(m[e.key]&&!(m[e.key].x===-dir.x&&m[e.key].y===-dir.y))dir=m[e.key];
+if(e.key===' '){paused=!paused;document.getElementById('msg').textContent=paused?'已暂停 · 空格继续':'方向键控制 · 空格暂停'}
+})
+
+food=randFood();timer=setInterval(step,speed);draw();
+</script>
+</body>
+</html>
