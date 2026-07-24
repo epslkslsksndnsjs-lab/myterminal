@@ -41,9 +41,9 @@ test('bilingual documentation links resolve and private archive data is not publ
   }
 });
 
-test('stable release metadata and binary installers stay pinned to v0.1.0', () => {
+test('stable release metadata and binary installers stay pinned to v0.1.1', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.1.0');
+  assert.equal(pkg.version, '0.1.1');
   // assert.equal(pkg.license, 'Apache-2.0');
   for (const file of ['README.md', 'README.zh-CN.md', 'RELEASE_NOTES.md', 'scripts/install-macos.sh', 'scripts/install-linux.sh', 'scripts/install-windows.ps1']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');

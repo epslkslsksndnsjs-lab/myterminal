@@ -1,6 +1,6 @@
 {
   "name": "myterminal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Local-first ChatGPT development bridge with auditable multi-session collaboration, Apps and Actions adapters, extensions, and a full OpenTUI interface.",
   "type": "module",
