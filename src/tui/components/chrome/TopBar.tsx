@@ -4,8 +4,8 @@ import type { Theme } from '../../state.js';
 
 /**
  * TopBar — 顶栏（ADR-0004 决策 2 底部导航相关的顶部 chrome）。
- * 左：MyTerminal（accent 加粗）+ 状态点 + 拓扑摘要；右：版本号。
- * pending > 0 时下方显示 bad 背景警告条。
+ * 左：MyTerminal（accent 加粗）+ 状态点 + 拓扑摘要 + 版本号；
+ * 右：pending > 0 时显示 bad 背景警告条。
  */
 export function TopBar({ runtime, theme, pending, zh }: {
   runtime: MyTerminalRuntime;
@@ -33,16 +33,17 @@ export function TopBar({ runtime, theme, pending, zh }: {
 
   return (
     <box flexDirection="column" flexShrink={0} backgroundColor={theme.background}>
-      <box flexDirection="row" gap={2} paddingLeft={1} paddingRight={1}>
+      <box flexDirection="row" gap={2} paddingLeft={1} paddingRight={1} alignItems="center">
         <text fg={theme.accent}><b>MyTerminal</b></text>
         <text fg={statusColor}>{statusDot} {zh ? '运行中' : 'running'} · {topoLabel}</text>
         <text fg={theme.muted}>v{CURRENT_VERSION}</text>
+        <box flexGrow={1} />
+        {pending > 0 ? (
+          <box backgroundColor={theme.bad} paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text} wrapMode="none"><b>! {pending} {zh ? '个 session 等待接管' : 'session(s) need a controller'}</b></text>
+          </box>
+        ) : null}
       </box>
-      {pending > 0 ? (
-        <box backgroundColor={theme.bad} paddingLeft={1} paddingRight={1}>
-          <text fg={theme.text} wrapMode="word"><b>! {pending} {zh ? '个 session 等待接管' : 'session(s) need a controller'}</b></text>
-        </box>
-      ) : null}
     </box>
   );
 }

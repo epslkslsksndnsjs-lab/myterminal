@@ -4,7 +4,7 @@ import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
 import { logicalSessionGroups } from '../tui-model.js';
 import type { MyTerminalRuntime, RuntimeLog } from '../server.js';
 import type { CustomExtensionSpec, MyTerminalSession, MyTerminalSettings, SessionPhase, StoredState, TaskPackage } from '../types.js';
-import { isDirectory, isValidPublicBaseUrl, maskCredential, readMyTerminalSettings, rotateMyTerminalCredentials, validateSettingsFeasibility } from '../config.js';
+import { isDirectory, isValidPublicBaseUrl, readMyTerminalSettings, rotateMyTerminalCredentials, validateSettingsFeasibility } from '../config.js';
 import { describePortOwner, findAvailablePort, terminatePortOwner } from '../instances.js';
 import { isAddWorkspaceSelection, selectedWorkspace } from '../workspace-selection.js';
 import { buildWorkspaceSelectorModel } from './workspace-selector.js';
@@ -65,15 +65,17 @@ function bestEffortSpawn(command: string, args: string[]): void {
 }
 
 function playAttentionSound(): void {
-  if (process.platform === 'darwin') bestEffortSpawn('afplay', ['/System/Library/Sounds/Ping.aiff']);
-  else if (process.platform === 'win32') bestEffortSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[console]::beep(880,180)']);
-  else bestEffortSpawn('canberra-gtk-play', ['--id=dialog-warning']);
+  // 暂时关闭提醒声音 —— 恢复时取消注释下方三行
+  // if (process.platform === 'darwin') bestEffortSpawn('afplay', ['/System/Library/Sounds/Ping.aiff']);
+  // else if (process.platform === 'win32') bestEffortSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[console]::beep(880,180)']);
+  // else bestEffortSpawn('canberra-gtk-play', ['--id=dialog-warning']);
 }
 
 function notifySystem(title: string, message: string): void {
-  if (process.platform === 'darwin') bestEffortSpawn('osascript', ['-e', `display notification "${message.replace(/["\\]/g, '')}" with title "${title.replace(/["\\]/g, '')}"`]);
-  else if (process.platform === 'linux') bestEffortSpawn('notify-send', [title, message]);
-  else if (process.platform === 'win32') bestEffortSpawn('msg.exe', ['*', `${title}: ${message}`]);
+  // 暂时关闭系统通知 —— 恢复时取消注释下方三行
+  // if (process.platform === 'darwin') bestEffortSpawn('osascript', ['-e', `display notification "${message.replace(/["\\]/g, '')}" with title "${title.replace(/["\\]/g, '')}"`]);
+  // else if (process.platform === 'linux') bestEffortSpawn('notify-send', [title, message]);
+  // else if (process.platform === 'win32') bestEffortSpawn('msg.exe', ['*', `${title}: ${message}`]);
 }
 
 export type TuiSnapshot = {
@@ -483,8 +485,4 @@ export class TuiController {
 
 export function hiddenAppsUrl(runtime: MyTerminalRuntime, reveal: boolean): string {
   return reveal ? runtime.appsUrl : runtime.appsUrl.replace(runtime.config.connectorKey, '••••••••');
-}
-
-export function visibleActionsToken(runtime: MyTerminalRuntime, reveal: boolean): string {
-  return reveal ? runtime.config.actionsToken : maskCredential(runtime.config.actionsToken);
 }

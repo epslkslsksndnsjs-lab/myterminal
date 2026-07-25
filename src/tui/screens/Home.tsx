@@ -37,7 +37,12 @@ export function Home({ runtime, state, snapshot, theme, zh, copy }: {
   const sessions = state.sessions;
   const active = sessions.filter((s) => !['completed', 'cancelled'].includes(s.phase) && s.presence === 'claimed').length;
   const pending = sessions.filter((s) => !['completed', 'cancelled'].includes(s.phase) && s.presence !== 'claimed').length;
-  const groups = logicalSessionGroups(sessions);
+  const groups = [...logicalSessionGroups(sessions)].sort((a, b) => {
+    // 活跃会话（claimed）优先显示，再按 updatedAt 降序，保证 Home slice(0,3) 不漏掉在跑的会话
+    const aActive = a.current.presence === 'claimed' ? 0 : 1;
+    const bActive = b.current.presence === 'claimed' ? 0 : 1;
+    return aActive - bActive || b.current.updatedAt.localeCompare(a.current.updatedAt);
+  });
   const entries = useTimelineModel(snapshot, 7);
 
   // 用于消息条目中 session id → 名称映射

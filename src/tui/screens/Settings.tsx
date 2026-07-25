@@ -7,6 +7,7 @@ import type { ReactNode } from 'react';
 import type { MyTerminalRuntime } from '../../server.js';
 import { maskCredential } from '../../config.js';
 import type { Theme } from '../state.js';
+import { hiddenAppsUrl } from '../state.js';
 import type { UpdateStatus } from '../../update.js';
 import { Heading, Line } from './shared.js';
 import { runtimeSettingsSnapshot } from '../../runtime-settings.js';
@@ -68,6 +69,8 @@ export function Settings({ runtime, theme, zh, reveal, update }: {
 
       {/* 组 3：连接凭据 + 更新 */}
       <SettingsCard title={zh ? '连接凭据与更新' : 'Credentials & update'} theme={theme}>
+        <text fg={theme.text} wrapMode="none">{`Apps MCP URL: ${hiddenAppsUrl(runtime, reveal)}`}</text>
+        <text fg={theme.text} wrapMode="none">{`Actions OpenAPI: ${runtime.openApiUrl}`}</text>
         <text fg={theme.text} wrapMode="none">{`Apps connector: ${reveal ? config.connectorKey : '••••••••'}`}</text>
         <text fg={theme.text} wrapMode="none">{`Actions token: ${reveal ? config.actionsToken : maskCredential(config.actionsToken)}`}</text>
         <Line color={theme.warn}>{zh ? '轮换凭据会使现有 Apps 与 Actions 连接失效。' : 'Rotating credentials disconnects existing Apps and Actions clients.'}</Line>
