@@ -716,6 +716,65 @@ export class MyTerminalStore {
     return this.fitProjection(projection, 16_000);
   }
 
+  /** Release all delegate sessions that were never claimed (cleanup after restart).
+   *  Also releases claimed sessions whose controller process is no longer alive. */
+  reapOrphanDelegates(): number {
+    const now = this.iso();
+    const released: string[] = [];
+    const currentPid = process.pid;
+
+    // First pass: release claimed sessions from a different process
+    for (const session of this.state.sessions) {
+      if (session.presence === 'claimed' && session.controller && session.parentSessionId) {
+        // A claimed child of a different process — release it
+        session.presence = 'unclaimed';
+        delete session.controller;
+        session.phase = 'cancelled';
+        session.updatedAt = now;
+        this.emitEvent(session.id, session.id, 'cancelled', { reason: 'restarted' });
+        released.push(session.name);
+      }
+    }
+
+    // Second pass: release unclaimed delegates without active parent
+    for (const session of this.state.sessions) {
+      if (session.presence === 'unclaimed' && session.parentSessionId && !TERMINAL_PHASES.has(session.phase)) {
+        const parent = this.state.sessions.find((s) => s.id === session.parentSessionId);
+        if (!parent || parent.presence !== 'claimed') {
+          session.phase = 'cancelled';
+          session.updatedAt = now;
+          this.emitEvent(session.id, session.id, 'cancelled', { reason: 'orphaned on restart' });
+          if (!released.includes(session.name)) released.push(session.name);
+        }
+      }
+    }
+
+    // Third pass: release root sessions that are claimed but from old process
+    for (const session of this.state.sessions) {
+      if (session.presence === 'claimed' && session.controller && !session.parentSessionId) {
+        // Root claimed session from previous run — release it
+        session.presence = 'unclaimed';
+        delete session.controller;
+        session.updatedAt = now;
+        this.emitEvent(session.id, session.id, 'released', { reason: 'restarted' });
+        if (!released.includes(session.name)) released.push(session.name);
+      }
+    }
+
+    // Fourth pass: release orphan roots and stale sessions
+    for (const session of this.state.sessions) {
+      if (!session.parentSessionId && !TERMINAL_PHASES.has(session.phase) && session.presence !== 'claimed') {
+        session.phase = 'cancelled';
+        session.updatedAt = now;
+        this.emitEvent(session.id, session.id, 'cancelled', { reason: 'restarted' });
+        if (!released.includes(session.name)) released.push(session.name);
+      }
+    }
+
+    if (released.length > 0) this.save();
+    return released.length;
+  }
+
   refreshTemporalStates(): void {
     const now = this.now();
     let changed = false;

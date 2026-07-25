@@ -61,6 +61,8 @@ export class MyTerminalRuntime {
     this.workspaceCatalog = WorkspaceCatalog.fromConfig(config);
     reapSessionResources(config);
     this.store = new MyTerminalStore(config.stateDir);
+    const orphaned = this.store.reapOrphanDelegates();
+    if (orphaned > 0) this.log(`Released ${orphaned} orphaned delegate sessions from previous instance.`);
     const builtins = createBuiltinTools(config, this.store);
     this.extensions = new ExtensionService(config, this.store, builtins, (event) => this.logAuditEvent(event));
     this.mcp = new MyTerminalMcpTransport(this.extensions);
