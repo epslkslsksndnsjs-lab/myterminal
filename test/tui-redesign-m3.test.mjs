@@ -74,6 +74,27 @@ test('memoizedMergeActivity recomputes for different revision', () => {
   assert.notStrictEqual(r1, r2, 'different revisions should recompute');
 });
 
+// 回归：终审发现单槽缓存 key 不含 limit 时，Home(limit=7) 与 Timeline(limit=0)
+// 同 revision 交替渲染会互相污染（Timeline 只显示 7 条 / Home 渲染全量）。
+test('memoizedMergeActivity does not share cache across different limits at same revision', () => {
+  const msgs = Array.from({ length: 12 }, (_, i) => ({
+    id: `m${i}`, from: 'a', to: 'b', body: 'x', createdAt: `2026-07-26T10:${String(i).padStart(2, '0')}:00.000Z`,
+  }));
+  const audits = [];
+  const full = memoizedMergeActivity('rev-same', msgs, audits, 0);
+  assert.equal(full.length, 12, 'limit=0 should return all entries');
+  const top7 = memoizedMergeActivity('rev-same', msgs, audits, 7);
+  assert.equal(top7.length, 7, 'same revision with limit=7 must NOT return the cached full result');
+  assert.notStrictEqual(full, top7, 'different limits must not share the cached reference');
+  // 切回 limit=0：缓存被 limit=7 覆盖后 miss 重算，结果仍然完整正确
+  const fullAgain = memoizedMergeActivity('rev-same', msgs, audits, 0);
+  assert.equal(fullAgain.length, 12, 'switching back to limit=0 recomputes the full result');
+  // 同 (revision, limit) 连续调用仍命中缓存（同引用）
+  const top7Again = memoizedMergeActivity('rev-same', msgs, audits, 7);
+  const top7Cached = memoizedMergeActivity('rev-same', msgs, audits, 7);
+  assert.strictEqual(top7Again, top7Cached, 'same revision+limit still hits the cache');
+});
+
 test('mergeActivity audit running status is preserved', () => {
   const audits = [{ at: '2026-07-26T12:00:00.000Z', action: 'x', source: 'actions', status: 'running' }];
   const result = mergeActivity([], audits, 5);

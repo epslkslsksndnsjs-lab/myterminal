@@ -241,7 +241,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   useKeyboard((event) => {
     if (fatalError && (event.name === 'q' || event.name === 'escape')) { void quit(); return; }
-    if (!form && !detail && [3, 7].includes(tab) && event.eventType !== 'release') {
+    // 终审修复：Editing 态下 PgUp/PgDn 不翻页（与 keymap 200/100 层的 inputEditing 隔离对齐）
+    if (!form && !detail && !inputEditing && [3, 7].includes(tab) && event.eventType !== 'release') {
       if (event.name === 'pagedown') {
         if (tab === 7) {
           setLogAnchorAt((value) => value || new Date().toISOString());
@@ -264,7 +265,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
         return;
       }
     }
-    const eligible = !form && !detail && [0, 6].includes(tab);
+    const eligible = !form && !detail && !inputEditing && [0, 6].includes(tab);
     if (eligible && event.eventType !== 'release' && event.name?.toLowerCase() === 'v') {
       credentialRevealDeadline.current = performance.now() + 450;
     }

@@ -24,8 +24,6 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…';
 }
 
-export { useTimelineModel };
-
 export function Home({ runtime, state, snapshot, theme, zh, copy }: {
   runtime: MyTerminalRuntime;
   state: StoredState;

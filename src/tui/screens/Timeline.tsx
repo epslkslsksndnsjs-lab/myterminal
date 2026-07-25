@@ -148,7 +148,7 @@ export function Timeline({
                 key={key}
                 audit={{
                   timestamp: entry.at,
-                  source: entry.source as 'apps' | 'actions' | 'tui' | 'test',
+                  source: entry.source,
                   action: entry.action,
                   status: entry.status,
                   durationMs: entry.durationMs ?? 0,

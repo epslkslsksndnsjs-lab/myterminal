@@ -44,7 +44,7 @@ const COMMAND_NAMES = Object.keys(COMMANDS);
  * 路由输入文本到命令动作。
  * - 非 / 开头 → message
  * - 匹配命令表 → 对应动作
- * - / 开头但无匹配 → unknown，附最长公共前缀建议
+ * - / 开头但无匹配 → unknown，附"以输入为前缀的最长命令名"建议
  */
 export function routeCommand(input: string): CommandAction {
   const trimmed = input.trim();
@@ -54,7 +54,7 @@ export function routeCommand(input: string): CommandAction {
   const exact = COMMANDS[lower];
   if (exact) return exact;
 
-  // 无精确匹配：找最长公共前缀的命令作为建议
+  // 无精确匹配：在命令名中找"以输入为前缀"的最长者作为建议（如 /se → /settings）
   let bestPrefixMatch = '';
   for (const name of COMMAND_NAMES) {
     if (lower.length > 1 && name.startsWith(lower) && name.length > bestPrefixMatch.length) {

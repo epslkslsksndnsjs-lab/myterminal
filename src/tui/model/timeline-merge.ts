@@ -5,13 +5,16 @@
 import type { MyTerminalMessage, ToolAuditEvent } from '../../types.js';
 
 export type ActivityEntry =
-  | { kind: 'audit'; at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }
+  | { kind: 'audit'; at: string; action: string; source: ToolAuditEvent['source']; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }
   | { kind: 'message'; at: string; fromId: string; toId: string; body: string };
+
+/** mergeActivity 的 audit 输入形状（与 store.auditFacts 的 AuditFact 结构兼容） */
+export type MergeAuditInput = { at: string; action: string; source: ToolAuditEvent['source']; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown };
 
 /** 消息 + 审计按时间降序归并（最新在前），limit 截断。输入只读不修改。 */
 export function mergeActivity(
   messages: MyTerminalMessage[],
-  audits: { at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }[],
+  audits: MergeAuditInput[],
   limit: number,
 ): ActivityEntry[] {
   const items: ActivityEntry[] = [];
@@ -39,18 +42,22 @@ export function mergeActivity(
   return limit > 0 ? items.slice(0, limit) : items;
 }
 
-type MemoSlot = { revision: string; result: ActivityEntry[] } | undefined;
+type MemoSlot = { revision: string; limit: number; result: ActivityEntry[] } | undefined;
 let slot: MemoSlot;
 
-/** 按 revision 字符串 memoize 的版本：同 revision 直接返回缓存（同一引用）。 */
+/**
+ * 按 (revision, limit) memoize 的版本：同 revision 且同 limit 直接返回缓存（同一引用）。
+ * 注意：Home(limit=7) 与 Timeline(limit=0) 同 revision 交替渲染时单槽会互相覆盖（miss 重算），
+ * 这是正确性优先的取舍——重算成本 O(n log n) 仅在切换时发生一次，可接受。
+ */
 export function memoizedMergeActivity(
   revision: string,
   messages: MyTerminalMessage[],
-  audits: { at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }[],
+  audits: MergeAuditInput[],
   limit: number,
 ): ActivityEntry[] {
-  if (slot?.revision === revision) return slot.result;
+  if (slot?.revision === revision && slot.limit === limit) return slot.result;
   const result = mergeActivity(messages, audits, limit);
-  slot = { revision, result };
+  slot = { revision, limit, result };
   return result;
 }
