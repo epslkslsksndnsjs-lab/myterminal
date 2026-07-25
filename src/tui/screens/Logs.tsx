@@ -54,7 +54,7 @@ function json(value: unknown): string {
 
 function AuditRow({ entry, theme, zh }: { entry: DisplayEntry; theme: Theme; zh: boolean }) {
   const audit = entry.audit!;
-  const statusColor = audit.status === 'completed' ? theme.good : audit.status === 'running' ? theme.accent : theme.bad;
+  const statusColor = audit.status === 'completed' ? theme.good : audit.status === 'running' ? theme.accent : audit.status === 'policy_rejected' ? theme.warn : theme.bad;
   return (
     <box flexDirection="column" width="100%" marginBottom={1}>
       <box flexDirection="row" gap={1} width="100%" flexWrap="wrap">
