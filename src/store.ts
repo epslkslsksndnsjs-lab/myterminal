@@ -223,7 +223,7 @@ export class MyTerminalStore {
     return { session: structuredClone(session), claimCode, handoffPrompt: this.handoffPrompt(session, claimCode) };
   }
 
-  registerDelegate(actorId: string, args: { name: string; role?: string; task: TaskPackage; continuesSessionId?: string }): { session: MyTerminalSession; claimCode: string; handoffPrompt: string } {
+  registerDelegate(actorId: string, args: { name: string; role?: string; task: TaskPackage; continuesSessionId?: string; blockedBy?: string[] }): { session: MyTerminalSession; claimCode: string; handoffPrompt: string } {
     const actor = this.requireSession(actorId);
     if (actor.parentSessionId) throw new MyTerminalError('MAX_SESSION_DEPTH', 'Child sessions cannot delegate another session.');
     if (TERMINAL_PHASES.has(actor.phase)) throw new MyTerminalError('INVALID_STATE', 'A terminal session cannot delegate work.');
@@ -234,7 +234,7 @@ export class MyTerminalStore {
     return this.createDelegate(actor, args, predecessor);
   }
 
-  createTuiDelegate(rootId: string, args: { name: string; role?: string; task: TaskPackage; continuesSessionId?: string }): { session: MyTerminalSession; claimCode: string; handoffPrompt: string } {
+  createTuiDelegate(rootId: string, args: { name: string; role?: string; task: TaskPackage; continuesSessionId?: string; blockedBy?: string[] }): { session: MyTerminalSession; claimCode: string; handoffPrompt: string } {
     const root = this.requireSession(rootId);
     if (root.parentSessionId) throw new MyTerminalError('MAX_SESSION_DEPTH', 'Select a root session for TUI delegation.');
     if (TERMINAL_PHASES.has(root.phase)) throw new MyTerminalError('INVALID_STATE', 'A terminal root cannot receive a new child; create a continuation first.');
@@ -330,6 +330,7 @@ export class MyTerminalStore {
     const nextCalls = input.nextCalls === undefined ? undefined : plannedToolCalls(input.nextCalls);
     const replanReason = typeof input.replanReason === 'string' && input.replanReason.trim() ? input.replanReason.trim().slice(0, 1000) : undefined;
     if (TERMINAL_PHASES.has(session.phase)) throw new MyTerminalError('SESSION_TERMINAL', 'Terminal sessions are immutable.');
+    if (TERMINAL_PHASES.has(phase)) this.unblockCompleted(session);
     if (phase === 'completed' && !session.parentSessionId) {
       const now = this.iso();
       const directChildren = this.state.sessions.filter((item) => item.parentSessionId === session.id);
@@ -779,12 +780,14 @@ export class MyTerminalStore {
     this.save();
   }
 
-  private createDelegate(root: MyTerminalSession, args: { name: string; role?: string; task: TaskPackage; continuesSessionId?: string }, predecessor?: MyTerminalSession) {
+  private createDelegate(root: MyTerminalSession, args: { name: string; role?: string; task: TaskPackage; continuesSessionId?: string; blockedBy?: string[] }, predecessor?: MyTerminalSession) {
     const session = this.makeSession({
       name: args.name, role: args.role, phase: 'pending', presence: 'unclaimed', parentSessionId: root.id,
       continuesSessionId: predecessor?.id, task: cleanTask(args.task),
     });
     const claimCode = this.issueClaimCode(session);
+    this.state.sessions.push(session);
+    if (args.blockedBy?.length) this.blockSessions(args.blockedBy, session.id);
     this.state.sessions.push(session);
     this.state.subscriptions.push({ subscriberSessionId: root.id, targetSessionId: session.id, createdAt: this.iso() });
     this.appendHistory(session.id, 'task_package', session.task as unknown as JsonObject);
@@ -793,13 +796,31 @@ export class MyTerminalStore {
     return { session: structuredClone(session), claimCode, handoffPrompt: this.handoffPrompt(session, claimCode) };
   }
 
+  private blockSessions(blockerIds: string[], blockedId: string): void {
+    for (const blockerId of blockerIds) {
+      const blocker = this.state.sessions.find((s) => s.id === blockerId);
+      if (blocker && !blocker.blocks.includes(blockedId)) blocker.blocks.push(blockedId);
+    }
+    const blocked = this.state.sessions.find((s) => s.id === blockedId);
+    if (blocked) {
+      for (const bid of blockerIds) { if (!blocked.blockedBy.includes(bid)) blocked.blockedBy.push(bid); }
+    }
+  }
+
+  private unblockCompleted(session: MyTerminalSession): void {
+    for (const other of this.state.sessions) {
+      other.blockedBy = other.blockedBy.filter((id) => id !== session.id);
+      other.blocks = other.blocks.filter((id) => id !== session.id);
+    }
+  }
+
   private makeSession(args: Partial<MyTerminalSession> & { name: string; phase: SessionPhase; presence: MyTerminalSession['presence'] }): MyTerminalSession {
     const name = nonEmpty(args.name, 'name', 80);
     if (this.state.sessions.some((session) => session.name === name && !TERMINAL_PHASES.has(session.phase))) throw new MyTerminalError('DUPLICATE_SESSION', `A non-terminal session named ${name} already exists.`);
     const now = this.iso();
     return {
       id: `ses_${randomUUID()}`, name, role: (args.role || 'developer').slice(0, 80), phase: args.phase, presence: args.presence,
-      parentSessionId: args.parentSessionId, continuesSessionId: args.continuesSessionId, task: args.task, tags: [], createdAt: now, updatedAt: now,
+      parentSessionId: args.parentSessionId, continuesSessionId: args.continuesSessionId, task: args.task, blocks: [], blockedBy: [], tags: [], createdAt: now, updatedAt: now,
     };
   }
 
@@ -996,7 +1017,7 @@ export class MyTerminalStore {
         id: item.id, name: item.name, role: item.role, phase: phaseMap[item.status], presence: 'stale',
         latestCheckpoint: item.note ? { at: item.updatedAt, phase: phaseMap[item.status], summary: item.note } : undefined,
         finalSummary: item.status === 'completed' ? item.note || 'Migrated completed session.' : undefined,
-        tags: [], createdAt: item.createdAt, updatedAt: item.updatedAt,
+        tags: [], blocks: [], blockedBy: [], createdAt: item.createdAt, updatedAt: item.updatedAt,
       })),
       messages: parsed.messages, extensions: parsed.extensions,
     };

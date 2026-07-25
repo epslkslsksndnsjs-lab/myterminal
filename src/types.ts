@@ -83,6 +83,8 @@ export type MyTerminalSession = {
   continuationPlan?: ContinuationPlan;
   finalSummary?: string;
   tags: string[];
+  blocks: string[];
+  blockedBy: string[];
   createdAt: string;
   updatedAt: string;
 };

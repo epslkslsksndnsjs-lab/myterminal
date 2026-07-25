@@ -418,6 +418,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       type: 'object', properties: {
         mode: { type: 'string', enum: ['root', 'delegate'], default: 'root' }, name: { type: 'string', minLength: 1, maxLength: 80 }, role: { type: 'string', maxLength: 80 },
         continuesSessionId: { type: 'string' }, task: { type: 'object', properties: taskProperties, required: ['objective', 'background', 'deliverables', 'acceptanceCriteria', 'constraints'], additionalProperties: false },
+        blockedBy: { type: 'array', items: { type: 'string' } },
       }, required: ['mode', 'name'], additionalProperties: false,
     }, annotations: localCreate,
     invoke: async (input, context) => {
@@ -428,7 +429,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       }
       const current = actor(context);
       if (!input.task || typeof input.task !== 'object' || Array.isArray(input.task)) throw new MyTerminalError('INVALID_INPUT', 'task is required for delegate mode.');
-      const result = store.registerDelegate(current.id, { name: asString(input.name, 'name'), role: asOptionalString(input.role), task: input.task as TaskPackage, continuesSessionId: asOptionalString(input.continuesSessionId) });
+      const result = store.registerDelegate(current.id, { name: asString(input.name, 'name'), role: asOptionalString(input.role), task: input.task as TaskPackage, continuesSessionId: asOptionalString(input.continuesSessionId), blockedBy: Array.isArray(input.blockedBy) ? input.blockedBy.filter((v: unknown) => typeof v === 'string') as string[] : undefined });
       return { session: publicSession(result.session), claimCode: result.claimCode, handoffPrompt: result.handoffPrompt };
     },
   });

@@ -1700,3 +1700,20 @@ test('auditFact fills UNKNOWN_ERROR for failed records missing an error code', (
     assert.ok(fact.error && fact.error.code === 'UNKNOWN_ERROR');
   } finally { fs.rmSync(dirs.workspaceDir, { recursive: true, force: true }); }
 });
+
+test('delegate session with blockedBy creates bidirectional dependency links', async () => {
+  const server = await createRuntime({ actionsContinuationMode: 'off' });
+  try {
+    const created = await root(server, 'parent-dag');
+    const identity = created.identity;
+    const del = await call(server, 'session_register', { mode: 'delegate', name: 'child-dag', role: 'worker', task, blockedBy: [created.session.id] }, identity);
+    assert.equal(del.body.ok, true);
+    const all = server.runtime.store.listSessions();
+    const parent = all.find((s) => s.id === created.session.id);
+    const child = all.find((s) => s.name === 'child-dag');
+    assert.ok(parent, 'parent should exist');
+    assert.ok(child, 'child should exist');
+    assert.ok(child.blockedBy.includes(parent.id), 'child blockedBy parent');
+    assert.ok(parent.blocks.includes(child.id), 'parent blocks child');
+  } finally { await server.close(); }
+});
