@@ -1,9 +1,11 @@
 import path from 'node:path';
+import { useState } from 'react';
 import type { MyTerminalRuntime, RuntimeLog } from '../../server.js';
 import { readWorkspaceLogs, workspaceId } from '../../instances.js';
 import type { ToolAuditEvent } from '../../types.js';
 import type { Theme } from '../state.js';
 import { Heading } from './shared.js';
+import { ToolCallRow } from '../components/ToolCallRow.js';
 
 type DisplayEntry = {
   at: string;
@@ -36,45 +38,13 @@ function RuntimeRow({ entry, theme }: { entry: DisplayEntry; theme: Theme }) {
   const statusColor = entry.level === 'error' ? theme.bad : entry.level === 'ok' ? theme.good : theme.accent;
   return (
     <box flexDirection="row" gap={1} width="100%">
-      <text fg={theme.muted}>{timeOf(entry.at)}</text>
-      <text fg={statusColor}><b>{entry.level === 'error' ? 'ERR ' : entry.level === 'ok' ? 'OK  ' : 'INFO'}</b></text>
-      <text fg={theme.warn}><b>{entry.operation.padEnd(10)}</b></text>
-      {entry.workspace ? <text fg={theme.muted}>[{entry.workspace}]</text> : null}
-      {entry.subject ? <text fg={theme.accent}>{entry.subject}</text> : null}
+      <text fg={theme.muted} wrapMode="none">{timeOf(entry.at)}</text>
+      <text fg={statusColor} wrapMode="none"><b>{entry.level === 'error' ? 'ERR ' : entry.level === 'ok' ? 'OK  ' : 'INFO'}</b></text>
+      <text fg={theme.tool} wrapMode="none"><b>{entry.operation.padEnd(10)}</b></text>
+      {entry.workspace ? <text fg={theme.muted} wrapMode="none">[{entry.workspace}]</text> : null}
+      {entry.subject ? <text fg={theme.accent} wrapMode="none">{entry.subject}</text> : null}
       <text fg={theme.text} wrapMode="word" flexGrow={1}>{entry.detail}</text>
-      {entry.duration !== undefined ? <text fg={theme.muted}>{entry.duration}ms</text> : null}
-    </box>
-  );
-}
-
-function json(value: unknown): string {
-  if (value === undefined) return '—';
-  try { return JSON.stringify(value); } catch { return String(value); }
-}
-
-function AuditRow({ entry, theme, zh }: { entry: DisplayEntry; theme: Theme; zh: boolean }) {
-  const audit = entry.audit!;
-  const statusColor = audit.status === 'completed' ? theme.good : audit.status === 'running' ? theme.accent : audit.status === 'policy_rejected' ? theme.warn : theme.bad;
-  return (
-    <box flexDirection="column" width="100%" marginBottom={1}>
-      <box flexDirection="row" gap={1} width="100%" flexWrap="wrap">
-        <text fg={theme.muted}>{timeOf(audit.timestamp)}</text>
-        <text fg={statusColor}><b>{(audit.status === 'policy_rejected' ? 'POLICY' : audit.status.toUpperCase()).padEnd(9)}</b></text>
-        <text fg={theme.warn}><b>{audit.source.toUpperCase()}</b></text>
-        {entry.workspace ? <text fg={theme.muted}>[{entry.workspace}]</text> : null}
-        <text fg={theme.text}><b>{audit.action}</b></text>
-        {entry.subject ? <text fg={theme.accent}>{entry.subject}</text> : null}
-        {audit.status !== 'running' ? <text fg={theme.muted}>{audit.durationMs}ms</text> : null}
-        {audit.error?.code ? <text fg={theme.bad}>{audit.error.code}</text> : null}
-      </box>
-      <box flexDirection="row" gap={1} paddingLeft={2} width="100%">
-        <text fg={theme.muted}>{zh ? '参数' : 'ARGS'}</text>
-        <text fg={theme.text} wrapMode="word" flexGrow={1}>{json(audit.args)}</text>
-      </box>
-      <box flexDirection="row" gap={1} paddingLeft={2} width="100%">
-        <text fg={theme.muted}>{zh ? '返回' : 'RESULT'}</text>
-        <text fg={audit.status === 'failed' || audit.status === 'timeout' ? theme.bad : audit.status === 'policy_rejected' ? theme.warn : theme.text} wrapMode="word" flexGrow={1}>{json(audit.result)}</text>
-      </box>
+      {entry.duration !== undefined ? <text fg={theme.muted} wrapMode="none">{entry.duration}ms</text> : null}
     </box>
   );
 }
@@ -147,6 +117,19 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
   }
   entries.sort((a, b) => b.at.localeCompare(a.at));
   const visibleEntries = entries.slice(0, PAGE_SIZE);
+
+  // 日志页的 ToolCallRow 展开状态（仅鼠标点击切换，不加键盘选中）
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  function toggleAuditExpand(auditId: string, workspaceLabel?: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      const key = `${auditId}-${workspaceLabel || ''}`;
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   return (
     <box flexDirection="column" width="100%" padding={1} gap={0}>
       <box flexDirection="row" gap={2} flexWrap="wrap" marginBottom={1}>
@@ -155,15 +138,36 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
         <text fg={theme.muted}>{zh ? `第 ${page + 1} 页 · PgUp/PgDn 翻页` : `Page ${page + 1} · PgUp/PgDn`}</text>
         <text fg={theme.warn}>{zh ? `累积模型上下文: ${formatContext(cumulativeContext)}` : `Cumulative ctx: ${formatContext(cumulativeContext)}`}</text>
       </box>
-      <box flexDirection="row" gap={1} marginBottom={1}>
-        <text fg={theme.muted}>{zh ? '时间' : 'TIME'}</text>
-        <text fg={theme.muted}>{zh ? '状态' : 'STAT'}</text>
-        <text fg={theme.muted}>{zh ? '操作 / 会话 / 内容' : 'OPERATION / SESSION / DETAIL'}</text>
-      </box>
-      {visibleEntries.length ? visibleEntries.map((entry, index) => entry.audit
-        ? <AuditRow key={`${entry.audit.id}-${entry.workspace || ''}`} entry={entry} theme={theme} zh={zh} />
-        : <RuntimeRow key={`${entry.at}-${entry.kind}-${index}`} entry={entry} theme={theme} />)
-        : <text fg={theme.muted}>{zh ? '暂无日志。' : 'No log entries.'}</text>}
+      {visibleEntries.length ? visibleEntries.map((entry, index) => {
+        if (entry.audit) {
+          const key = `${entry.audit.id}-${entry.workspace || ''}`;
+          return (
+            <ToolCallRow
+              key={key}
+              audit={{
+                timestamp: entry.audit.timestamp,
+                source: entry.audit.source,
+                action: entry.audit.action,
+                status: entry.audit.status,
+                durationMs: entry.audit.durationMs,
+                error: entry.audit.error,
+                args: entry.audit.args,
+                result: entry.audit.result,
+                sessionName: entry.subject,
+              }}
+              workspace={entry.workspace}
+              theme={theme}
+              zh={zh}
+              expanded={expanded.has(key)}
+              onToggle={() => toggleAuditExpand(entry.audit!.id, entry.workspace)}
+            />
+          );
+        }
+        return (
+          <RuntimeRow key={`${entry.at}-${entry.kind}-${index}`} entry={entry} theme={theme} />
+        );
+      })
+      : <text fg={theme.muted}>{zh ? '暂无日志。' : 'No log entries.'}</text>}
     </box>
   );
 }
