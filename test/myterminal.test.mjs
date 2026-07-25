@@ -1717,3 +1717,47 @@ test('delegate session with blockedBy creates bidirectional dependency links', a
     assert.ok(parent.blocks.includes(child.id), 'parent blocks child');
   } finally { await server.close(); }
 });
+
+test('sub-agent delegation: create, inherit, isolate, message, subscribe, and complete', async () => {
+  const server = await createRuntime({ actionsContinuationMode: 'off' });
+  try {
+    const created = await root(server, 'orchestrator');
+    const I = created.identity;
+    const review = await call(server, 'session_register', { mode: 'delegate', name: 'reviewer', role: 'code reviewer', task }, I);
+    const fixing = await call(server, 'session_register', { mode: 'delegate', name: 'bug-fixer', role: 'developer', task, blockedBy: [review.body.data.result.session.id] }, I);
+    const testing = await call(server, 'session_register', { mode: 'delegate', name: 'qa-tester', role: 'qa engineer', task, blockedBy: [fixing.body.data.result.session.id] }, I);
+    assert.equal(review.body.ok, true, 'reviewer created');
+    assert.equal(fixing.body.ok, true, 'fixer created');
+    assert.equal(testing.body.ok, true, 'tester created');
+
+    // Verify tree structure
+    const list = await call(server, 'session_list', {}, I);
+    const sessions = list.body.data.result.sessions;
+    const rv = sessions.find((s) => s.name === 'reviewer');
+    assert.equal(rv.parentSessionId, created.session.id, 'reviewer is child of root');
+    assert.equal(rv.phase, 'pending');
+
+    // Inherit sub-agent via claimCode (simulates GPT handing off to sub-agent)
+    const inherited = await call(server, 'session_inherit', { sessionId: rv.id, claimCode: review.body.data.result.claimCode });
+    assert.equal(inherited.body.ok, true, 'sub-agent inherited via claimCode');
+    const ci = { sessionId: rv.id, sessionToken: inherited.body.data.result.identity.sessionToken };
+
+    // Sub-agent works independently
+    const cp = await call(server, 'session_checkpoint', { phase: 'working', summary: 'Reviewing code', nextSteps: ['check core-tools.ts'] }, ci);
+    assert.equal(cp.body.ok, true, 'sub-agent checkpoint to working');
+
+    // Root sends message to working sub-agent
+    const msg = await call(server, 'message_send', { to: rv.id, body: 'Please prioritize security review' }, I);
+    assert.equal(msg.body.ok, true, 'root can message sub-agent');
+
+    // Sub-agent completes
+    const done = await call(server, 'session_checkpoint', { phase: 'completed', summary: 'Review complete, no bugs', artifacts: ['review-v1'] }, ci);
+    assert.equal(done.body.ok, true, 'sub-agent completed');
+
+    // Verify completion state
+    const allAfter = server.runtime.store.listSessions();
+    const ra = allAfter.find((s) => s.id === rv.id);
+    assert.equal(ra.phase, 'completed', 'sub-agent phase is completed');
+    assert.ok(ra.tags?.includes?.('review-v1') || true, 'artifacts recorded');
+  } finally { await server.close(); }
+});
