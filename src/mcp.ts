@@ -116,6 +116,12 @@ function contextFromCall(callContext: unknown): InvocationContext {
   };
 }
 
+function injectCachedIdentity(input: JsonObject, cache?: SessionIdentityCache): JsonObject {
+  if (!cache || input.identity !== undefined) return input;
+  const cached = cache.get();
+  return cached ? { ...input, identity: cached } : input;
+}
+
 export interface SessionIdentityCache {
   get(): { sessionId: string; sessionToken: string } | undefined;
   set(id: { sessionId: string; sessionToken: string }): void;
@@ -145,7 +151,7 @@ export function createMcpServer(service: ExtensionFacade, identityCache?: Sessio
     outputSchema: responseSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
     _meta: { 'openai/toolInvocation/invoking': 'Inspecting extensions…', 'openai/toolInvocation/invoked': 'Extension catalog ready' },
-  }, async (input, callContext) => toToolResult(await service.discover(input as JsonObject, contextFromCall(callContext)), 'Extension catalog and usage instructions are ready.'));
+  }, async (input, callContext) => toToolResult(await service.discover(injectCachedIdentity(input as JsonObject, identityCache), contextFromCall(callContext)), 'Extension catalog and usage instructions are ready.'));
 
   server.registerTool('extension_register', {
     title: 'Register or edit extension tool',
@@ -154,7 +160,7 @@ export function createMcpServer(service: ExtensionFacade, identityCache?: Sessio
     outputSchema: responseSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: true },
     _meta: { 'openai/toolInvocation/invoking': 'Validating extension…', 'openai/toolInvocation/invoked': 'Extension registry updated' },
-  }, async (input, callContext) => toToolResult(await service.register(input as JsonObject, contextFromCall(callContext)), 'Extension registration operation completed.'));
+  }, async (input, callContext) => toToolResult(await service.register(injectCachedIdentity(input as JsonObject, identityCache), contextFromCall(callContext)), 'Extension registration operation completed.'));
 
   server.registerTool('extension_call', {
     title: 'Call concrete extension tool',
@@ -163,7 +169,15 @@ export function createMcpServer(service: ExtensionFacade, identityCache?: Sessio
     outputSchema: responseSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
     _meta: { 'openai/toolInvocation/invoking': 'Running extension…', 'openai/toolInvocation/invoked': 'Extension call complete' },
-  }, async (input, callContext) => toToolResult(await service.call(input as JsonObject, contextFromCall(callContext)), 'Extension call completed.'));
+  }, async (input, callContext) => {
+    const enriched = injectCachedIdentity(input as JsonObject, identityCache);
+    const response = await service.call(enriched, contextFromCall(callContext));
+    if (response.ok && typeof enriched.tool === 'string' && (enriched.tool === 'session_register' || enriched.tool === 'session_inherit')) {
+      const r = (response.data as JsonObject | undefined)?.result as JsonObject | undefined;
+      if (r?.identity && typeof (r.identity as JsonObject).sessionId === 'string') identityCache?.set(r.identity as { sessionId: string; sessionToken: string });
+    }
+    return toToolResult(response, 'Extension call completed.');
+  });
 
   const safeRead = { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true };
   const safeLocalMutation = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
