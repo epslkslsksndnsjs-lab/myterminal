@@ -73,7 +73,7 @@ function AuditRow({ entry, theme, zh }: { entry: DisplayEntry; theme: Theme; zh:
       </box>
       <box flexDirection="row" gap={1} paddingLeft={2} width="100%">
         <text fg={theme.muted}>{zh ? '返回' : 'RESULT'}</text>
-        <text fg={audit.status === 'failed' || audit.status === 'timeout' ? theme.bad : theme.text} wrapMode="word" flexGrow={1}>{json(audit.result)}</text>
+        <text fg={audit.status === 'failed' || audit.status === 'timeout' ? theme.bad : audit.status === 'policy_rejected' ? theme.warn : theme.text} wrapMode="word" flexGrow={1}>{json(audit.result)}</text>
       </box>
     </box>
   );
