@@ -18,31 +18,9 @@ export type Tab = (typeof TABS)[number];
 export type { Ask, Detail, FormQuestion, RuntimeReconfigure, RuntimeReconfigureResult } from './contracts.js';
 import type { Ask, Detail, FormQuestion, RuntimeReconfigure } from './contracts.js';
 
-export type Theme = {
-  background: string;
-  panel: string;
-  panelAlt: string;
-  selected: string;
-  selectedText: string;
-  text: string;
-  muted: string;
-  accent: string;
-  good: string;
-  warn: string;
-  bad: string;
-  border: string;
-};
-
-export function themeFor(name: MyTerminalSettings['uiTheme']): Theme {
-  if (name === 'light') return {
-    background: '#f5f5f0', panel: '#ffffff', panelAlt: '#ecece6', selected: '#2b6cb0', selectedText: '#ffffff',
-    text: '#1a1a1a', muted: '#787878', accent: '#2b6cb0', good: '#2e7d32', warn: '#b8860b', bad: '#c62828', border: '#bdbdb0',
-  };
-  return {
-    background: '#0d0d0d', panel: '#161616', panelAlt: '#1e1e1e', selected: '#00e676', selectedText: '#0d0d0d',
-    text: '#f0f0f0', muted: '#808080', accent: '#00e676', good: '#00e676', warn: '#ffb300', bad: '#ff4444', border: '#333333',
-  };
-}
+export type { Theme } from './theme/index.js';
+export { themeFor } from './theme/index.js';
+import type { Theme } from './theme/index.js';
 
 export function phaseColor(theme: Theme, phase: SessionPhase): string {
   if (phase === 'completed') return theme.good;
