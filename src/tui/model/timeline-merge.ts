@@ -5,13 +5,13 @@
 import type { MyTerminalMessage, ToolAuditEvent } from '../../types.js';
 
 export type ActivityEntry =
-  | { kind: 'audit'; at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string }
+  | { kind: 'audit'; at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }
   | { kind: 'message'; at: string; fromId: string; toId: string; body: string };
 
 /** 消息 + 审计按时间降序归并（最新在前），limit 截断。输入只读不修改。 */
 export function mergeActivity(
   messages: MyTerminalMessage[],
-  audits: { at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string }[],
+  audits: { at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }[],
   limit: number,
 ): ActivityEntry[] {
   const items: ActivityEntry[] = [];
@@ -30,6 +30,8 @@ export function mergeActivity(
       durationMs: a.durationMs,
       sessionName: a.sessionName,
       errorCode: a.errorCode,
+      args: a.args,
+      result: a.result,
     });
   }
 
@@ -44,7 +46,7 @@ let slot: MemoSlot;
 export function memoizedMergeActivity(
   revision: string,
   messages: MyTerminalMessage[],
-  audits: { at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string }[],
+  audits: { at: string; action: string; source: string; status: ToolAuditEvent['status']; durationMs?: number; sessionName?: string; errorCode?: string; args?: unknown; result?: unknown }[],
   limit: number,
 ): ActivityEntry[] {
   if (slot?.revision === revision) return slot.result;

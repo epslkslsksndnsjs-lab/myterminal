@@ -41,6 +41,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const [showAudit, setShowAudit] = useState(true);
   const [logPage, setLogPage] = useState(0);
   const [logAnchorAt, setLogAnchorAt] = useState<string>();
+  const [timelinePage, setTimelinePage] = useState(0);
+  const [timelineExpandRev, setTimelineExpandRev] = useState(0);
   const [form, setForm] = useState<FormState>();
   const [notice, setNotice] = useState<string>();
   const [fatalError, setFatalError] = useState<Error>();
@@ -110,7 +112,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     refresh();
   }, [controller, refresh]);
 
-  const switchTab = useCallback((index: number) => { setRevealCredentials(false); setDetail(undefined); if (index !== 7) { setLogPage(0); setLogAnchorAt(undefined); } setTab(index); }, []);
+  const switchTab = useCallback((index: number) => { setRevealCredentials(false); setDetail(undefined); if (index !== 7) { setLogPage(0); setLogAnchorAt(undefined); } if (index !== 3) { setTimelinePage(0); setTimelineExpandRev((v) => v + 1); } setTab(index); }, []);
   const nextTab = useCallback((delta: number) => { setRevealCredentials(false); setDetail(undefined); setTab((value) => (value + TABS.length + delta) % TABS.length); }, []);
   const back = useCallback(() => { setRevealCredentials(false); setDetail(undefined); }, []);
   const quit = useCallback(() => {
@@ -239,18 +241,26 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   useKeyboard((event) => {
     if (fatalError && (event.name === 'q' || event.name === 'escape')) { void quit(); return; }
-    if (!form && !detail && tab === 7 && event.eventType !== 'release') {
+    if (!form && !detail && [3, 7].includes(tab) && event.eventType !== 'release') {
       if (event.name === 'pagedown') {
-        setLogAnchorAt((value) => value || new Date().toISOString());
-        setLogPage((value) => value + 1);
+        if (tab === 7) {
+          setLogAnchorAt((value) => value || new Date().toISOString());
+          setLogPage((value) => value + 1);
+        } else {
+          setTimelinePage((value) => value + 1);
+        }
         return;
       }
       if (event.name === 'pageup') {
-        setLogPage((value) => {
-          const next = Math.max(0, value - 1);
-          if (next === 0) setLogAnchorAt(undefined);
-          return next;
-        });
+        if (tab === 7) {
+          setLogPage((value) => {
+            const next = Math.max(0, value - 1);
+            if (next === 0) setLogAnchorAt(undefined);
+            return next;
+          });
+        } else {
+          setTimelinePage((value) => Math.max(0, value - 1));
+        }
         return;
       }
     }
@@ -281,13 +291,13 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
       : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} />
         : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
           : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-            : tab === 3 ? <Timeline theme={theme} zh={zh} />
+            : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
               : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} />
                 : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
                   : tab === 6 ? <Settings runtime={runtime} theme={theme} zh={zh} reveal={revealCredentials} update={update} />
                     : <Logs runtime={runtime} logs={logs} theme={theme} zh={zh} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
-  const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-r${Number(revealCredentials)}`;
+  const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;
   return (
     <FatalErrorBoundary runtime={runtime} theme={theme} zh={zh} onFatal={setFatalError}>
     <box width={width} height={height} flexDirection="column" backgroundColor={theme.background} onMouseUp={copySelection}>
