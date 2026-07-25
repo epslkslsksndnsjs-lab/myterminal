@@ -59,7 +59,7 @@ function AuditRow({ entry, theme, zh }: { entry: DisplayEntry; theme: Theme; zh:
     <box flexDirection="column" width="100%" marginBottom={1}>
       <box flexDirection="row" gap={1} width="100%" flexWrap="wrap">
         <text fg={theme.muted}>{timeOf(audit.timestamp)}</text>
-        <text fg={statusColor}><b>{audit.status.toUpperCase().padEnd(9)}</b></text>
+        <text fg={statusColor}><b>{(audit.status === 'policy_rejected' ? 'POLICY' : audit.status.toUpperCase()).padEnd(9)}</b></text>
         <text fg={theme.warn}><b>{audit.source.toUpperCase()}</b></text>
         {entry.workspace ? <text fg={theme.muted}>[{entry.workspace}]</text> : null}
         <text fg={theme.text}><b>{audit.action}</b></text>
