@@ -292,8 +292,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
         : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
           : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
             : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
-              : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} />
-                : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
+              : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} copy={copy} />
+                : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
                   : tab === 6 ? <Settings runtime={runtime} theme={theme} zh={zh} reveal={revealCredentials} update={update} />
                     : <Logs runtime={runtime} logs={logs} theme={theme} zh={zh} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 

@@ -8,6 +8,7 @@ import type { MyTerminalSettings } from '../types.js';
 import { themeFor, type FormQuestion } from './state.js';
 import { FormDialog } from './components/FormDialog.js';
 import { buildWorkspaceSelectorModel } from './workspace-selector.js';
+import { Mascot } from './components/Mascot.js';
 
 function integer(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
@@ -112,6 +113,9 @@ export function Setup({ defaults, records, mouseEnabled = true, onComplete, onCa
 
   return (
     <box width={width} height={height} backgroundColor={theme.background}>
+      <box position="absolute" left={Math.max(0, Math.floor((width - 9) / 2))} top={0}>
+        <Mascot mood="happy" theme={theme} />
+      </box>
       <FormDialog key={attempt} questions={questions} preamble={feedback} theme={theme} width={width} height={height} zh={defaults.uiLanguage === 'zh-CN'} mouseEnabled={mouseEnabled} onComplete={submit} onCancel={onCancel} />
     </box>
   );
