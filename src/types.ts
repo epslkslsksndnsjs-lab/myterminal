@@ -6,7 +6,7 @@ export type ActionsContinuationMode = 'off' | 'adaptive' | 'next-call' | 'lookah
 
 export type SessionIdentity = { sessionId: string; sessionToken: string };
 
-export type ToolAuditStatus = 'running' | 'completed' | 'failed' | 'timeout';
+export type ToolAuditStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'policy_rejected';
 export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test';
 export type ToolAuditEvent = {
   id: string;
@@ -231,5 +231,6 @@ export type ToolDefinition = {
   description: string;
   inputSchema: JsonSchema;
   annotations: ExtensionAnnotations;
+  aliases?: Record<string, string>;
   invoke: (input: JsonObject, context: InvocationContext) => Promise<JsonObject>;
 };

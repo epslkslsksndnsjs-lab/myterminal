@@ -221,6 +221,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'find_files', title: 'Find files', description: 'Find files by case-insensitive path substring.',
     inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false }, annotations: readOnly,
+    aliases: { pattern: 'query' },
     invoke: async (input) => {
       const query = asString(input.query, 'query').toLowerCase();
       const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
@@ -232,6 +233,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'search_text', title: 'Search text', description: 'Search bounded UTF-8 files for text or a regular expression.',
     inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, regex: { type: 'boolean', default: false }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false }, annotations: readOnly,
+    aliases: { pattern: 'query' },
     invoke: async (input) => {
       const query = asString(input.query, 'query');
       const matcher = input.regex ? new RegExp(query, 'i') : undefined;

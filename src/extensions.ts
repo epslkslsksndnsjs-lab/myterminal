@@ -197,9 +197,13 @@ export class ExtensionService {
     error?: { code: string; message?: string },
   ): void {
     if (this.closedActionIds.has(actionId)) return;
+    let finalError = error;
+    if ((status === 'failed' || status === 'timeout') && (!finalError || !finalError.code)) {
+      finalError = { code: 'UNKNOWN_ERROR', message: 'Tool call failed without a recorded error code.' };
+    }
     const completedAt = new Date().toISOString();
     const event: ToolAuditEvent = {
-      id: actionId, timestamp: new Date(started).toISOString(), completedAt, source, action, status, durationMs: Date.now() - started, error,
+      id: actionId, timestamp: new Date(started).toISOString(), completedAt, source, action, status, durationMs: Date.now() - started, error: finalError,
       workspace: this.config.workspaceDir, session: sessionId, args, result,
     };
     const persisted = this.store.auditEvent(sessionId, event);
@@ -418,10 +422,12 @@ export class ExtensionService {
       }
       return this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId);
     } catch (error) {
-      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const policyCode = error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR';
+      const isPolicyRejection = policyCode === 'NEXT_CALL_REQUIRED' || policyCode === 'CONTINUATION_PLAN_REQUIRED';
+      const auditError = { code: policyCode, message: error instanceof Error ? error.message : String(error) };
       const failed = failure(error);
       const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
-      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, 'failed', response, auditError);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', response, auditError);
       return response;
     } finally {
       if (!detached && !this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
@@ -546,11 +552,24 @@ export class ExtensionService {
     throw new MyTerminalError('IDENTITY_REQUIRED', 'This operation requires identity={sessionId,sessionToken}. Register or inherit a session first.');
   }
 
+  private normalizeAliases(args: JsonObject, aliases?: Record<string, string>): JsonObject {
+    if (!aliases) return args;
+    const normalized: JsonObject = { ...args };
+    for (const [alias, canonical] of Object.entries(aliases)) {
+      if (normalized[alias] !== undefined && normalized[canonical] === undefined) {
+        normalized[canonical] = normalized[alias];
+      }
+      delete normalized[alias];
+    }
+    return normalized;
+  }
+
   private async invokeTool(name: string, args: JsonObject, context: InvocationContext): Promise<JsonObject> {
     const builtin = this.builtins.get(name);
     if (builtin) {
-      const errors = validateJsonSchema(builtin.inputSchema, args); if (errors.length) throw new MyTerminalError('INVALID_INPUT', errors.join('; '));
-      return await builtin.invoke(args, context);
+      const normalized = this.normalizeAliases(args, builtin.aliases);
+      const errors = validateJsonSchema(builtin.inputSchema, normalized); if (errors.length) throw new MyTerminalError('INVALID_INPUT', errors.join('; '));
+      return await builtin.invoke(normalized, context);
     }
     const custom = this.store.listExtensions().find((item) => item.name === name);
     if (!custom) throw new MyTerminalError('NOT_FOUND', `Extension not found: ${name}`);

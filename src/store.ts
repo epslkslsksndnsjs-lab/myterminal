@@ -660,12 +660,13 @@ export class MyTerminalStore {
     const action = String(data.action || data.tool || 'unknown');
     const rawStatus = typeof data.status === 'string' ? data.status : data.ok === true ? 'completed' : 'failed';
     const status: ToolAuditEvent['status'] = rawStatus === 'started' ? 'running' : rawStatus === 'succeeded' ? 'completed'
-      : ['running', 'completed', 'failed', 'timeout'].includes(rawStatus) ? rawStatus as ToolAuditEvent['status'] : 'failed';
-    const errorCode = typeof data.errorCode === 'string'
+      : ['running', 'completed', 'failed', 'timeout', 'policy_rejected'].includes(rawStatus) ? rawStatus as ToolAuditEvent['status'] : 'failed';
+    const rawErrorCode = typeof data.errorCode === 'string'
       ? data.errorCode
       : data.error && typeof data.error === 'object' && typeof (data.error as JsonObject).code === 'string'
         ? String((data.error as JsonObject).code)
         : undefined;
+    const errorCode = rawErrorCode || (status === 'failed' || status === 'timeout' ? 'UNKNOWN_ERROR' : undefined);
     return {
       id: String(data.id || `legacy-${session.id}-${entry.at}-${action}`),
       timestamp: String(data.timestamp || data.startedAt || entry.at),
