@@ -329,3 +329,144 @@ MyTerminal 现有架构对 skill 系统友好：
 - **调用机制**用"manual 为主 + always 辅助"的按需加载模型，避免 context 膨胀
 
 最小侵入方案：新建 1 个文件（`src/skills.ts`），改 4 个文件（core-tools / extensions / mcp / server），不改 store / types 持久化格式。首期 4 个 builtin tool + discover 注入 + MCP instructions 提示，可在一个分支内完成。
+
+---
+
+## 8. Claw (Claude Code) Skill 系统对照 — 设计拷问
+
+> 来源：`claw v2.1.88-source.0`（`/Desktop/claude-code-source-jr/`），共 29 文件/6103 行。从 init commit `55eeb5c` 起就内置 skill 系统，非事后增补。
+>
+> **Claw 的"源优先（source-first）"哲学**：内置 skill 内容是硬编码在 `.ts` 文件里的，不是 SKILL.md。SKILL.md 只用于用户自定义 skill。MyTerminal 同理——首期不做内置 skill，所有 skill 都是用户安装的 SKILL.md 文件。
+
+### 8.1 Claw 核心设计要点
+
+| 维度 | Claw 实现 |
+|------|----------|
+| **Skill 本质** | Prompt Command — 带 frontmatter 的可触发提示模板 |
+| **执行模式** | inline（展开内容到当前对话）/ fork（隔离子 agent）/ remote（远程） |
+| **Tool 定义** | `Skill` tool，输入 `{skill: string, args?: string}`，Zod v4 schema |
+| **文件格式** | `skill-name/SKILL.md`（frontmatter YAML + Markdown），仅目录格式 |
+| **YAML 解析** | `Bun.YAML` 内置 + `yaml` npm 降级；两层 try/catch + `quoteProblematicValues()` 自动修复 YAML 特殊字符 |
+| **存储来源** | managed > `~/.claw/skills/` > 各 `.claw/skills/` (嵌套遍历) > add-dir > 遗留 `/commands/` |
+| **内置 skill** | 17 个，通过 `registerBundledSkill()` → `bundledSkills[]` 数组；在 `initBundledSkills()` 里初始化 |
+| **上下文注入** | 系统提示（`formatCommandsWithinBudget`）+ 系统提醒消息（`systemInit`）；预算 = context window × 1% ≈ 8000 字符；bundled source 始终完整不截断 |
+| **条件 skill** | `paths` frontmatter（如 `"src/core/**"`），文件被操作后下个 turn 才可见；用 `ignore` 库进行 gitignore 风格匹配 |
+| **变更监听** | chokidar 文件监视 + 300ms 防抖重载；Bun 下用 polling 避免 FSWatcher bug |
+| **使用追踪** | 记录频率 + 最近使用时间 → 影响 skill 列表排序 |
+
+### 8.2 十大拷问
+
+#### Q1：Skill 是 Tool 还是 Metadata？
+
+- Claw：Skill 是 tool，叫 `Skill`。模型看到 skill 列表在 prompt 中 → 调 `Skill({ skill: "commit" })` → 内容展开注入。
+- MyTerminal：discover 返回 `skills` 元数据数组 → 模型用 `skill_load({ name })` 获取内容。
+- ✅ **本质相同**——列表→决策→获取。`skill_load` 语义更显式（加载=取内容），不与 Claw 的 `Skill` tool 名冲突。
+
+#### Q2：Skill 调用后如何执行？
+
+- Claw：inline 用 `processPromptSlashCommand` 展开 `!command`/`$ARGUMENTS` → 返回 `ContentBlockParam[]` 注入对话。fork 启隔离 agent。
+- MyTerminal：`skill_load` 返回 `{ content, name, ... }`，agent 自己读 + 执行。
+- ✅ MyTerminal 不需要 fork（没有 agent SDK），inline = 返回内容。更简单可控。
+
+#### Q3：Frontmatter 字段名要对齐 Claw 吗？
+
+- Claw 字段：`name`, `description`, `when_to_use`, `user-invocable`, `disable-model-invocation`, `allowed-tools`, `model`, `context`, `agent`, `effort`, `paths`, `hooks`, `shell`, `version`, `argument-hint`, `arguments` — 16 个。
+- MyTerminal 原方案：`name`, `title`, `description`, `trigger`, `keywords`, `version` — 6 个。
+- ⚠️ **建议对齐**。用 `when_to_use` 替代 `title`+`trigger`（更语义化——告诉 AI 何时激活）。加 `user-invocable`（默认 true）和 `disable-model-invocation`（默认 false）。去掉 `keywords`。
+
+#### Q4：需要 args 参数化吗？
+
+- Claw：`Skill` tool 支持 `args`（如 `/commit -m "fix"`），frontmatter 声明 `arguments`/`argument-hint`。
+- MyTerminal：skill 是"知识包"而非"命令"。
+- ✅ 首期不加 args。frontmatter 预留 `argument-hint` 字段。
+
+#### Q5：Frontmatter 解析 — 手写 vs 引依赖？
+
+- Claw：Bun.YAML + `yaml` npm 双后端 + 自动引号修复。说明 YAML frontmatter 容错是刚需。
+- MyTerminal：手写最小解析器（key: value 逐行）。
+- ✅ 手写足够。MyTerminal 字段少（~6 个），手写覆盖 key:value + 数组。加 try/catch 跳过失败 skill。
+
+#### Q6：预算制是否必需？
+
+- Claw：1% context window ≈ 8000 字符。因为可能有几十个 skill 要列出。
+- MyTerminal：预计 < 20 个 skill，每个元数据 ~100 字符 → ≤ 2000 字符。
+- ✅ 首期不做，预留 `priority` 标记。
+
+#### Q7：项目级 skill？全局 skill？
+
+- Claw：四层来源——managed > user > project 嵌套 > add-dir。
+- MyTerminal：只有全局（`~/.config/myterminal/skills/`）。
+- ✅ 首期只做全局。项目级（workspace `.myterminal/skills/`）留 Phase 5。
+
+#### Q8：条件 Skill（paths/keyword）首期做吗？
+
+- Claw：`paths` frontmatter 匹配后下 turn 激活。用 `ignore` 库。
+- MyTerminal 原方案：`trigger: keyword|manual|always`。
+- ✅ 首期不做。所有 skill 都是 manual/always。条件触发留 Phase 5。
+
+#### Q9：需要文件变更监听吗？
+
+- Claw：chokidar + 300ms 防抖 + 自动重载。因为 Claw 是长期运行的 REPL。
+- MyTerminal：discover 每次请求时扫描。因为 discover 本身高频。
+- ✅ 不需要，不引入 chokidar 依赖。
+
+#### Q10：使用追踪与排序？
+
+- Claw：记录频率 + 最近使用时间，影响排序。
+- MyTerminal：首期按文件系统顺序（alphabetical）。
+- ✅ 不需要。使用追踪需持久化 → 改 store → 违背铁律。
+
+### 8.3 拷问结果：MyTerminal 方案的调整清单
+
+| # | 调整项 | 原方案 | 调整后 |
+|---|--------|--------|--------|
+| 1 | frontmatter 字段 | name, title, description, trigger, keywords, version | name, description, when_to_use, version, user-invocable, disable-model-invocation, argument-hint |
+| 2 | call tool 名 | skill_load | skill_load（保持） |
+| 3 | 手写解析器 | 待决策 | ✅ 确认，+ try/catch 跳过失败 |
+| 4 | 预算制 | 未提及 | ❌ 不做，预留 priority 标记 |
+| 5 | 条件 trigger | keyword auto-inject | ❌ 不做，首期只有 manual+always |
+| 6 | 项目级 skill | 未提及 | ❌ 不做，留 Phase 5 |
+| 7 | 文件监听 | 未提及 | ❌ 不做，discover 时扫描 |
+
+---
+
+## 9. 最终方案（拷问后，90%+ 信心）
+
+### 9.1 SKILL.md 格式（最终）
+
+```yaml
+---
+name: git-commit-helper                    # 必须 — [a-z][a-z0-9-]{2,63}
+description: Short description (10-800)    # 必须
+when_to_use: When to use this skill       # 可选 — 告诉 AI 何时激活
+version: 1.0.0                             # 可选
+user-invocable: true                       # 可选 — 默认 true。false = 仅模型调用（不在用户 /skills 列表显示）
+disable-model-invocation: false            # 可选 — 默认 false。true = 仅用户触发，模型不可主动调用
+argument-hint: "<args>"                    # 可选 — 预留，后续条件 skill 用
+---
+
+# Skill 正文（Markdown）
+
+任何 Markdown 内容。agent 读取后作为指令执行。
+可以引用其它 builtin tool（如 execute_cli、write_file）。
+```
+
+### 9.2 确认决策
+
+| 决策项 | 结论 |
+|---|---|
+| frontmatter 解析 | ✅ 手写最小解析器（key: value + array），保持零运行时依赖 |
+| keyword auto-inject | ❌ 首期不做 |
+| TUI 管理 UI | ❌ 首期不做 |
+| 预算制 | ❌ 首期不做（skill 数量 < 20，无需） |
+| 项目级 skill | ❌ 留 Phase 5 |
+| 文件监听 | ❌ 不引入 chokidar，discover 时扫描 |
+
+### 9.3 信心评估
+
+- ✅ 三机制理解：100%（已剖析 Claw 29 文件/6103 行 + MyTerminal 装配链）
+- ✅ 设计合理性：95%（对齐 Claw 的 frontmatter 格式，简化掉不需要的部分）
+- ✅ 可实现性：95%（接入点明确，改动量小，有 Claw 参照）
+- ⚠️ 剩余不确定性：5%（实践中 frontmatter 手写解析器的边界 case；GPT/Claude 对 skill 元数据格式的理解效果需实测）
+
+**总体信心：90%+。可以开始实施 Phase 1 —— `src/skills.ts` 地基。**
