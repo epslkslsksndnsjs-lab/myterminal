@@ -14,7 +14,7 @@ import { FatalErrorBoundary } from './FatalErrorBoundary.js';
 import { FormDialog } from './components/FormDialog.js';
 import { routeCommand, commandCompletions, type CommandAction } from './model/command-router.js';
 import { copyFor } from './copy/index.js';
-import { Overview } from './screens/Overview.js';
+import { Home } from './screens/Home.js';
 import { Sessions, SessionDetail } from './screens/Sessions.js';
 import { Messages, ConversationDetail } from './screens/Messages.js';
 import { Timeline } from './screens/Timeline.js';
@@ -278,7 +278,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} zh={zh} />
     : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} zh={zh} />
-      : tab === 0 ? <Overview runtime={runtime} state={state} theme={theme} zh={zh} reveal={revealCredentials} />
+      : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} />
         : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
           : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
             : tab === 3 ? <Timeline theme={theme} zh={zh} />

@@ -14,6 +14,8 @@ export type Copy = {
   verbPrefix: string;
   /** L1：各页空状态 */
   emptyStates: Record<EmptyStateKey, string>;
+  /** L1：主屏状态摘要句 */
+  homeSummary(active: number, pending: number): string;
   /** L2：输入栏 */
   inputPlaceholder: string;
   inputHintNormal: string;

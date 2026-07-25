@@ -10,6 +10,11 @@ export const en: Copy = {
   },
   statusVerbs: ['Tinkering', 'Pondering', 'Fiddling', 'Noodling', 'Whittling', 'Cogitating', 'Tuning'],
   verbPrefix: '',
+  homeSummary(active: number, pending: number): string {
+    if (active > 0 && pending === 0) return `${active} session(s) on the job. All good.`;
+    if (pending > 0) return `${pending} session(s) waiting for a controller — press 2.`;
+    return 'All quiet. Press n to delegate, or type /new.';
+  },
   emptyStates: {
     sessions: 'No sessions yet. Press n to delegate some work, or type /new.',
     messages: 'Crickets… press m to say something, or just type below.',

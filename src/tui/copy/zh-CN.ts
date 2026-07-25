@@ -11,6 +11,11 @@ export const zhCN: Copy = {
   },
   statusVerbs: ['捣鼓', '琢磨', '摆弄', '拾掇', '鼓捣', '忙活', '打磨'],
   verbPrefix: '正在',
+  homeSummary(active: number, pending: number): string {
+    if (active > 0 && pending === 0) return `${active} 个 session 正在干活，一切正常。`;
+    if (pending > 0) return `${pending} 个 session 等你安排 controller，按 2 去看看。`;
+    return '现在很闲。按 n 派个活儿，或输入 /new。';
+  },
   emptyStates: {
     sessions: '还没有 session。按 n 派个活儿出去，或输入 /new。',
     messages: '静悄悄的……按 m 说点什么，或直接在下方输入消息。',
