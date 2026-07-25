@@ -1633,3 +1633,70 @@ test('installers keep legacy backups under config and Windows launcher avoids Po
   assert.match(windows, /Remove-Item[^\n]*myterminal\.ps1|\$PowerShellLauncher/);
   assert.doesNotMatch(windows, /powershell\.exe -NoProfile -ExecutionPolicy Bypass -File/);
 });
+
+test('policy rejections (NEXT_CALL_REQUIRED) are audited as policy_rejected, not failed', async () => {
+  const server = await createRuntime({ actionsContinuationMode: 'next-call' });
+  try {
+    const created = await root(server, 'policy-audit');
+    const identity = created.identity;
+    await call(server, 'session_checkpoint', {
+      phase: 'working', summary: 'Plan set.',
+      nextCalls: [{ tool: 'workspace_info', input: {}, purpose: 'Next step.' }],
+    }, identity);
+    const wrong = await call(server, 'list_dir', { path: '.' }, identity);
+    assert.equal(wrong.body.error.code, 'NEXT_CALL_REQUIRED');
+    const facts = server.runtime.store.auditFacts(500);
+    const rejected = facts.find((f) => f.action === 'list_dir' && f.status === 'policy_rejected');
+    assert.ok(rejected, 'policy rejection should be audited as policy_rejected');
+    assert.equal(rejected.errorCode, 'NEXT_CALL_REQUIRED');
+    const failedListDir = facts.find((f) => f.action === 'list_dir' && f.status === 'failed');
+    assert.equal(failedListDir, undefined, 'policy rejection must not be audited as failed');
+  } finally { await server.close(); }
+});
+
+test('CONTINUATION_PLAN_REQUIRED checkpoint rejection is audited as policy_rejected', async () => {
+  const server = await createRuntime({ actionsContinuationMode: 'next-call' });
+  try {
+    const created = await root(server, 'checkpoint-policy-audit');
+    const identity = created.identity;
+    const missing = await call(server, 'session_checkpoint', { phase: 'working', summary: 'No nextCalls.' }, identity);
+    assert.equal(missing.body.error.code, 'CONTINUATION_PLAN_REQUIRED');
+    const facts = server.runtime.store.auditFacts(500);
+    const rejected = facts.find((f) => f.action === 'session_checkpoint' && f.status === 'policy_rejected');
+    assert.ok(rejected, 'checkpoint policy rejection should be audited as policy_rejected');
+    assert.equal(rejected.errorCode, 'CONTINUATION_PLAN_REQUIRED');
+  } finally { await server.close(); }
+});
+
+test('search_text and find_files normalize the pattern alias to query (Claude Code compatibility)', async () => {
+  const server = await createRuntime({ actionsContinuationMode: 'off' });
+  try {
+    const created = await root(server, 'alias-test');
+    const identity = created.identity;
+    const search = await call(server, 'search_text', { pattern: 'hello' }, identity);
+    assert.equal(search.body.ok, true, JSON.stringify(search.body));
+    assert.ok(search.body.data.result.matches.length > 0, 'search_text should find hello via pattern alias');
+    const find = await call(server, 'find_files', { pattern: 'hello' }, identity);
+    assert.equal(find.body.ok, true, JSON.stringify(find.body));
+    assert.ok(find.body.data.result.matches.length > 0, 'find_files should match hello.txt via pattern alias');
+  } finally { await server.close(); }
+});
+
+test('auditFact fills UNKNOWN_ERROR for failed records missing an error code', () => {
+  const dirs = tempWorkspace();
+  try {
+    const store = new MyTerminalStore(dirs.stateDir);
+    const created = store.registerRoot({ name: 'fallback-test' });
+    store.auditEvent(created.session.id, {
+      id: 'act_test_fallback', timestamp: new Date().toISOString(), completedAt: new Date().toISOString(),
+      source: 'actions', action: 'execute_cli', status: 'failed', durationMs: 100,
+      workspace: dirs.workspaceDir, session: created.session.id, args: {}, result: {},
+    });
+    const facts = store.auditFacts(100);
+    const fact = facts.find((f) => f.id === 'act_test_fallback');
+    assert.ok(fact, 'fallback audit fact should exist');
+    assert.equal(fact.status, 'failed');
+    assert.equal(fact.errorCode, 'UNKNOWN_ERROR', 'missing error code should fall back to UNKNOWN_ERROR');
+    assert.ok(fact.error && fact.error.code === 'UNKNOWN_ERROR');
+  } finally { fs.rmSync(dirs.workspaceDir, { recursive: true, force: true }); }
+});
