@@ -51,7 +51,7 @@ CONTINUATION AND BACKGROUND TASKS
 - When continuation.mustContinue=true, the task is unfinished and a user-facing answer is prohibited. Only waiting, blocked, completed, or cancelled may end a work turn.
 
 AUDIT AND LOGS
-- Every Apps or Actions call is represented by one evolving audit record. It starts as running with source, tool, start time, workspace/session, and sanitized complete arguments; the same action ID finishes as completed, failed, or timeout with sanitized complete result, completion time, and duration.
+- Every Apps or Actions call is represented by one evolving audit record. It starts as running with source, tool, start time, workspace/session, and sanitized complete arguments; the same action ID finishes as completed, policy_rejected (harness rejection, not a tool error; shown in gold as POLICY in logs, excluded from true error rate), failed, or timeout with sanitized complete result, completion time, and duration.
 - Sensitive values are redacted before persistence, but redaction is a safety layer rather than permission to send unnecessary credentials or private content. Never include a token in ordinary tool input or prose.
 
 WORK PRACTICE
