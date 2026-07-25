@@ -18,6 +18,7 @@ const COMMAND_LIST: { cmd: string; alias?: string; descZh: string; descEn: strin
   { cmd: '/new', descZh: '创建新 session', descEn: 'Create new session' },
   { cmd: '/send', descZh: '发送消息', descEn: 'Send message' },
   { cmd: '/refresh', descZh: '刷新 Diff', descEn: 'Refresh diff' },
+  { cmd: '/help', alias: '/帮助', descZh: '打开帮助（本页）', descEn: 'Open help (this page)' },
 ];
 
 const SHORTCUTS: { key: string; descZh: string; descEn: string }[] = [
