@@ -276,11 +276,11 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     showNotice(zh ? '已复制所选文字' : 'Selection copied');
   }, [renderer, showNotice, zh]);
 
-  const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} zh={zh} />
-    : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} zh={zh} />
+  const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} zh={zh} copy={copy} />
+    : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} zh={zh} copy={copy} />
       : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} />
-        : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
-          : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
+        : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
+          : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
             : tab === 3 ? <Timeline theme={theme} zh={zh} />
               : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} />
                 : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} onSelect={selectItem} />
