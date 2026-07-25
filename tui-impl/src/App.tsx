@@ -1,0 +1,1 @@
+import React,{type ReactNode}from"react";export type AppProps={children:ReactNode;exitOnCtrlC?:boolean};function App(p:AppProps):React.ReactElement{return React.createElement("app",{exitOnCtrlC:p.exitOnCtrlC??true},p.children);}App.displayName="App";export default App;

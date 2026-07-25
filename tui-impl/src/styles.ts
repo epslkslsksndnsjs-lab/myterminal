@@ -1,0 +1,3 @@
+export interface Styles { flexGrow?:number;flexShrink?:number;flexDirection?:"row"|"column";alignItems?:"flex-start"|"center"|"flex-end"|"stretch";justifyContent?:"flex-start"|"center"|"flex-end"|"space-between";gap?:number;padding?:number;width?:number|string;height?:number;display?:"flex"|"none";overflow?:"visible"|"hidden";borderStyle?:"single"|"double"|"round"|"bold"|"classic"; }
+export const DEFAULTS = { flexGrow:0,flexShrink:1,flexDirection:"row" as const,display:"flex" as const };
+export function resolveWidth(v:number|string|undefined,cols:number):number{if(v===undefined)return 0;if(typeof v==="number")return v;if(v.endsWith("%"))return Math.floor(parseFloat(v)/100*cols);return parseInt(v,10)||0;}
