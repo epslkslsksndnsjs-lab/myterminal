@@ -51,7 +51,7 @@ Agent 上下文
 - continuation.mustContinue=true 表示任务未完成，禁止面向用户回复。只有 waiting、blocked、completed 或 cancelled 可以结束一个工作 turn。
 
 审计与日志
-- 每次 Apps 或 Actions 调用只对应一条持续更新的审计记录。开始时以 running 显示来源、工具、开始时间、workspace/session 和脱敏后的完整参数；相同 action ID 返回后更新为 completed、failed 或 timeout，并补充脱敏后的完整结果、完成时间和耗时。
+- 每次 Apps 或 Actions 调用只对应一条持续更新的审计记录。开始时以 running 显示来源、工具、开始时间、workspace/session 和脱敏后的完整参数；相同 action ID 返回后更新为 completed、policy_rejected（策略拦截，非工具错误，Logs 显示为金色 POLICY，不计入真错误率）、failed 或 timeout，并补充脱敏后的完整结果、完成时间和耗时。
 - 敏感值会在持久化前脱敏，但脱敏只是安全层，不代表可以发送不必要的凭据或私有内容。普通工具参数和自然语言中绝不能包含 token。
 
 工作规范
