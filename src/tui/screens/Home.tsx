@@ -10,6 +10,7 @@ import { logicalSessionGroups } from '../../tui-model.js';
 import type { Copy } from '../copy/index.js';
 import { greetingFor } from '../copy/index.js';
 import { Mascot } from '../components/Mascot.js';
+import { BlinkingDot } from '../components/BlinkingDot.js';
 import { useMascotMood } from '../hooks/useMascotMood.js';
 import { useTimelineModel } from '../hooks/useTimelineModel.js';
 import type { ActivityEntry } from '../model/timeline-merge.js';
@@ -110,7 +111,7 @@ function SessionGroupRow({ group, theme, zh, now, copy }: {
   return (
     <box flexDirection="column" marginBottom={1}>
       <box flexDirection="row" gap={1} width="100%">
-        <text fg={theme.accent} wrapMode="none">●</text>
+        <BlinkingDot active={current.presence === 'claimed'} theme={theme} />
         <text fg={theme.text}><b>{groupName} · {current.role}</b></text>
         <box flexGrow={1} />
         <text fg={phaseColor(theme, current.phase)} wrapMode="none">● {current.phase}</text>

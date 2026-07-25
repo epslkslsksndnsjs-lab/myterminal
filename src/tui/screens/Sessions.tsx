@@ -2,7 +2,6 @@
  * Sessions — 会话页（ADR-0004 决策 7）。
  * 卡片树 + 事件流详情（无 JSON 裸输出）。M4a 重做。
  */
-import { useEffect, useState } from 'react';
 import type { MyTerminalRuntime } from '../../server.js';
 import { logicalSessionGroups } from '../../tui-model.js';
 import type { StoredState } from '../../types.js';
@@ -11,23 +10,11 @@ import type { Copy } from '../copy/index.js';
 import { Heading, Line, SessionStatus } from './shared.js';
 import { viewForHistoryEntry } from '../model/history-entry.js';
 import type { HistoryEntryView } from '../model/history-entry.js';
+import { BlinkingDot } from '../components/BlinkingDot.js';
 
 /** tone → theme 颜色映射 */
 function toneColor(theme: Theme, tone: HistoryEntryView['tone']): string {
   return theme[tone];
-}
-
-/** 会话活跃时黑白闪烁的圆点；非活跃保持原 accent 色 */
-function BlinkingDot({ phase, presence, theme }: { phase: string; presence: string; theme: Theme }) {
-  const working = phase === 'working' && presence === 'claimed';
-  const [on, setOn] = useState(true);
-  useEffect(() => {
-    if (!working) return;
-    const timer = setInterval(() => setOn((v) => !v), 500);
-    return () => clearInterval(timer);
-  }, [working]);
-  const fg = !working ? theme.accent : on ? theme.text : theme.background;
-  return <text fg={fg} wrapMode="none">●</text>;
 }
 
 export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
@@ -63,7 +50,7 @@ export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
           >
             <box flexDirection="row" justifyContent="space-between" flexWrap="wrap" width="100%">
               <box flexDirection="row" gap={1} alignItems="center">
-                <BlinkingDot phase={current.phase} presence={current.presence} theme={theme} />
+                <BlinkingDot active={current.phase === 'working' && current.presence === 'claimed'} theme={theme} />
                 <text fg={active ? theme.selectedText : theme.text} wrapMode="word"><b>{group.title}</b></text>
               </box>
               <SessionStatus session={current} theme={theme} />
