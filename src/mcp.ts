@@ -116,7 +116,12 @@ function contextFromCall(callContext: unknown): InvocationContext {
   };
 }
 
-export function createMcpServer(service: ExtensionFacade): McpServer {
+export interface SessionIdentityCache {
+  get(): { sessionId: string; sessionToken: string } | undefined;
+  set(id: { sessionId: string; sessionToken: string }): void;
+}
+
+export function createMcpServer(service: ExtensionFacade, identityCache?: SessionIdentityCache): McpServer {
   const server = new McpServer({ name: 'myterminal', version: CURRENT_VERSION }, {
     instructions: [
       'MyTerminal sessions are auditable work contexts, not ChatGPT conversation IDs.',
@@ -166,7 +171,20 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
     server.registerTool(name, {
       title, description, inputSchema, outputSchema: responseSchema, annotations,
       _meta: { 'openai/toolInvocation/invoking': `Running ${title}…`, 'openai/toolInvocation/invoked': `${title} ready` },
-    }, async (input, callContext) => toToolResult(await service.call({ tool: name, input: input as JsonObject }, contextFromCall(callContext)), `${title} completed.`));
+    }, async (input, callContext) => {
+      const ctx = contextFromCall(callContext);
+      const cached = identityCache?.get();
+      const callInput: JsonObject = { tool: name, input: input as JsonObject };
+      if (cached) callInput.identity = cached;
+      const response = await service.call(callInput, ctx);
+      if (response.ok && (name === 'session_register' || name === 'session_inherit')) {
+        const result = (response.data as JsonObject | undefined)?.result as JsonObject | undefined;
+        if (result?.identity && typeof (result.identity as JsonObject).sessionId === 'string' && typeof (result.identity as JsonObject).sessionToken === 'string') {
+          identityCache?.set(result.identity as { sessionId: string; sessionToken: string });
+        }
+      }
+      return toToolResult(response, `${title} completed.`);
+    });
   };
   const stringList = z.array(z.string()).max(100);
   const plannedCall = z.object({ tool: z.string().min(3).max(64), input: z.record(z.string(), z.unknown()), purpose: z.string().min(1).max(500).optional() });
@@ -210,6 +228,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
 
 export class MyTerminalMcpTransport {
   private readonly sessions = new Map<string, LiveSession>();
+  private readonly identityForSession = new Map<string, { sessionId: string; sessionToken: string }>();
 
   constructor(private readonly service: ExtensionFacade) {}
 
@@ -221,14 +240,19 @@ export class MyTerminalMcpTransport {
     const sessionId = req.header('mcp-session-id') || undefined;
     let session = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!session && req.method === 'POST' && isInitializeRequest(req.body)) {
-      const server = createMcpServer(this.service);
+      const mcpSessionId = randomUUID();
+      const cache: SessionIdentityCache = {
+        get: () => this.identityForSession.get(mcpSessionId),
+        set: (id) => this.identityForSession.set(mcpSessionId, id),
+      };
+      const server = createMcpServer(this.service, cache);
       let transport!: StreamableHTTPServerTransport;
       transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
+        sessionIdGenerator: () => mcpSessionId,
         onsessioninitialized: (id) => { this.sessions.set(id, { server, transport }); },
-        onsessionclosed: (id) => { this.sessions.delete(id); },
+        onsessionclosed: (id) => { this.sessions.delete(id); this.identityForSession.delete(mcpSessionId); },
       });
-      transport.onclose = () => { if (transport.sessionId) this.sessions.delete(transport.sessionId); };
+      transport.onclose = () => { if (transport.sessionId) this.sessions.delete(transport.sessionId); this.identityForSession.delete(mcpSessionId); };
       await server.connect(transport);
       session = { server, transport };
     }
