@@ -1,0 +1,117 @@
+// ADR-0007 决策 19：工具结果预算——大小限制 + 截断 + 消息组预算
+// ADR-0007 决策 30 Bug 1：replacementDecisions 跨 turn 冻结必须"先 get 再 set"
+// ADR-0007 决策 18：ToolResult 类型在此定义并导出，M5 直接 import
+
+// ── 常量（决策 19）──
+
+const MAX_RESULT_SIZE_CHARS = 50_000;     // 单结果上限
+const PREVIEW_SIZE = 2_000;               // 截断后预览字符数
+const MAX_RESULTS_PER_MESSAGE = 200_000;  // 消息组预算
+const BUDGET_COMPRESS_THRESHOLD = PREVIEW_SIZE * 2; // 已经很小的结果不压缩（≤ 4000 字符）
+
+// ── 类型（决策 18：M5 从此处 import，不许重复定义）──
+
+export type ToolResult = {
+  tool_use_id: string;
+  content: string;
+  is_error: boolean;
+};
+
+// ── 跨 turn 冻结 Map（模块级，决策 19 + Bug 1 修复）──
+
+/**
+ * 跨 turn 冻结替换决策。
+ * 一旦决定截断某 tool_use_id 的结果，后续 turn 也用截断版（prompt cache 稳定性）。
+ * 注意：这是模块级变量，不需要导出（通过 enforceMessageBudget 间接读/写）。
+ */
+const replacementDecisions = new Map<string, 'full' | 'preview'>();
+
+/**
+ * 重置冻结决策——compact 后或测试用。
+ * 注释标注用途，避免误用。
+ */
+export function resetReplacementDecisions(): void {
+  replacementDecisions.clear();
+}
+
+// ── 单结果截断（决策 19）──
+
+/**
+ * 结果超过 MAX_RESULT_SIZE_CHARS 时截断为预览 + 尾部标记。
+ * 不超限则原样返回。
+ */
+export function truncateResult(content: string): string {
+  if (content.length <= MAX_RESULT_SIZE_CHARS) return content;
+
+  const preview = content.slice(0, PREVIEW_SIZE);
+  return `${preview}\n\n[Result truncated. Original size: ${content.length} chars. Use read_file with offset/limit to see more.]`;
+}
+
+// ── 辅助：压缩为预览（Bug 1 修复共用逻辑）──
+
+function truncateToPreview(content: string): string {
+  const preview = content.slice(0, PREVIEW_SIZE);
+  return `${preview}\n\n[Result budget-compressed. Original: ${content.length} chars.]`;
+}
+
+// ── 消息组预算（决策 19 + Bug 1 修复）──
+
+/**
+ * 对一批 ToolResult 应用消息组预算。
+ *
+ * **Bug 1 修复版**（决策 30）：顺序必须如此——
+ * ① 先遍历 results，凡 replacementDecisions.get(id) === 'preview' 的强制压成预览
+ * ② 再算总字符，≤ 200K 直接返回
+ * ③ 超预算：按 content 长度降序，逐个把"还不够小"的结果压成预览并冻结
+ *
+ * @param results 本消息组的所有工具结果
+ * @returns 应用预算后的结果数组（原地修改）
+ */
+export function enforceMessageBudget(results: ToolResult[]): ToolResult[] {
+  // ① 先应用已冻结的截断决策（Bug 1 修复：之前只 set 不 get）
+  for (const r of results) {
+    if (replacementDecisions.get(r.tool_use_id) === 'preview') {
+      r.content = truncateToPreview(r.content);
+    }
+  }
+
+  // ② 算总字符，≤ 200K 直接返回
+  const totalChars = results.reduce((sum, r) => sum + r.content.length, 0);
+  if (totalChars <= MAX_RESULTS_PER_MESSAGE) return results;
+
+  // ③ 超预算——最大优先替换
+  const indexed = results
+    .map((r, i) => ({ r, i, size: r.content.length }))
+    .sort((a, b) => b.size - a.size); // 降序
+
+  let currentTotal = totalChars;
+  for (const { r } of indexed) {
+    if (currentTotal <= MAX_RESULTS_PER_MESSAGE) break;
+
+    // 已经很小的结果不压缩
+    if (r.content.length <= BUDGET_COMPRESS_THRESHOLD) continue;
+
+    const originalSize = r.content.length;
+    r.content = truncateToPreview(r.content);
+    currentTotal -= originalSize - r.content.length;
+
+    // 冻结决策——后续 turn 也用截断版
+    replacementDecisions.set(r.tool_use_id, 'preview');
+  }
+
+  return results;
+}
+
+// ── 空结果处理（决策 19）──
+
+/**
+ * 空 tool_result 会导致某些模型误判 turn 边界。
+ * 空/纯空白内容替换为 "(toolName completed with no output)"。
+ * 非空内容原样返回。
+ */
+export function ensureNonEmpty(content: string, toolName: string): string {
+  if (!content || content.trim().length === 0) {
+    return `(${toolName} completed with no output)`;
+  }
+  return content;
+}
