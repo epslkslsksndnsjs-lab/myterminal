@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, type MyTerminalStore } from './store.js';
 import { renderTemplate, resolveWorkspacePath, validateJsonSchema } from './security.js';
+import { listSkills } from './skills.js';
 import { runCommand } from './core-tools.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
@@ -235,6 +236,7 @@ export class ExtensionService {
             apps: 'Apps exposes both narrow direct tools and the full extension_call/extension_register facade. Use direct tools when their schema fits; use the facade for arbitrary commands, overwriting writes, patches, and custom extensions.',
           },
           bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
+          skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
         } };
       }
       sessionId = authenticated.id;
@@ -256,6 +258,7 @@ export class ExtensionService {
       const tools = query && matches.length === 0 ? catalog : matches;
       const response: ToolResponse = { ok: true, data: {
         agentMd: loadAgentMd(this.config.settingsPath),
+        skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
         tools, total: tools.length,
         instructions: {
           identity: 'Every concrete call and registry change belongs to the authenticated MyTerminal session. Never use openai/session as MyTerminal identity.',
