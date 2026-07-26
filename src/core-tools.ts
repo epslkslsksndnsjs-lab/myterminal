@@ -8,6 +8,7 @@ import { resolveWorkspacePath } from './security.js';
 import type { JsonObject, JsonSchema, TaskPackage, ToolDefinition } from './types.js';
 import { disarmSessionResources } from './session-resources.js';
 import { continuationPolicy } from './continuation.js';
+import { listSkills, loadSkill } from './skills.js';
 
 const IGNORED_DIRECTORIES = new Set(['.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo']);
 
@@ -530,6 +531,26 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     name: 'message_conversation', title: 'Read two-way conversation', description: 'Read the complete recent two-way conversation between the authenticated session and another session selected by name or ID.',
     inputSchema: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false }, annotations: readOnly,
     invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
+  });
+  add({
+    name: 'skill_list', title: 'List skills', description: 'List installed reusable skill manifests (name, description, when_to_use). No content returned — call skill_load for full instructions.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: readOnly,
+    invoke: async () => {
+      const configDir = path.dirname(config.settingsPath);
+      const skills = listSkills(configDir, config.workspaceDir);
+      return { skills };
+    },
+  });
+  add({
+    name: 'skill_load', title: 'Load skill', description: 'Load a skill\'s full Markdown content by name. Returns a bounded instruction block the model should read and follow.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, required: ['name'], additionalProperties: false }, annotations: readOnly,
+    invoke: async (input) => {
+      const configDir = path.dirname(config.settingsPath);
+      const name = asString(input.name, 'name');
+      const record = loadSkill(configDir, config.workspaceDir, name);
+      if (!record) throw new MyTerminalError('NOT_FOUND', `Skill not found: ${name}`);
+      return { content: record.content };
+    },
   });
   return tools;
 }
