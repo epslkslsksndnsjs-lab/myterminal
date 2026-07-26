@@ -259,6 +259,16 @@ function draftAgentMd(configDir: string): void {
   }
 }
 
+function draftSkillDirs(configDir: string, workspaceDir: string): void {
+  try {
+    for (const dir of [path.join(configDir, 'skills'), path.join(workspaceDir, '.myterminal', 'skills')]) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+    }
+  } catch {
+    // best-effort: skill directory creation must never block startup
+  }
+}
+
 export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTerminalConfig {
   const stored = readMyTerminalSettings(env);
   const base = stored || createDefaultSettings(path.resolve(envWorkspace(env) || defaultWorkspaceForCwd()));
@@ -270,6 +280,7 @@ export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTe
   const workspaceDir = realpathSync(settings.workspaceDir);
   const configDir = path.dirname(settingsPath(env));
   draftAgentMd(configDir);
+  draftSkillDirs(configDir, workspaceDir);
   const stateDir = workspaceStateDir(configDir, workspaceDir);
   const legacyGlobalStateDir = path.join(configDir, 'state');
   const migratedGlobalStateDir = path.join(configDir, 'state.migrated');
