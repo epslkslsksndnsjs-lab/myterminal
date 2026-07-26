@@ -17,8 +17,13 @@ import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
 import { commandPassiveLock, disarmAllSessionResources, passiveLockStatus, reapSessionResources, startPassiveLockService } from './session-resources.js';
 import type { MyTerminalConfig, MyTerminalSettings, ToolAuditEvent, ToolResponse } from './types.js';
 import { assessRuntimeEnvironment, type RuntimeEnvironmentStatus } from './config.js';
+import { readMyTerminalSettings } from './config.js';
 import { ControlChannelMonitor, isExternalControlUrl, type ControlChannelState } from './control-channel.js';
 import { writeRuntimeLifecycle, type RuntimeLifecyclePhase } from './runtime-lifecycle.js';
+import { initSubagentRunner } from './subagent/runner.js';
+import { runSubagent } from './subagent/executor.js';
+import { listAllSubagents } from './subagent/store.js';
+import type { SubagentSettings } from './types.js';
 
 export type RuntimeLog = { at: string; level: 'info' | 'error'; message: string; audit?: ToolAuditEvent };
 export type RuntimeHealth = { phase: 'active' | 'revalidating' | 'degraded' | 'shutting_down'; environment: RuntimeEnvironmentStatus; message?: string; lastCheckedAt: string };
@@ -63,6 +68,33 @@ export class MyTerminalRuntime {
     this.store = new MyTerminalStore(config.stateDir);
     const builtins = createBuiltinTools(config, this.store);
     this.extensions = new ExtensionService(config, this.store, builtins, (event) => this.logAuditEvent(event));
+    // M8：初始化 SubagentRunner——读 settings 获取 subagent 配置，注入 delegate + callSubagent 通知链路
+    const settings = readMyTerminalSettings();
+    const subagentSettings: SubagentSettings = settings?.subagent ?? {
+      enabled: true, provider: 'openai', model: 'gpt-4o', maxTurns: 50, timeoutSec: 300, maxParallel: 2,
+    };
+    initSubagentRunner({
+      runSubagentImpl: runSubagent,
+      settings: subagentSettings,
+      workspaceDir: config.workspaceDir,
+      notify: async (childId, childIdentity, parentId, body) => {
+        await this.extensions.callSubagent(
+          { tool: 'message_send', input: { to: parentId, body }, identity: childIdentity },
+          { transport: 'subagent' },
+        );
+      },
+      checkpoint: async (childId, childIdentity, phase, summary) => {
+        await this.extensions.callSubagent(
+          { tool: 'session_checkpoint', input: { phase, summary }, identity: childIdentity },
+          { transport: 'subagent' },
+        );
+      },
+      registerAndClaimChild: (parentId, args) => {
+        const { session, claimCode } = this.store.registerDelegate(parentId, { name: args.name, task: args.task });
+        const result = this.store.inherit(session.id, { claimCode });
+        return { session: result.session, identity: result.identity };
+      },
+    });
     this.mcp = new MyTerminalMcpTransport(this.extensions);
     this.app = express();
     this.app.disable('x-powered-by');
@@ -236,6 +268,11 @@ export class MyTerminalRuntime {
 
   activeMcpSessions(): number {
     return this.mcp.activeSessions();
+  }
+
+  /** M8：TUI Subagents tab 数据源——返回所有 subagent 记录 */
+  listSubagents() {
+    return listAllSubagents();
   }
 
   runtimeLogRevision(): number { return this.runtimeLogRevisionValue; }

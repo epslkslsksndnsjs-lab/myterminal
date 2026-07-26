@@ -13,7 +13,7 @@ import { CURRENT_VERSION } from '../version.js';
 import { commandPassiveLock, passiveLockStatus } from '../session-resources.js';
 import { runtimeSettingsSnapshot } from '../runtime-settings.js';
 
-export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs'] as const;
+export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents'] as const;
 export type Tab = (typeof TABS)[number];
 export type { Ask, Detail, FormQuestion, RuntimeReconfigure, RuntimeReconfigureResult } from './contracts.js';
 import type { Ask, Detail, FormQuestion, RuntimeReconfigure } from './contracts.js';

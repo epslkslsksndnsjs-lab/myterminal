@@ -170,6 +170,11 @@ export function getRecentAuditLogs(id: string): ToolAuditLog[] {
   return record.auditLogs.slice(-20);
 }
 
+/** M8：列出所有 subagent（TUI 列表页数据源） */
+export function listAllSubagents(): SubagentRecord[] {
+  return [...subagents.values()];
+}
+
 /** 仅供测试——清空全部状态 */
 export function clearAllSubagents(): void {
   subagents.clear();

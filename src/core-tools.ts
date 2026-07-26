@@ -9,6 +9,7 @@ import type { JsonObject, JsonSchema, TaskPackage, ToolDefinition } from './type
 import { disarmSessionResources } from './session-resources.js';
 import { continuationPolicy } from './continuation.js';
 import { listSkills, loadSkill } from './skills.js';
+import { getSubagentRunner } from './subagent/runner.js';
 
 const IGNORED_DIRECTORIES = new Set(['.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo']);
 
@@ -552,6 +553,96 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       return { content: record.content };
     },
   });
+
+  // ── Subagent 工具（ADR-0009 决策 1/8/9/12）──
+  const SUBAGENT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
+  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek'];
+
+  add({
+    name: 'subagent_start', title: 'Start subagent',
+    description: 'Start a subagent to work on a sub-task asynchronously. Returns taskId immediately; poll with subagent_status for progress. Completion arrives as a message notification.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        objective: { type: 'string', minLength: 1, maxLength: 4000 },
+        background: { type: 'string', maxLength: 4000 },
+        deliverables: { type: 'array', items: { type: 'string' }, maxItems: 20 },
+        acceptanceCriteria: { type: 'array', items: { type: 'string' }, maxItems: 20 },
+        constraints: { type: 'array', items: { type: 'string' }, maxItems: 20 },
+        provider: { type: 'string', enum: PROVIDER_ENUM },
+        model: { type: 'string' },
+        maxTurns: { type: 'integer', minimum: 1, maximum: 200 },
+        timeoutSec: { type: 'integer', minimum: 30, maximum: 3600 },
+        readOnly: { type: 'boolean' },
+      },
+      required: ['objective'],
+      additionalProperties: false,
+    },
+    annotations: SUBAGENT_ANNOTATIONS,
+    invoke: async (input, context) => {
+      // 决策 8 防线 A：递归防护——subagent 不能启动 sub-subagent
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot start sub-subagents.');
+      }
+      const session = actor(context);
+      const runner = getSubagentRunner();
+      return runner.start(session.id, {
+        objective: asString(input.objective, 'objective'),
+        background: asOptionalString(input.background),
+        deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
+        acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
+        constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
+        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | undefined,
+        model: asOptionalString(input.model),
+        maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
+        timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
+        readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,
+      }) as unknown as JsonObject;
+    },
+  });
+
+  add({
+    name: 'subagent_status', title: 'Subagent status',
+    description: 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up; subsequent calls return NOT_FOUND.',
+    inputSchema: {
+      type: 'object',
+      properties: { taskId: { type: 'string', minLength: 1 } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    annotations: readOnly,
+    invoke: async (input) => {
+      const runner = getSubagentRunner();
+      try {
+        return runner.status(asString(input.taskId, 'taskId')) as unknown as JsonObject;
+      } catch (err) {
+        const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
+        throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);
+      }
+    },
+  });
+
+  add({
+    name: 'subagent_abort', title: 'Abort subagent',
+    description: 'Abort a running subagent. Idempotent — calling on an already-terminal subagent returns its current status.',
+    inputSchema: {
+      type: 'object',
+      properties: { taskId: { type: 'string', minLength: 1 } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    annotations: SUBAGENT_ANNOTATIONS,
+    invoke: async (input) => {
+      const runner = getSubagentRunner();
+      try {
+        return runner.abort(asString(input.taskId, 'taskId')) as unknown as JsonObject;
+      } catch (err) {
+        const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
+        throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);
+      }
+    },
+  });
+
   return tools;
 }
 
