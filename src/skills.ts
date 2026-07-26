@@ -24,12 +24,12 @@ type ParsedMarkdown = {
   content: string;
 };
 
-function skillsDir(baseDir: string): string {
-  return path.join(baseDir, 'skills');
+function projectSkillsDir(workspaceDir: string): string {
+  return path.join(workspaceDir, '.myterminal', 'skills');
 }
 
-function skillPath(baseDir: string, name: string): string {
-  return path.join(skillsDir(baseDir), name, SKILL_FILE);
+function projectSkillPath(workspaceDir: string, name: string): string {
+  return path.join(projectSkillsDir(workspaceDir), name, SKILL_FILE);
 }
 
 function ensureTrailingNewline(content: string): string {
@@ -159,8 +159,8 @@ function scanDir(dir: string): Map<string, { manifest: SkillManifest; content: s
 
 /** List installed skills (metadata only, no content). Global overrides project-level. */
 export function listSkills(configDir: string, workspaceDir: string): SkillManifest[] {
-  const project = scanDir(skillsDir(workspaceDir));
-  const global = scanDir(skillsDir(configDir));
+  const project = scanDir(projectSkillsDir(workspaceDir));
+  const global = scanDir(path.join(configDir, 'skills'));
 
   // Global overrides project level for same-name skills
   for (const [name, skill] of global) {
@@ -173,14 +173,14 @@ export function listSkills(configDir: string, workspaceDir: string): SkillManife
 /** Load a skill's full content by name. Returns null if not found. */
 export function loadSkill(configDir: string, workspaceDir: string, name: string): SkillRecord | null {
   // Global first (global takes priority)
-  const globalPath = skillPath(configDir, name);
+  const globalPath = path.join(configDir, 'skills', name, SKILL_FILE);
   if (existsSync(globalPath)) {
     const parsed = readSkillFile(globalPath);
     if (parsed) return { ...parsed.manifest, content: parsed.content };
   }
 
   // Fallback to project-level
-  const projectPath = skillPath(workspaceDir, name);
+  const projectPath = projectSkillPath(workspaceDir, name);
   if (existsSync(projectPath)) {
     const parsed = readSkillFile(projectPath);
     if (parsed) return { ...parsed.manifest, content: parsed.content };
