@@ -10,3 +10,4 @@ coverage/
 .workbuddy/
 AGENT.md
 deliverables/
+docs/adr/
