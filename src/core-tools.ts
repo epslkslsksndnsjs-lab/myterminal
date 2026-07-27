@@ -603,7 +603,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   add({
     name: 'subagent_status', title: 'Subagent status',
-    description: 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up; subsequent calls return NOT_FOUND.',
+    description: 'Query subagent progress, tasks, cost, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.',
     inputSchema: {
       type: 'object',
       properties: { taskId: { type: 'string', minLength: 1 } },

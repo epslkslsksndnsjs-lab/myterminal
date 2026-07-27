@@ -7,7 +7,7 @@ import type { runSubagent as RunSubagentFn } from './executor.js';
 import type { SubagentRunResult } from './executor.js';
 import {
   createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost,
-  collectSubagentResult, countRunning, getRecentAuditLogs, listAllSubagents,
+  countRunning, getRecentAuditLogs, listAllSubagents,
 } from './store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
 import type { UsageSummary } from './cost-tracker.js';
@@ -26,6 +26,9 @@ export type SubagentStartInput = {
   timeoutSec?: number;
   readOnly?: boolean;
 };
+
+/** ADR-0010 决策 14：subagent 来源——skill(fork) 启动时传入，notify 消息据此区分格式 */
+export type SubagentOrigin = { type: 'skill'; skillName: string };
 
 /** 可注入依赖——生产用 store 真实实现，测试用 fake */
 export type SubagentRunnerDeps = {
@@ -96,9 +99,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     childSessionId: string,
     parentSessionId: string,
     result: SubagentRunResult,
+    origin?: SubagentOrigin,
   ): Promise<void> {
     const childIdentity = childIdentities.get(agentId);
     // 决策 7/10：更新 subagent store 状态 + checkpoint + message_send
+    // ADR-0010 决策 14：notify 带 taskId + origin——skill fork 与直接启动格式不同
     if (result.status === 'completed') {
       const summary = result.result.slice(0, 200) || 'Subagent completed.';
       updateSubagentStatus(agentId, 'completed', { result: result.result });
@@ -106,14 +111,20 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         await checkpoint(childSessionId, childIdentity, 'completed', result.result.length > 500
           ? `${result.result.slice(0, 500)}...`
           : result.result);
-        await notify(childSessionId, childIdentity, parentSessionId, `subagent completed: ${summary}`);
+        const body = origin?.type === 'skill'
+          ? `skill '${origin.skillName}' fork completed (taskId=${agentId}): ${summary}`
+          : `subagent completed (taskId=${agentId}): ${summary}`;
+        await notify(childSessionId, childIdentity, parentSessionId, body);
       }
     } else {
       const reason = result.error || 'unknown error';
       updateSubagentStatus(agentId, 'failed', { error: reason });
       if (childIdentity) {
         await checkpoint(childSessionId, childIdentity, 'cancelled', reason);
-        await notify(childSessionId, childIdentity, parentSessionId, `subagent failed: ${reason}`);
+        const body = origin?.type === 'skill'
+          ? `skill '${origin.skillName}' fork failed (taskId=${agentId}): ${reason}`
+          : `subagent failed (taskId=${agentId}): ${reason}`;
+        await notify(childSessionId, childIdentity, parentSessionId, body);
       }
     }
     // 清理 identity
@@ -122,7 +133,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
 
   const runner = {
     /** 启动 subagent——异步立即返回（决策 2） */
-    start(parentSessionId: string, input: SubagentStartInput): SubagentStartResult {
+    start(parentSessionId: string, input: SubagentStartInput, origin?: SubagentOrigin): SubagentStartResult {
       // 决策 11：并发限制
       const running = countRunning();
       if (running >= settings.maxParallel) {
@@ -170,12 +181,15 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         cwd: workspaceDir,
         settings: mergedSettings,
         readOnly: input.readOnly,
-      }).then((result) => finalize(subagentId, child.id, parentSessionId, result))
+      }).then((result) => finalize(subagentId, child.id, parentSessionId, result, origin))
         .catch((err: unknown) => {
           const error = err instanceof Error ? err.message : String(err);
           const storedIdentity = childIdentities.get(subagentId);
           if (storedIdentity) {
-            void notify(child.id, storedIdentity, parentSessionId, `subagent failed: ${error}`).catch(() => { /* best effort */ });
+            const body = origin?.type === 'skill'
+              ? `skill '${origin.skillName}' fork failed (taskId=${subagentId}): ${error}`
+              : `subagent failed (taskId=${subagentId}): ${error}`;
+            void notify(child.id, storedIdentity, parentSessionId, body).catch(() => { /* best effort */ });
           }
           childIdentities.delete(subagentId);
         });
@@ -183,24 +197,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       return { sessionId: child.id, taskId: subagentId, status: 'running' };
     },
 
-    /** 查询 subagent 状态（决策 9） */
+    /** 查询 subagent 状态（决策 9；ADR-0010 决策 13 修订：idempotent——completed 后可多次查，清理只靠 1 小时超时定时器 store.ts） */
     status(taskId: string): SubagentStatusResult {
       const record = getSubagent(taskId);
       if (!record) throw Object.assign(new Error(`Subagent not found: ${taskId}`), { code: 'NOT_FOUND' });
-
-      // 决策 7：completed 后取走即清理——第一次 status 返回 result 并清理
-      if (record.status === 'completed' && record.result !== undefined) {
-        const result: SubagentStatusResult = {
-          status: record.status,
-          sessionId: record.sessionId,
-          tasks: record.tasks,
-          cost: record.cost,
-          result: record.result,
-          auditLogs: getRecentAuditLogs(taskId),
-        };
-        collectSubagentResult(taskId); // 取走即清理
-        return result;
-      }
 
       return {
         status: record.status,

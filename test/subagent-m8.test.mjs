@@ -212,7 +212,7 @@ test('M8-runner-04: failed notification chain', async () => {
   assert.equal(record.error, 'API key is invalid');
 });
 
-test('M8-runner-05: status structure and take-and-clean', () => {
+test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 决策 13)', () => {
   clearAllSubagents();
   resetSubagentRunner();
   const { runner } = setupRunner();
@@ -236,11 +236,10 @@ test('M8-runner-05: status structure and take-and-clean', () => {
   assert.equal(status2.result, 'Final summary');
   assert.ok(status2.auditLogs);
 
-  // 第二次 status——取走即清理：应抛出 NOT_FOUND
-  assert.throws(
-    () => runner.status(result.taskId),
-    /Subagent not found/,
-  );
+  // ADR-0010 决策 13：第二次 status 仍返回 result（idempotent，不再取走即删）
+  const status3 = runner.status(result.taskId);
+  assert.equal(status3.status, 'completed');
+  assert.equal(status3.result, 'Final summary');
 });
 
 test('M8-runner-06: abort is idempotent', () => {
@@ -725,18 +724,18 @@ test('M8-e2e-14: full lifecycle via ExtensionService.call()', async () => {
     { transport: 'tui' },
   );
 
-  // 注意：取走即清理语义——可能已经清理了
-  // 如果清理了，status 会返回 NOT_FOUND
-  if (statusResponse2.ok) {
-    assert.equal(statusResponse2.data.result.status, 'completed');
-  }
-  // 第二次调用应该抛 NOT_FOUND（取走即清理）
+  // ADR-0010 决策 13：idempotent——completed 后可多次查
+  assert.equal(statusResponse2.ok, true);
+  assert.equal(statusResponse2.data.result.status, 'completed');
+  assert.equal(statusResponse2.data.result.result, 'E2E test completed: all files processed.');
+  // 第二次调用仍返回 result（不再 NOT_FOUND）
   const statusResponse3 = await ext.call(
     { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
     { transport: 'tui' },
   );
-  assert.equal(statusResponse3.ok, false);
-  assert.match(statusResponse3.error?.code || '', /NOT_FOUND/);
+  assert.equal(statusResponse3.ok, true);
+  assert.equal(statusResponse3.data.result.status, 'completed');
+  assert.equal(statusResponse3.data.result.result, 'E2E test completed: all files processed.');
 
   rmSync(dir, { recursive: true, force: true });
 });
