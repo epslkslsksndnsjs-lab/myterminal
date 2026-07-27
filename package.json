@@ -2,7 +2,7 @@
   "name": "myterminal",
   "version": "0.1.2",
   "private": false,
-  "description": "Local-first ChatGPT development bridge with auditable multi-session collaboration, Apps and Actions adapters, extensions, and a full OpenTUI interface.",
+  "description": "MyTerminal：连接 ChatGPT 聊天模式与本地开发环境的终端桥梁。支持 Actions/MCP 双通道、多会话协作、Skill 工作流、Subagent 委派，全程可审计。",
   "author": "epslkslsksndnsjs-lab",
   "license": "MIT",
   "repository": {
