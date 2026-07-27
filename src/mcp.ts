@@ -131,7 +131,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
       'Before all work is complete, do not emit a completion-style user report. Use message_send, events, and session_checkpoint for progress. A root cannot complete until every direct child is terminal and all child messages/events are reviewed. On CHILD_REVIEW_REQUIRED, use the returned timestamps, child states, recent operations, and message timing, then continue working.',
       'message_list covers both sent and received messages; message_conversation returns a two-way thread. Message results include send/observation timestamps, age, audited operations since send, and possible delay notices.',
       'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.',
-      'Use skill_list to discover available skills, then skill_load(name) for full instructions.',
+      'Use skill() to list available skills, skill(name) to run one.',
     ].join('\n'),
   });
   server.registerTool('extension_discover', {

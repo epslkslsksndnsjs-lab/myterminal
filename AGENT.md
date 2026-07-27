@@ -27,10 +27,10 @@ session_register({mode:"root", name:"main", role:"lead"})
 ### 2. 发现工具
 ```
 extension_discover({includeSchemas:true})
-→ 返回29个工具+参数schema
+→ 返回36个工具+参数schema
 ```
 
-### 3. 干活 — 29个工具速查
+### 3. 干活 — 36个工具速查
 
 #### 📂 文件 (7个)
 | 工具 | 用途 |
