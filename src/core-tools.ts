@@ -577,7 +577,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   // ── Subagent 工具（ADR-0009 决策 1/8/9/12）──
   const SUBAGENT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
-  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek', 'glm'];
+  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'];
 
   add({
     name: 'subagent_start', title: 'Start subagent',
@@ -613,7 +613,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
         deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
         acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
         constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
-        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | 'glm' | undefined,
+        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'qwen' | undefined,
         model: asOptionalString(input.model),
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,

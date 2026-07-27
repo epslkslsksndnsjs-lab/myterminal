@@ -823,6 +823,19 @@ export class GlmAdapter extends OpenAIAdapter {
 }
 
 // ═══════════════════════════════════════════════
+// Qwen 适配器——OpenAI 兼容协议（阿里云 DashScope / MaaS）
+// ═══════════════════════════════════════════════
+
+export class QwenAdapter extends OpenAIAdapter {
+  readonly provider: string = 'qwen';
+
+  constructor(apiKey: string, baseUrl: string, fetchImpl?: typeof fetch) {
+    super(apiKey, fetchImpl);
+    this.baseUrl = baseUrl;
+  }
+}
+
+// ═══════════════════════════════════════════════
 // 决策 27：流式 Watchdog + 非流式回退
 // ═══════════════════════════════════════════════
 
@@ -1019,7 +1032,16 @@ export function createAdapter(settings: SubagentSettings, env: NodeJS.ProcessEnv
       return new GlmAdapter(key);
     }
 
+    case 'qwen': {
+      const key = env.DASHSCOPE_API_KEY;
+      if (!key) {
+        throw new Error('DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to your shell profile.');
+      }
+      const baseUrl = env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+      return new QwenAdapter(key, baseUrl);
+    }
+
     default:
-      throw new Error(`Unknown provider: ${provider}. Supported: openai, anthropic, deepseek, glm.`);
+      throw new Error(`Unknown provider: ${provider}. Supported: openai, anthropic, deepseek, glm, qwen.`);
   }
 }

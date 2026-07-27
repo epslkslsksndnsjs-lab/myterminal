@@ -14,6 +14,9 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: 
   // GLM（智谱开放平台）——per 1M tokens, USD
   'glm-4-flash':       { input: 0.014, output: 0.014, cacheRead: 0 },
   'glm-4':             { input: 0.014, output: 0.014, cacheRead: 0 },
+  // Qwen（阿里云 DashScope）——per 1M tokens, USD（近似 qwen-max 定价）
+  'qwen3.7-max':       { input: 2.8,  output: 8.4,  cacheRead: 0.7 },
+  'qwen-max':          { input: 2.8,  output: 8.4,  cacheRead: 0.7 },
 };
 
 export interface TokenUsage {
@@ -54,6 +57,10 @@ function resolvePricing(model: string): { input: number; output: number; cacheRe
   if (model.startsWith('glm-')) {
     console.warn(`[cost-tracker] Unknown GLM model "${model}", falling back to glm-4-flash pricing`);
     return MODEL_PRICING['glm-4-flash'];
+  }
+  if (model.startsWith('qwen')) {
+    console.warn(`[cost-tracker] Unknown Qwen model "${model}", falling back to qwen-max pricing`);
+    return MODEL_PRICING['qwen-max'];
   }
 
   // 完全未知——gpt-4o 作为最通用默认
