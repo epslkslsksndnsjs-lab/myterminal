@@ -165,3 +165,119 @@ test('E2E Health: /health reports version and OpenAPI spec is accessible', async
     await server.close();
   }
 });
+
+// ═══════════════════════════════════════════════════════════
+// E2E-5: MCP 深度 — 多工具调用 + 错误处理 + session 管理
+// ═══════════════════════════════════════════════════════════
+
+test('E2E MCP deep: extension_call execute_cli + read_file + error handling', async () => {
+  const server = await createRuntime();
+  try {
+    const url = `${server.baseUrl}/mcp/${CONNECTOR_KEY}`;
+    const init = await rpcPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'deep-test', version: '1.0.0' } } });
+    const sid = init.sessionId;
+
+    // Register session to get identity
+    const reg = await rpcPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 'deep-session', role: 'lead' } } }, sid);
+    assert.notEqual(reg.data.result.isError, true);
+    const identity = reg.data.result.structuredContent.data.result.identity;
+    assert.ok(identity.sessionId);
+
+    // Call execute_cli via extension_call (identity at top level)
+    const exec = await rpcPost(url, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'execute_cli', input: { command: 'echo mcp-deep-test' }, identity } } }, sid);
+    assert.notEqual(exec.data.result.isError, true);
+    const execStructured = exec.data.result.structuredContent;
+    assert.equal(execStructured.ok, true);
+    assert.ok(execStructured.data.result.stdout.includes('mcp-deep-test'));
+
+    // Call read_file via extension_call (direct tools strip identity)
+    const read = await rpcPost(url, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'read_file', input: { path: 'hello.txt' }, identity } } }, sid);
+    assert.notEqual(read.data.result.isError, true);
+    const readStructured = read.data.result.structuredContent;
+    assert.equal(readStructured.ok, true);
+
+    // Error case: call unknown tool
+    const bad = await rpcPost(url, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'nonexistent_tool_xyz', input: {}, identity } } }, sid);
+    const badStructured = bad.data.result.structuredContent;
+    assert.equal(badStructured.ok, false);
+    assert.ok(badStructured.error.code);
+  } finally {
+    await server.close();
+  }
+});
+
+test('E2E MCP session: invalid session rejected, multiple sessions isolated', async () => {
+  const server = await createRuntime();
+  try {
+    const url = `${server.baseUrl}/mcp/${CONNECTOR_KEY}`;
+
+    // Request without session → 400
+    const noSession = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json', 'mcp-session-id': 'nonexistent-session-id' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+    assert.equal(noSession.status, 400);
+
+    // Create two independent sessions
+    const init1 = await rpcPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'session-1', version: '1.0.0' } } });
+    const init2 = await rpcPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'session-2', version: '1.0.0' } } });
+    assert.ok(init1.sessionId);
+    assert.ok(init2.sessionId);
+    assert.notEqual(init1.sessionId, init2.sessionId);
+
+    // Both sessions can list tools independently
+    const list1 = await rpcPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, init1.sessionId);
+    const list2 = await rpcPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, init2.sessionId);
+    assert.ok(list1.data.result.tools.length > 20);
+    assert.ok(list2.data.result.tools.length > 20);
+
+    // Session 1 registers a session; session 2 has independent state
+    const reg1 = await rpcPost(url, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 'from-session-1', role: 'lead' } } }, init1.sessionId);
+    assert.notEqual(reg1.data.result.isError, true);
+  } finally {
+    await server.close();
+  }
+});
+
+test('E2E MCP tools: workspace_info + session_list + session_checkpoint flow', async () => {
+  const server = await createRuntime();
+  try {
+    const url = `${server.baseUrl}/mcp/${CONNECTOR_KEY}`;
+    const init = await rpcPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'flow-test', version: '1.0.0' } } });
+    const sid = init.sessionId;
+
+    // session_register to get identity
+    const reg = await rpcPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 'flow-session', role: 'lead' } } }, sid);
+    const regData = reg.data.result.structuredContent;
+    assert.equal(regData.ok, true);
+    const identity = regData.data.result.identity;
+    assert.ok(identity.sessionId);
+
+    // workspace_info via extension_call (direct tools strip identity)
+    const info = await rpcPost(url, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'workspace_info', input: {}, identity } } }, sid);
+    const infoData = info.data.result.structuredContent;
+    assert.equal(infoData.ok, true);
+    assert.ok(infoData.data.result.workspaceDir);
+
+    // session_list via extension_call
+    const list = await rpcPost(url, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'session_list', input: {}, identity } } }, sid);
+    const listData = list.data.result.structuredContent;
+    assert.equal(listData.ok, true);
+    assert.ok(listData.data.result.sessions.length >= 1);
+
+    // session_checkpoint to working via extension_call
+    const cp = await rpcPost(url, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'session_checkpoint', input: { phase: 'working', summary: 'MCP flow test in progress' }, identity } } }, sid);
+    const cpData = cp.data.result.structuredContent;
+    assert.equal(cpData.ok, true);
+    assert.equal(cpData.data.result.session.phase, 'working');
+
+    // session_checkpoint to completed
+    const done = await rpcPost(url, { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'session_checkpoint', input: { phase: 'completed', summary: 'MCP flow test done' }, identity } } }, sid);
+    const doneData = done.data.result.structuredContent;
+    assert.equal(doneData.ok, true);
+    assert.equal(doneData.data.result.session.phase, 'completed');
+  } finally {
+    await server.close();
+  }
+});
