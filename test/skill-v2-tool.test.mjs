@@ -12,7 +12,7 @@
 //   M6 maxParallel 错误码不是 FORBIDDEN      → 用例 09 杀
 //   M7 inline 分支忘返回 content             → 用例 02 杀
 
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

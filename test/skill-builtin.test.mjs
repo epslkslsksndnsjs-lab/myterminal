@@ -1,7 +1,7 @@
 // 系统内建 skill 测试——BUILTIN_SKILLS fallback 机制
 // 覆盖：listSkills 注入、loadSkill fallback、用户覆盖、用户删除后恢复
 
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

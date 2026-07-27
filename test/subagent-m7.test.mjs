@@ -2,7 +2,7 @@
 // 决策 5/8/9/12/20/21/24/25/29/37
 // 目标：覆盖率 ≥ 90%；变异体 9/9 被杀死
 
-import { describe, test } from 'node:test';
+import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

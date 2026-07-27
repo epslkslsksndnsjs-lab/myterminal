@@ -8,7 +8,7 @@
 //   M3 mcp.ts 提示语仍指向旧工具名              → 用例 04 杀
 //   M4 fork e2e 链路某环断裂（start→status）    → 用例 05 杀
 
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

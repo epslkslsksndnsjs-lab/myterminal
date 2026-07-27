@@ -1,4 +1,4 @@
-import { describe, test } from 'node:test';
+import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mergeActivity, memoizedMergeActivity } from '../dist/tui/model/timeline-merge.js';
 import { relativeTime } from '../dist/tui/model/relative-time.js';

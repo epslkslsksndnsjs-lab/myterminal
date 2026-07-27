@@ -8,7 +8,7 @@
 //   M3 origin 判断反转（skill 消息发给直接启动）         → 用例 03 杀
 //   M4 failed 分支忘带 origin 前缀                       → 用例 04 杀
 
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 

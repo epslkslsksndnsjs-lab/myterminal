@@ -2,7 +2,7 @@
 // ADR-0009 决策 1/2/4/7/8/9/10/11/12/14
 // 目标：覆盖率 ≥ 70%；变异体 7/7 被杀死
 
-import { describe, test } from 'node:test';
+import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

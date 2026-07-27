@@ -2,7 +2,7 @@
 // 决策 14 / 21 / 24 / 27 / 29
 // 目标：≥ 20 用例，覆盖率 ≥ 90%
 
-import { describe, test } from 'node:test';
+import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 
 // ── Import 构建产物 ──

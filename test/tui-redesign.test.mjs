@@ -1,4 +1,4 @@
-import { describe, test } from 'node:test';
+import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mascotMoodFor } from '../dist/tui/model/mascot-mood.js';
 import { copyFor, verbFor, verbLabel, greetingFor } from '../dist/tui/copy/index.js';
