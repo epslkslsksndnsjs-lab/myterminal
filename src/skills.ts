@@ -9,10 +9,33 @@ const DESCRIPTION_MIN = 10;
 const DESCRIPTION_MAX = 800;
 const WHEN_TO_USE_MAX = 2000;
 
+const SKILL_MODES = ['inline', 'fork'] as const;
+const FORK_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm'] as const;
+const MAX_TURNS_MIN = 1;
+const MAX_TURNS_MAX = 200;
+const TIMEOUT_SEC_MIN = 30;
+const TIMEOUT_SEC_MAX = 3600;
+
+export type SkillMode = (typeof SKILL_MODES)[number];
+
+/** ADR-0010 决策 6：fork 时可覆盖 subagent 默认配置，优先级 forkOptions > settings.json */
+export type SkillForkOptions = {
+  deliverables?: string[];
+  acceptanceCriteria?: string[];
+  constraints?: string[];
+  provider?: 'openai' | 'anthropic' | 'deepseek' | 'glm';
+  model?: string;
+  maxTurns?: number;
+  timeoutSec?: number;
+  readOnly?: boolean;
+};
+
 export type SkillManifest = {
   name: string;
   description: string;
   when_to_use: string;
+  mode: SkillMode;
+  forkOptions?: SkillForkOptions;
 };
 
 export type SkillRecord = SkillManifest & {
@@ -38,6 +61,31 @@ function ensureTrailingNewline(content: string): string {
 
 // --- Frontmatter parser (hand-rolled, zero runtime deps) ---
 
+/** 解析单个值：去引号、数组 [a, b]。嵌套字段复用同一逻辑。 */
+function parseValue(value: string): unknown {
+  // Remove surrounding quotes
+  if ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1);
+  }
+
+  // Handle arrays: [item1, item2]
+  if (value.startsWith('[') && value.endsWith(']')) {
+    const inner = value.slice(1, -1).trim();
+    if (!inner) return [];
+    return inner.split(',').map((item) => {
+      const t = item.trim();
+      if ((t.startsWith('"') && t.endsWith('"')) ||
+          (t.startsWith("'") && t.endsWith("'"))) {
+        return t.slice(1, -1);
+      }
+      return t;
+    });
+  }
+
+  return value;
+}
+
 function parseFrontmatter(markdown: string): ParsedMarkdown {
   const match = markdown.match(FRONTMATTER_RE);
   if (!match) return { frontmatter: {}, content: markdown };
@@ -46,8 +94,11 @@ function parseFrontmatter(markdown: string): ParsedMarkdown {
   const content = markdown.slice(match[0].length);
   const frontmatter: Record<string, unknown> = {};
 
-  // Parse line-by-line: key: value  or  key: [item, ...]
+  // Parse line-by-line: key: value  |  key: [item, ...]  |  key:\n  nested: value（仅支持一层嵌套）
   const lines = raw.split('\n');
+  let nestedKey: string | null = null;
+  let nested: Record<string, unknown> | null = null;
+
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -56,33 +107,27 @@ function parseFrontmatter(markdown: string): ParsedMarkdown {
     if (colonIndex === -1) continue;
 
     const key = trimmed.slice(0, colonIndex).trim();
-    let value = trimmed.slice(colonIndex + 1).trim();
+    const value = trimmed.slice(colonIndex + 1).trim();
+    const isIndented = /^\s+\S/.test(line);
 
-    // Remove surrounding quotes
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    // Handle arrays: [item1, item2]
-    if (value.startsWith('[') && value.endsWith(']')) {
-      const inner = value.slice(1, -1).trim();
-      if (!inner) {
-        frontmatter[key] = [];
-      } else {
-        frontmatter[key] = inner.split(',').map((item) => {
-          const t = item.trim();
-          if ((t.startsWith('"') && t.endsWith('"')) ||
-              (t.startsWith("'") && t.endsWith("'"))) {
-            return t.slice(1, -1);
-          }
-          return t;
-        });
-      }
+    if (isIndented && nestedKey !== null && nested !== null) {
+      // 嵌套字段（forkOptions 下的 provider/maxTurns/...）
+      nested[key] = parseValue(value);
       continue;
     }
 
-    frontmatter[key] = value;
+    // 顶层字段
+    if (!value) {
+      // 值为空——可能是一层嵌套对象的开始（如 "forkOptions:"）
+      nestedKey = key;
+      nested = {};
+      frontmatter[key] = nested;
+      continue;
+    }
+
+    nestedKey = null;
+    nested = null;
+    frontmatter[key] = parseValue(value);
   }
 
   return { frontmatter, content };
@@ -109,7 +154,78 @@ function validateSkillManifest(frontmatter: Record<string, unknown>, sourcePath:
     return null;
   }
 
-  return { name, description, when_to_use };
+  // ADR-0010 决策 2/11：mode 校验，缺省 inline
+  let mode: SkillMode = 'inline';
+  if (frontmatter.mode !== undefined) {
+    if (typeof frontmatter.mode === 'string' && (SKILL_MODES as readonly string[]).includes(frontmatter.mode)) {
+      mode = frontmatter.mode as SkillMode;
+    } else {
+      console.warn(`[skills] Invalid "mode" (must be inline|fork) in ${sourcePath}`);
+      return null;
+    }
+  }
+
+  // ADR-0010 决策 6/11：forkOptions 校验（解析器产出字符串/数组，此处 coerce 为语义类型）
+  let forkOptions: SkillForkOptions | undefined;
+  if (frontmatter.forkOptions !== undefined) {
+    if (typeof frontmatter.forkOptions !== 'object' || frontmatter.forkOptions === null || Array.isArray(frontmatter.forkOptions)) {
+      console.warn(`[skills] "forkOptions" must be a nested object in ${sourcePath}`);
+      return null;
+    }
+    const raw = frontmatter.forkOptions as Record<string, unknown>;
+    const parsed: SkillForkOptions = {};
+
+    for (const key of ['deliverables', 'acceptanceCriteria', 'constraints'] as const) {
+      if (raw[key] !== undefined) {
+        if (!Array.isArray(raw[key]) || !(raw[key] as unknown[]).every((item) => typeof item === 'string')) {
+          console.warn(`[skills] "forkOptions.${key}" must be a string array in ${sourcePath}`);
+          return null;
+        }
+        parsed[key] = raw[key] as string[];
+      }
+    }
+
+    if (raw.provider !== undefined) {
+      if (typeof raw.provider !== 'string' || !(FORK_PROVIDERS as readonly string[]).includes(raw.provider)) {
+        console.warn(`[skills] "forkOptions.provider" must be one of ${FORK_PROVIDERS.join('/')} in ${sourcePath}`);
+        return null;
+      }
+      parsed.provider = raw.provider as SkillForkOptions['provider'];
+    }
+
+    if (raw.model !== undefined) {
+      if (typeof raw.model !== 'string' || !raw.model.trim()) {
+        console.warn(`[skills] "forkOptions.model" must be a non-empty string in ${sourcePath}`);
+        return null;
+      }
+      parsed.model = raw.model;
+    }
+
+    for (const key of ['maxTurns', 'timeoutSec'] as const) {
+      if (raw[key] !== undefined) {
+        const num = typeof raw[key] === 'number' ? (raw[key] as number) : Number(raw[key]);
+        const [min, max] = key === 'maxTurns' ? [MAX_TURNS_MIN, MAX_TURNS_MAX] : [TIMEOUT_SEC_MIN, TIMEOUT_SEC_MAX];
+        if (!Number.isInteger(num) || num < min || num > max) {
+          console.warn(`[skills] "forkOptions.${key}" must be an integer ${min}-${max} in ${sourcePath}`);
+          return null;
+        }
+        parsed[key] = num;
+      }
+    }
+
+    if (raw.readOnly !== undefined) {
+      if (raw.readOnly === 'true' || raw.readOnly === true) parsed.readOnly = true;
+      else if (raw.readOnly === 'false' || raw.readOnly === false) parsed.readOnly = false;
+      else {
+        console.warn(`[skills] "forkOptions.readOnly" must be true/false in ${sourcePath}`);
+        return null;
+      }
+    }
+
+    forkOptions = parsed;
+  }
+
+  return { name, description, when_to_use, mode, ...(forkOptions ? { forkOptions } : {}) };
 }
 
 // --- Directory scanning ---
@@ -130,6 +246,11 @@ function readSkillFile(filePath: string): { manifest: SkillManifest; content: st
   const { frontmatter, content } = parseFrontmatter(raw);
   const manifest = validateSkillManifest(frontmatter, filePath);
   if (!manifest) return null;
+
+  // ADR-0010 决策 11：fork 但 content 为空 → 警告（不阻止）
+  if (manifest.mode === 'fork' && !content.trim()) {
+    console.warn(`[skills] ${filePath}: mode is "fork" but content is empty`);
+  }
 
   return { manifest, content: ensureTrailingNewline(content) };
 }
