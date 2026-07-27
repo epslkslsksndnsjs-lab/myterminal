@@ -131,6 +131,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
       'Before all work is complete, do not emit a completion-style user report. Use message_send, events, and session_checkpoint for progress. A root cannot complete until every direct child is terminal and all child messages/events are reviewed. On CHILD_REVIEW_REQUIRED, use the returned timestamps, child states, recent operations, and message timing, then continue working.',
       'message_list covers both sent and received messages; message_conversation returns a two-way thread. Message results include send/observation timestamps, age, audited operations since send, and possible delay notices.',
       'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.',
+      'Use skill() to list available skills, skill(name) to run one.',
     ].join('\n'),
   });
   server.registerTool('extension_discover', {
@@ -205,6 +206,23 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
   registerDirect('blob_read', 'Read local blob', 'Read a bounded staged MyTerminal blob without modifying workspace files.', { sha256: z.string().length(64), encoding: z.enum(['utf-8', 'base64']).optional(), maxBytes: z.number().int().min(1).max(1_000_000).optional() }, safeRead);
   registerDirect('blob_write_file', 'Create local file from blob', 'Create a workspace file from a staged blob. Repeating identical content succeeds; different existing content is not overwritten.', { sha256: z.string().length(64), path: z.string().min(1), createParents: z.boolean().optional() }, { ...safeLocalMutation, idempotentHint: true });
   registerDirect('task_poll', 'Poll local task', 'Read progress for a MyTerminal task that continued in the background after the 200ms fast-return budget.', { taskId: z.string().min(1) }, safeRead);
+
+  // ── Subagent tools（ADR-0009 决策 1）──
+  registerDirect('subagent_start', 'Start Subagent', 'Start a subagent for a sub-task. Asynchronous: returns taskId immediately; poll with subagent_status; completion arrives via message.', {
+    objective: z.string().min(1),
+    background: z.string().optional(),
+    deliverables: z.array(z.string()).optional(),
+    acceptanceCriteria: z.array(z.string()).optional(),
+    constraints: z.array(z.string()).optional(),
+    provider: z.enum(['openai', 'anthropic', 'deepseek', 'glm', 'qwen']).optional(),
+    model: z.string().optional(),
+    maxTurns: z.number().int().min(1).max(200).optional(),
+    timeoutSec: z.number().int().min(30).max(3600).optional(),
+    readOnly: z.boolean().optional(),
+  }, safeLocalMutation);
+  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up.', { taskId: z.string().min(1) }, safeRead);
+  registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', { taskId: z.string().min(1) }, safeLocalMutation);
+
   return server;
 }
 

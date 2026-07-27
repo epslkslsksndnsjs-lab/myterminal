@@ -4,13 +4,14 @@ import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, type MyTerminalStore } from './store.js';
 import { renderTemplate, resolveWorkspacePath, validateJsonSchema } from './security.js';
+import { listSkills } from './skills.js';
 import { runCommand } from './core-tools.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
 const RESERVED_NAMES = new Set(['extension_discover', 'extension_register', 'extension_call']);
-const CONTROL_TOOLS = new Set(['session_checkpoint', 'session_release', 'session_unregister', 'session_events_ack', 'session_inherit', 'task_poll']);
+const CONTROL_TOOLS = new Set(['session_checkpoint', 'session_release', 'session_unregister', 'session_events_ack', 'session_inherit', 'task_poll', 'subagent_start', 'subagent_status', 'subagent_abort']);
 const FAST_RETURN_MS = 200;
 const BACKGROUND_TASK_RETENTION_MS = 30 * 60_000;
 const BACKGROUND_TASK_MAX_COUNT = 100;
@@ -235,6 +236,7 @@ export class ExtensionService {
             apps: 'Apps exposes both narrow direct tools and the full extension_call/extension_register facade. Use direct tools when their schema fits; use the facade for arbitrary commands, overwriting writes, patches, and custom extensions.',
           },
           bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
+          skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
         } };
       }
       sessionId = authenticated.id;
@@ -256,6 +258,7 @@ export class ExtensionService {
       const tools = query && matches.length === 0 ? catalog : matches;
       const response: ToolResponse = { ok: true, data: {
         agentMd: loadAgentMd(this.config.settingsPath),
+        skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
         tools, total: tools.length,
         instructions: {
           identity: 'Every concrete call and registry change belongs to the authenticated MyTerminal session. Never use openai/session as MyTerminal identity.',
@@ -431,6 +434,47 @@ export class ExtensionService {
       return response;
     } finally {
       if (!detached && !this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
+    }
+  }
+
+  // ADR-0009 决策 4：trimmed 版 call——subagent child session 的通知通道
+  // 保留 authenticate + beginAudit/finishAudit + beforeOrdinaryCall/touchControl + invokeTool
+  // 跳过 assertContinuation / trackOperation+200ms detach / completeContinuationCall / decorateContinuation / attachEvents
+  async callSubagent(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
+    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    this.trimBackgroundTasks();
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
+    const tool = typeof input.tool === 'string' ? input.tool : 'unknown';
+    const args = callArguments(input);
+    let auditStarted = false;
+    try {
+      const authenticated = this.authenticate(input, context, false)!;
+      sessionId = authenticated.id;
+      this.beginAudit(authenticated.id, actionId, 'subagent', tool, args, started);
+      auditStarted = true;
+      // 按 CONTROL_TOOLS 判断走 beforeOrdinaryCall 还是 touchControl
+      if (!CONTROL_TOOLS.has(tool)) this.store.beforeOrdinaryCall(authenticated.id);
+      else this.store.touchControl(authenticated.id);
+      // 同步 await，无 fast-return
+      const invocationContext: InvocationContext = {
+        ...context,
+        transport: 'subagent',
+        authenticatedSession: authenticated,
+        identity: explicitIdentity(input),
+      };
+      const result = await this.invokeTool(tool, args, invocationContext);
+      const response: ToolResponse = { ok: true, data: { tool, result } };
+      this.finishAudit(authenticated.id, actionId, 'subagent', tool, args, started, 'completed', response);
+      return response;
+    } catch (error) {
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const failed = failure(error);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, 'subagent', tool, args, started, auditError.code === 'ACTION_TIMEOUT' ? 'timeout' : 'failed', failed, auditError);
+      return failed;
+    } finally {
+      if (!this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
     }
   }
 

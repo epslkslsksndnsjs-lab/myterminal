@@ -22,6 +22,8 @@ import { DiffScreen } from './screens/Diff.js';
 import { Extensions } from './screens/Extensions.js';
 import { Settings } from './screens/Settings.js';
 import { Logs } from './screens/Logs.js';
+import { SubagentList } from './screens/Subagents.js';
+import { SubagentDetail } from './screens/Subagent.js';
 
 type FormState = {
   id: number;
@@ -123,7 +125,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const groups = logicalSessionGroups(state.sessions);
   const conversations = conversationGroups(state.messages);
-  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : 0;
+  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : 0;
   const activeSelection = Math.max(0, Math.min(Math.max(0, itemCount - 1), selected[tab] || 0));
 
   const moveSelection = useCallback((delta: number) => {
@@ -131,7 +133,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
       const next = [...values];
       const count = tab === 1 ? logicalSessionGroups(controller.runtime.store.listSessions()).length
         : tab === 2 ? conversationGroups(controller.runtime.store.listMessages(1000)).length
-          : tab === 5 ? controller.runtime.store.listExtensions().length : 0;
+          : tab === 5 ? controller.runtime.store.listExtensions().length
+            : tab === 8 ? controller.runtime.listSubagents().length : 0;
       next[tab] = Math.max(0, Math.min(Math.max(0, count - 1), (next[tab] || 0) + delta));
       return next;
     });
@@ -139,7 +142,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const selectItem = useCallback((index: number) => setSelected((values) => { const next = [...values]; next[tab] = index; return next; }), [tab]);
 
-  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : undefined;
+  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : undefined;
   useEffect(() => {
     if (detail) return;
     if (!selectedTargetId) return;
@@ -150,7 +153,11 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const open = useCallback(() => {
     if (tab === 1 && groups[activeSelection]) setDetail({ kind: 'session', id: groups[activeSelection].id });
     if (tab === 2 && conversations[activeSelection]) setDetail({ kind: 'conversation', id: conversations[activeSelection].id });
-  }, [tab, groups, conversations, activeSelection]);
+    if (tab === 8) {
+      const subagents = controller.runtime.listSubagents();
+      if (subagents[activeSelection]) setDetail({ kind: 'subagent', id: subagents[activeSelection].id });
+    }
+  }, [tab, groups, conversations, activeSelection, controller]);
 
   const createSessionAction = useCallback(() => runAction(() => controller.createSession(ask)), [runAction, controller, ask]);
   const sessionAction = useCallback(() => runAction(async () => {
@@ -287,16 +294,19 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     showNotice(zh ? '已复制所选文字' : 'Selection copied');
   }, [renderer, showNotice, zh]);
 
+  const subagentData = controller.runtime.listSubagents();
   const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} zh={zh} copy={copy} />
     : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} zh={zh} copy={copy} />
-      : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} />
-        : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-          : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-            : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
-              : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} copy={copy} />
-                : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-                  : tab === 6 ? <Settings runtime={runtime} theme={theme} zh={zh} reveal={revealCredentials} update={update} />
-                    : <Logs runtime={runtime} logs={logs} theme={theme} zh={zh} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
+      : detail?.kind === 'subagent' ? <SubagentDetail subagentId={detail.id} theme={theme} zh={zh} copy={copy} />
+        : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} />
+          : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
+            : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
+              : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
+                : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} copy={copy} />
+                  : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
+                    : tab === 6 ? <Settings runtime={runtime} theme={theme} zh={zh} reveal={revealCredentials} update={update} />
+                      : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
+                        : <Logs runtime={runtime} logs={logs} theme={theme} zh={zh} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
   const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;
   return (

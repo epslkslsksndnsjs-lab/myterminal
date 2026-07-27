@@ -41,13 +41,13 @@ test('bilingual documentation links resolve and private archive data is not publ
   }
 });
 
-test('stable release metadata and binary installers stay pinned to v0.1.1', () => {
+test('stable release metadata and binary installers stay pinned to v0.1.2', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  assert.equal(pkg.version, '0.1.1');
+  assert.equal(pkg.version, '0.1.2');
   // assert.equal(pkg.license, 'Apache-2.0');
   for (const file of ['README.md', 'README.zh-CN.md', 'RELEASE_NOTES.md', 'scripts/install-macos.sh', 'scripts/install-linux.sh', 'scripts/install-windows.ps1']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.match(text, /v0\.1\.1/);
+    assert.match(text, /v0\.1\.2/);
   }
 });
 
@@ -92,10 +92,10 @@ test('release notes contain substantive Chinese release and verification guidanc
   assert.ok(chinese.length >= 200, `expected substantial Chinese content, got ${chinese.length} characters`);
 });
 
-test('harness introduction and architecture match v0.1.1 without stale process reports', () => {
+test('harness introduction and architecture match v0.1.2 without stale process reports', () => {
   for (const file of ['docs/GPT_INSTRUCTIONS.md', 'docs/GPT_INSTRUCTIONS.zh-CN.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
-    assert.match(text, /0\.1\.1/);
+    assert.match(text, /0\.1\.2/);
     assert.match(text, /extensionDiscover/);
     assert.match(text, /extensionCall/);
     assert.match(text, /extensionRegister/);

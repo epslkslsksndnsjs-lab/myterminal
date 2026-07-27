@@ -8,6 +8,8 @@ import { resolveWorkspacePath } from './security.js';
 import type { JsonObject, JsonSchema, TaskPackage, ToolDefinition } from './types.js';
 import { disarmSessionResources } from './session-resources.js';
 import { continuationPolicy } from './continuation.js';
+import { listSkills, loadSkill } from './skills.js';
+import { getSubagentRunner } from './subagent/runner.js';
 
 const IGNORED_DIRECTORIES = new Set(['.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo']);
 
@@ -531,6 +533,137 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false }, annotations: readOnly,
     invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
   });
+  add({
+    name: 'skill', title: 'Run skill',
+    description: 'List installed skills when called without arguments, or run one by name. Inline skills return their instructions; fork skills start a subagent and return a taskId to poll with subagent_status.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },
+    // ADR-0010 决策 8：fork 会启动 subagent（有副作用），整体标非 readOnly
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+    invoke: async (input, context) => {
+      const configDir = path.dirname(config.settingsPath);
+      const name = asOptionalString(input.name);
+      // 决策 3：无参 = list
+      if (!name) {
+        return { skills: listSkills(configDir, config.workspaceDir) } as unknown as JsonObject;
+      }
+      const record = loadSkill(configDir, config.workspaceDir, name);
+      if (!record) throw new MyTerminalError('NOT_FOUND', `Skill not found: ${name}`);
+      // 决策 1/3：inline 直接返回内容（决策 17：不要求 identity）
+      if (record.mode !== 'fork') {
+        return { name: record.name, description: record.description, mode: 'inline', content: record.content };
+      }
+      // fork 模式——决策 17：要求 identity；防线 A 与 subagent_start 一致（递归防护）
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot start sub-subagents.');
+      }
+      const session = actor(context);
+      const runner = getSubagentRunner();
+      try {
+        // 决策 15：objective 加 skill 前缀；决策 6：forkOptions 覆盖默认配置；决策 14：origin 传入
+        const started = runner.start(session.id, {
+          objective: `执行技能 "${name}" 的指令：\n\n${record.content}`,
+          background: record.description,
+          ...record.forkOptions,
+        }, { type: 'skill', skillName: name });
+        return { name: record.name, description: record.description, mode: 'fork', taskId: started.taskId, sessionId: started.sessionId, status: started.status };
+      } catch (err) {
+        // 决策 18：maxParallel 超限 → FORBIDDEN；其他启动失败 → EXTENSION_ERROR
+        const message = err instanceof Error ? err.message : String(err);
+        const code = message.includes('Max parallel') ? 'FORBIDDEN' : 'EXTENSION_ERROR';
+        throw new MyTerminalError(code, message);
+      }
+    },
+  });
+
+  // ── Subagent 工具（ADR-0009 决策 1/8/9/12）──
+  const SUBAGENT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
+  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'];
+
+  add({
+    name: 'subagent_start', title: 'Start subagent',
+    description: 'Start a subagent to work on a sub-task asynchronously. Returns taskId immediately; poll with subagent_status for progress. Completion arrives as a message notification.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        objective: { type: 'string', minLength: 1, maxLength: 4000 },
+        background: { type: 'string', maxLength: 4000 },
+        deliverables: { type: 'array', items: { type: 'string' }, maxItems: 20 },
+        acceptanceCriteria: { type: 'array', items: { type: 'string' }, maxItems: 20 },
+        constraints: { type: 'array', items: { type: 'string' }, maxItems: 20 },
+        provider: { type: 'string', enum: PROVIDER_ENUM },
+        model: { type: 'string' },
+        maxTurns: { type: 'integer', minimum: 1, maximum: 200 },
+        timeoutSec: { type: 'integer', minimum: 30, maximum: 3600 },
+        readOnly: { type: 'boolean' },
+      },
+      required: ['objective'],
+      additionalProperties: false,
+    },
+    annotations: SUBAGENT_ANNOTATIONS,
+    invoke: async (input, context) => {
+      // 决策 8 防线 A：递归防护——subagent 不能启动 sub-subagent
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot start sub-subagents.');
+      }
+      const session = actor(context);
+      const runner = getSubagentRunner();
+      return runner.start(session.id, {
+        objective: asString(input.objective, 'objective'),
+        background: asOptionalString(input.background),
+        deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
+        acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
+        constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
+        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'qwen' | undefined,
+        model: asOptionalString(input.model),
+        maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
+        timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
+        readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,
+      }) as unknown as JsonObject;
+    },
+  });
+
+  add({
+    name: 'subagent_status', title: 'Subagent status',
+    description: 'Query subagent progress, tasks, cost, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.',
+    inputSchema: {
+      type: 'object',
+      properties: { taskId: { type: 'string', minLength: 1 } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    annotations: readOnly,
+    invoke: async (input) => {
+      const runner = getSubagentRunner();
+      try {
+        return runner.status(asString(input.taskId, 'taskId')) as unknown as JsonObject;
+      } catch (err) {
+        const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
+        throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);
+      }
+    },
+  });
+
+  add({
+    name: 'subagent_abort', title: 'Abort subagent',
+    description: 'Abort a running subagent. Idempotent — calling on an already-terminal subagent returns its current status.',
+    inputSchema: {
+      type: 'object',
+      properties: { taskId: { type: 'string', minLength: 1 } },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+    annotations: SUBAGENT_ANNOTATIONS,
+    invoke: async (input) => {
+      const runner = getSubagentRunner();
+      try {
+        return runner.abort(asString(input.taskId, 'taskId')) as unknown as JsonObject;
+      } catch (err) {
+        const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
+        throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);
+      }
+    },
+  });
+
   return tools;
 }
 

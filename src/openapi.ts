@@ -46,6 +46,10 @@ export function buildOpenApi(config: MyTerminalConfig) {
     replacements: { type: 'array', items: objectSchema({ oldText: { type: 'string' }, newText: { type: 'string' }, replaceAll: { type: 'boolean' } }, ['oldText', 'newText']) },
     command: { type: 'string' }, cwd: { type: 'string' }, timeoutSec: { type: 'integer' }, revision: { type: 'string' }, includeTest: { type: 'boolean' },
     offset: { type: 'integer', minimum: 0 }, includeAncestors: { type: 'boolean' }, with: { type: 'string', description: 'Other session name or ID.' },
+    provider: { type: 'string', enum: ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'], description: 'Subagent LLM provider.' },
+    model: { type: 'string', description: 'Subagent model name.' },
+    maxTurns: { type: 'integer', minimum: 1, maximum: 200, description: 'Max subagent agent-loop turns.' },
+    readOnly: { type: 'boolean', description: 'Restrict subagent to read-only tools.' },
   }, [], true);
   const plannedToolCall = objectSchema({ tool: { type: 'string', pattern: '^[a-z][a-z0-9_]{2,63}$' }, input: { type: 'object', additionalProperties: true }, purpose: { type: 'string', minLength: 1, maxLength: 500 } }, ['tool', 'input']);
   const jsonSchemaProperty = objectSchema({

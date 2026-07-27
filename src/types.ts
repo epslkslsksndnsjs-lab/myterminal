@@ -7,7 +7,7 @@ export type ActionsContinuationMode = 'off' | 'adaptive' | 'next-call' | 'lookah
 export type SessionIdentity = { sessionId: string; sessionToken: string };
 
 export type ToolAuditStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'policy_rejected';
-export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test';
+export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test' | 'subagent'; // ADR-0009 决策 3
 export type ToolAuditEvent = {
   id: string;
   /** Stable invocation start time. Completion updates keep this value unchanged. */
@@ -173,6 +173,17 @@ export type StoredState = {
   harnessContract?: { mode: ActionsContinuationMode; revision: string; updatedAt: string };
 };
 
+// ADR-0009 决策 11/12/14 + ADR-0007 决策 21
+export type SubagentSettings = {
+  enabled: boolean;
+  provider: 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'qwen';
+  model: string;
+  maxTurns: number;       // agent loop 轮次上限，默认 50
+  timeoutSec: number;     // 整体超时秒数，默认 300
+  maxParallel: number;    // 并发 subagent 上限，默认 2
+  fallbackModel?: string; // 529 过载降级模型（ADR-0007 决策 21），可选
+};
+
 export type MyTerminalSettings = {
   schemaVersion: 1;
   workspaceDir: string;
@@ -188,6 +199,7 @@ export type MyTerminalSettings = {
   passiveLockEnabled: boolean;
   actionsContinuationMode: ActionsContinuationMode;
   nonBlockingTasksEnabled: boolean;
+  subagent?: SubagentSettings; // ADR-0009 决策 3：可选，向后兼容
 };
 
 export type MyTerminalConfig = {
@@ -214,7 +226,7 @@ export type InvocationContext = {
   identity?: SessionIdentity;
   authenticatedSession?: MyTerminalSession;
   clientSessionKey?: string;
-  transport: 'apps' | 'actions' | 'tui' | 'test';
+  transport: 'apps' | 'actions' | 'tui' | 'test' | 'subagent'; // ADR-0009 决策 3
   signal?: AbortSignal;
 };
 

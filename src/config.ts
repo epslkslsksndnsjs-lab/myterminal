@@ -98,6 +98,14 @@ export function createDefaultSettings(workspaceDir = defaultWorkspaceForCwd()): 
     passiveLockEnabled: false,
     actionsContinuationMode: 'off',
     nonBlockingTasksEnabled: false,
+    subagent: {
+      enabled: true,
+      provider: 'openai',
+      model: 'gpt-4o',
+      maxTurns: 50,
+      timeoutSec: 300,
+      maxParallel: 2,
+    },
   };
 }
 
@@ -116,6 +124,33 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
   if (typeof settings.passiveLockEnabled !== 'boolean') errors.push('Passive lock enabled must be boolean.');
   if (!['off', 'adaptive', 'next-call', 'lookahead-3'].includes(settings.actionsContinuationMode)) errors.push('Actions continuation mode must be off, adaptive, next-call, or lookahead-3.');
   if (typeof settings.nonBlockingTasksEnabled !== 'boolean') errors.push('Non-blocking tasks enabled must be boolean.');
+
+  // ADR-0009 决策 11/12/14：subagent 配置校验（只在字段存在时校验，向后兼容）
+  if (settings.subagent) {
+    const sub = settings.subagent;
+
+    if (typeof sub.enabled !== 'boolean') {
+      if (sub.enabled !== undefined) errors.push('Subagent enabled must be boolean.');
+      sub.enabled = true;
+    }
+    const VALID_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'];
+    if (typeof sub.provider !== 'string' || !VALID_PROVIDERS.includes(sub.provider)) {
+      if (sub.provider !== undefined) errors.push('Subagent provider must be openai, anthropic, deepseek, glm, or qwen.');
+      sub.provider = 'openai';
+    }
+    if (typeof sub.model !== 'string' || !sub.model.trim()) {
+      if (sub.model !== undefined) errors.push('Subagent model cannot be empty.');
+      sub.model = 'gpt-4o';
+    }
+    sub.maxTurns = boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 50, 1, 200);
+    sub.timeoutSec = boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 300, 30, 3600);
+    sub.maxParallel = boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4);
+
+    if (sub.fallbackModel !== undefined && (typeof sub.fallbackModel !== 'string' || !sub.fallbackModel.trim())) {
+      delete sub.fallbackModel;
+    }
+  }
+
   return errors;
 }
 
@@ -259,6 +294,16 @@ function draftAgentMd(configDir: string): void {
   }
 }
 
+function draftSkillDirs(configDir: string, workspaceDir: string): void {
+  try {
+    for (const dir of [path.join(configDir, 'skills'), path.join(workspaceDir, '.myterminal', 'skills')]) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+    }
+  } catch {
+    // best-effort: skill directory creation must never block startup
+  }
+}
+
 export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTerminalConfig {
   const stored = readMyTerminalSettings(env);
   const base = stored || createDefaultSettings(path.resolve(envWorkspace(env) || defaultWorkspaceForCwd()));
@@ -270,6 +315,7 @@ export function loadMyTerminalConfig(env: NodeJS.ProcessEnv = process.env): MyTe
   const workspaceDir = realpathSync(settings.workspaceDir);
   const configDir = path.dirname(settingsPath(env));
   draftAgentMd(configDir);
+  draftSkillDirs(configDir, workspaceDir);
   const stateDir = workspaceStateDir(configDir, workspaceDir);
   const legacyGlobalStateDir = path.join(configDir, 'state');
   const migratedGlobalStateDir = path.join(configDir, 'state.migrated');
