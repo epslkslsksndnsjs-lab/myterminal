@@ -68,6 +68,9 @@ const MODEL_CONTEXT_WINDOWS: Record<string, { window: number; maxOutput: number 
   // DeepSeek（决策 29 表）
   'deepseek-chat':    { window: 64_000, maxOutput: 8_192 },
   'deepseek-reasoner':{ window: 64_000, maxOutput: 8_192 },
+  // GLM（智谱开放平台）
+  'glm-4-flash':      { window: 128_000, maxOutput: 4_096 },
+  'glm-4':            { window: 128_000, maxOutput: 4_096 },
 };
 
 /**

@@ -133,9 +133,9 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
       if (sub.enabled !== undefined) errors.push('Subagent enabled must be boolean.');
       sub.enabled = true;
     }
-    const VALID_PROVIDERS = ['openai', 'anthropic', 'deepseek'];
+    const VALID_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm'];
     if (typeof sub.provider !== 'string' || !VALID_PROVIDERS.includes(sub.provider)) {
-      if (sub.provider !== undefined) errors.push('Subagent provider must be openai, anthropic, or deepseek.');
+      if (sub.provider !== undefined) errors.push('Subagent provider must be openai, anthropic, deepseek, or glm.');
       sub.provider = 'openai';
     }
     if (typeof sub.model !== 'string' || !sub.model.trim()) {

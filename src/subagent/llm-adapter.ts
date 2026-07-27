@@ -810,6 +810,19 @@ export class DeepSeekAdapter extends OpenAIAdapter {
 }
 
 // ═══════════════════════════════════════════════
+// GLM 适配器——OpenAI 兼容协议（智谱开放平台 open.bigmodel.cn）
+// ═══════════════════════════════════════════════
+
+export class GlmAdapter extends OpenAIAdapter {
+  readonly provider: string = 'glm';
+
+  constructor(apiKey: string, fetchImpl?: typeof fetch) {
+    super(apiKey, fetchImpl);
+    this.baseUrl = 'https://open.bigmodel.cn/api/paas/v4';
+  }
+}
+
+// ═══════════════════════════════════════════════
 // 决策 27：流式 Watchdog + 非流式回退
 // ═══════════════════════════════════════════════
 
@@ -998,7 +1011,15 @@ export function createAdapter(settings: SubagentSettings, env: NodeJS.ProcessEnv
       return new DeepSeekAdapter(key);
     }
 
+    case 'glm': {
+      const key = env.GLM_API_KEY;
+      if (!key) {
+        throw new Error('GLM_API_KEY is not set. Please add "export GLM_API_KEY=..." to your shell profile.');
+      }
+      return new GlmAdapter(key);
+    }
+
     default:
-      throw new Error(`Unknown provider: ${provider}. Supported: openai, anthropic, deepseek.`);
+      throw new Error(`Unknown provider: ${provider}. Supported: openai, anthropic, deepseek, glm.`);
   }
 }
