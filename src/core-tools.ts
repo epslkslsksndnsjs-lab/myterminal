@@ -534,23 +534,44 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
   });
   add({
-    name: 'skill_list', title: 'List skills', description: 'List installed reusable skill manifests (name, description, when_to_use). No content returned — call skill_load for full instructions.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: readOnly,
-    invoke: async () => {
+    name: 'skill', title: 'Run skill',
+    description: 'List installed skills when called without arguments, or run one by name. Inline skills return their instructions; fork skills start a subagent and return a taskId to poll with subagent_status.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },
+    // ADR-0010 决策 8：fork 会启动 subagent（有副作用），整体标非 readOnly
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+    invoke: async (input, context) => {
       const configDir = path.dirname(config.settingsPath);
-      const skills = listSkills(configDir, config.workspaceDir);
-      return { skills };
-    },
-  });
-  add({
-    name: 'skill_load', title: 'Load skill', description: 'Load a skill\'s full Markdown content by name. Returns a bounded instruction block the model should read and follow.',
-    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, required: ['name'], additionalProperties: false }, annotations: readOnly,
-    invoke: async (input) => {
-      const configDir = path.dirname(config.settingsPath);
-      const name = asString(input.name, 'name');
+      const name = asOptionalString(input.name);
+      // 决策 3：无参 = list
+      if (!name) {
+        return { skills: listSkills(configDir, config.workspaceDir) } as unknown as JsonObject;
+      }
       const record = loadSkill(configDir, config.workspaceDir, name);
       if (!record) throw new MyTerminalError('NOT_FOUND', `Skill not found: ${name}`);
-      return { content: record.content };
+      // 决策 1/3：inline 直接返回内容（决策 17：不要求 identity）
+      if (record.mode !== 'fork') {
+        return { name: record.name, description: record.description, mode: 'inline', content: record.content };
+      }
+      // fork 模式——决策 17：要求 identity；防线 A 与 subagent_start 一致（递归防护）
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot start sub-subagents.');
+      }
+      const session = actor(context);
+      const runner = getSubagentRunner();
+      try {
+        // 决策 15：objective 加 skill 前缀；决策 6：forkOptions 覆盖默认配置；决策 14：origin 传入
+        const started = runner.start(session.id, {
+          objective: `执行技能 "${name}" 的指令：\n\n${record.content}`,
+          background: record.description,
+          ...record.forkOptions,
+        }, { type: 'skill', skillName: name });
+        return { name: record.name, description: record.description, mode: 'fork', taskId: started.taskId, sessionId: started.sessionId, status: started.status };
+      } catch (err) {
+        // 决策 18：maxParallel 超限 → FORBIDDEN；其他启动失败 → EXTENSION_ERROR
+        const message = err instanceof Error ? err.message : String(err);
+        const code = message.includes('Max parallel') ? 'FORBIDDEN' : 'EXTENSION_ERROR';
+        throw new MyTerminalError(code, message);
+      }
     },
   });
 
@@ -592,7 +613,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
         deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
         acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
         constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
-        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | undefined,
+        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | 'glm' | undefined,
         model: asOptionalString(input.model),
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
