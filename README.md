@@ -4,7 +4,7 @@
 
 MyTerminal gives **ChatGPT's normal chat mode a controlled way to work on your local computer**. After you connect MyTerminal through a custom GPT Action or a ChatGPT App, a regular ChatGPT conversation can inspect and edit the authorized local project, run bounded tools, coordinate multiple work sessions, and report progress while you retain control in a local TUI. MyTerminal is the bridge between ChatGPT chat and your computer; it is not a replacement chat client.
 
-MyTerminal 0.1.1 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, and a full-window bilingual OpenTUI interface.
+MyTerminal 0.1.2 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with multi-provider LLM support.
 
 ![MyTerminal session hierarchy](docs/assets/tui/sessions-en.svg)
 
@@ -12,24 +12,24 @@ MyTerminal 0.1.1 provides that bridge through an auditable, inheritable work-ses
 
 ### First installation
 
-You do not need Git, Node.js, Bun, or another programming environment beforehand. The installers download the standalone `v0.1.1` executable for the current operating system and CPU architecture, verify its SHA-256 checksum, register the global `myterminal` command, and start the TUI. Release installations no longer download a source archive or runtime dependencies.
+You do not need Git, Node.js, Bun, or another programming environment beforehand. The installers download the standalone `v0.1.2` executable for the current operating system and CPU architecture, verify its SHA-256 checksum, register the global `myterminal` command, and start the TUI. Release installations no longer download a source archive or runtime dependencies.
 
 #### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-macos.sh)"
 ```
 
 #### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-linux.sh)"
 ```
 
 #### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-windows.ps1 | iex"
 ```
 
 > [!IMPORTANT]
@@ -43,7 +43,7 @@ The first-run TUI configures everything: language, theme, authorized workspace, 
 
 ### Start it again later
 
-Open a new Terminal, PowerShell, or Command Prompt window and use the global command installed for your user account. The launcher resolves the current executable through a versioned `releases/<version>` directory and an atomic `current` pointer. Users of the GitHub `v1.0.1` source-archive installation, an intermediate development installation, or an earlier binary release may run the `v0.1.1` installer directly for a lossless migration. Settings, credentials, workspaces, sessions, messages, and history are preserved.
+Open a new Terminal, PowerShell, or Command Prompt window and use the global command installed for your user account. The launcher resolves the current executable through a versioned `releases/<version>` directory and an atomic `current` pointer. Users of the GitHub `v1.0.1` source-archive installation, an intermediate development installation, or an earlier binary release may run the `v0.1.2` installer directly for a lossless migration. Settings, credentials, workspaces, sessions, messages, and history are preserved.
 
 ```text
 myterminal
@@ -96,6 +96,14 @@ ChatGPT
 ```
 
 Use the supplied [GPT instructions](docs/GPT_INSTRUCTIONS.md) to prevent schema-layer mistakes, and give users the [short prompt playbook](docs/PROMPT_PLAYBOOK.md) instead of long prompts.
+
+### Skill system
+
+Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`. Each skill declares frontmatter (name, description, when_to_use, mode) and a markdown body. `skill()` without arguments lists installed skills; `skill(name="example")` loads and routes by mode — `inline` returns the full content for the GPT to follow directly, `fork` starts an isolated subagent to run the skill asynchronously. Skill names must match `[a-z][a-z0-9-]{2,63}` and files are capped at 100KB.
+
+### Subagent system
+
+A subagent is an isolated agent loop with its own 8-tool set, context window, and cost tracker. It runs asynchronously against a configured LLM provider (openai, anthropic, deepseek, glm, or qwen, default from config.json; per-call override supported). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for provider configuration.
 
 ## Auditable collaboration
 
@@ -150,6 +158,7 @@ Report vulnerabilities through the private process in [SECURITY.md](SECURITY.md)
 | Short scenario prompts | [Open](docs/PROMPT_PLAYBOOK.md) | [打开](docs/PROMPT_PLAYBOOK.zh-CN.md) |
 | Privacy and deployment template | [Open](docs/PRIVACY.md) | [打开](docs/PRIVACY.zh-CN.md) |
 | Manual/offline installation | [Open](docs/MANUAL_INSTALL.md) | [打开](docs/MANUAL_INSTALL.md#中文说明) |
+| Subagent provider setup | [Open](docs/SUBAGENT_SETUP.md) | [打开](docs/SUBAGENT_SETUP.zh-CN.md) |
 | Architecture and ownership | [Open](docs/architecture.md) | — |
 
 ## Development and verification
@@ -174,7 +183,7 @@ bun run start -- --headless
 
 ## Updates
 
-MyTerminal checks the latest GitHub release when the TUI starts. The Settings tab shows the installed and latest versions; press `U` to install an available release. The updater downloads the precompiled executable and SHA-256 file for the current platform, installs it into a new version directory, and atomically switches the `current` pointer. The old version remains available for rollback. Git source checkouts are never overwritten by one-click update. See the [v0.1.1 release notes](RELEASE_NOTES.md) for migration and future-update details.
+MyTerminal checks the latest GitHub release when the TUI starts. The Settings tab shows the installed and latest versions; press `U` to install an available release. The updater downloads the precompiled executable and SHA-256 file for the current platform, installs it into a new version directory, and atomically switches the `current` pointer. The old version remains available for rollback. Git source checkouts are never overwritten by one-click update. See the [v0.1.2 release notes](RELEASE_NOTES.md) for migration and future-update details.
 
 Workspace state migration is additive and idempotent: existing target state, legacy global state, `state.migrated`, and the workspace `.myterminal` directory are merged by stable IDs, while session history files are deduplicated and retained.
 ## Shared ports and workspace routing

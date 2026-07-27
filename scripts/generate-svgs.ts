@@ -271,7 +271,7 @@ function settings(en: boolean): Row[] {
     { segs: [{ t: '  \u2502 ' + NM('Actions token','Actions \u4EE4\u724C') + ': sk-****-****-****-****', f: C.text }] },
     { segs: [{ t: '  \u2502 \u26A0 ' + NM('Rotating credentials disconnects existing clients.','\u8F6E\u6362\u51ED\u636E\u4F1A\u4F7F\u73B0\u6709\u8FDE\u63A5\u5931\u6548\u3002'), f: C.warn }] },
     { segs: [{ t: '  \u251C\u2500 ' + NM('Update','\u66F4\u65B0') + ': checking...', f: C.muted }] },
-    { segs: [{ t: '  \u2514\u2500 ' + NM('Version','\u7248\u672C') + ': v0.1.1 \u00B7 ' + NM('up to date','\u5DF2\u662F\u6700\u65B0'), f: C.good }] },
+    { segs: [{ t: '  \u2514\u2500 ' + NM('Version','\u7248\u672C') + ': v0.1.2 \u00B7 ' + NM('up to date','\u5DF2\u662F\u6700\u65B0'), f: C.good }] },
     blank(),
     blank(),
     blank(),
