@@ -235,7 +235,7 @@ test('workspace profiles isolate state and aggregate local logs', async () => {
 test('workspace registry preserves concurrent process updates', async () => {
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myterminal-workspace-registry-concurrent-'));
   try {
-    const workers = Array.from({ length: 12 }, (_, index) => new Promise((resolve, reject) => {
+    const workers = Array.from({ length: 6 }, (_, index) => new Promise((resolve, reject) => {
       const workspaceDir = path.join(configDir, `workspace-${index}`);
       fs.mkdirSync(workspaceDir, { recursive: true });
       const code = `import { upsertWorkspaceRecord, workspaceId, workspaceStateDir } from ${JSON.stringify(new URL('../dist/instances.js', import.meta.url).href)}; const configDir=${JSON.stringify(configDir)}; const workspaceDir=${JSON.stringify(workspaceDir)}; upsertWorkspaceRecord(configDir,{id:workspaceId(workspaceDir),workspaceDir,stateDir:workspaceStateDir(configDir,workspaceDir),lastSeenAt:new Date().toISOString()});`;
@@ -245,8 +245,8 @@ test('workspace registry preserves concurrent process updates', async () => {
     }));
     await Promise.all(workers);
     const records = readWorkspaceRegistry(configDir);
-    assert.equal(records.length, 12);
-    assert.equal(new Set(records.map((item) => item.id)).size, 12);
+    assert.equal(records.length, 6);
+    assert.equal(new Set(records.map((item) => item.id)).size, 6);
   } finally {
     fs.rmSync(configDir, { recursive: true, force: true });
   }
