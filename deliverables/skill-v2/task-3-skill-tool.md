@@ -346,6 +346,7 @@ test('06-08: fork 成功——返回 taskId + objective 前缀 + forkOptions + o
   assert.equal(input.maxTurns, 30);
   assert.equal(input.readOnly, true);
   assert.deepEqual(origin, { type: 'skill', skillName: 'fork-skill' }); // 杀 M5
+  resetSubagentRunner(); // 清除 monkey-patch，避免污染后续用例
   rmSync(dir, { recursive: true, force: true });
 });
 
