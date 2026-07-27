@@ -1,7 +1,7 @@
 import { test, describe } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { isNewerVersion, installationRoot, snapshotUpdateData } from '../dist/update.js';
@@ -51,7 +51,7 @@ describe('installationRoot', () => {
     const original = process.env.MYTERMINAL_HOME;
     try {
       process.env.MYTERMINAL_HOME = '/custom/install/path';
-      assert.equal(installationRoot(), '/custom/install/path');
+      assert.equal(installationRoot(), resolve('/custom/install/path'));
     } finally {
       if (original === undefined) delete process.env.MYTERMINAL_HOME;
       else process.env.MYTERMINAL_HOME = original;
