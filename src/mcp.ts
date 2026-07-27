@@ -165,9 +165,12 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
   const safeLocalMutation = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
   const registerDirect = (name: string, title: string, description: string, inputSchema: Record<string, z.ZodType>, annotations = safeRead) => {
     server.registerTool(name, {
-      title, description, inputSchema, outputSchema: responseSchema, annotations,
+      title, description, inputSchema: { ...inputSchema, identity: optionalIdentitySchema }, outputSchema: responseSchema, annotations,
       _meta: { 'openai/toolInvocation/invoking': `Running ${title}…`, 'openai/toolInvocation/invoked': `${title} ready` },
-    }, async (input, callContext) => toToolResult(await service.call({ tool: name, input: input as JsonObject }, contextFromCall(callContext)), `${title} completed.`));
+    }, async (input, callContext) => {
+      const { identity, ...rest } = input as JsonObject & { identity?: unknown };
+      return toToolResult(await service.call({ tool: name, input: rest, ...(identity ? { identity } : {}) }, contextFromCall(callContext)), `${title} completed.`);
+    });
   };
   const stringList = z.array(z.string()).max(100);
   const plannedCall = z.object({ tool: z.string().min(3).max(64), input: z.record(z.string(), z.unknown()), purpose: z.string().min(1).max(500).optional() });
