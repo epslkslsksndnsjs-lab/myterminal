@@ -556,7 +556,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   // ── Subagent 工具（ADR-0009 决策 1/8/9/12）──
   const SUBAGENT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
-  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek'];
+  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek', 'glm'];
 
   add({
     name: 'subagent_start', title: 'Start subagent',

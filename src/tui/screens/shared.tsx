@@ -5,8 +5,8 @@ export function Heading({ children, theme }: { children: string; theme: Theme })
   return <text fg={theme.text} wrapMode="word"><b>{children}</b></text>;
 }
 
-export function Line({ children, color, bold = false }: { children: string; color: string; bold?: boolean }) {
-  return <text fg={color} wrapMode="word">{bold ? <b>{children}</b> : children}</text>;
+export function Line({ children, color, bold = false }: { children: string | string[]; color: string; bold?: boolean }) {
+  return <text fg={color} wrapMode="word">{bold ? <b>{Array.isArray(children) ? children.join('') : children}</b> : Array.isArray(children) ? children.join('') : children}</text>;
 }
 
 export function SessionStatus({ session, theme }: { session: MyTerminalSession; theme: Theme }) {

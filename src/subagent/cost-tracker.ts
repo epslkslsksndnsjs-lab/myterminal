@@ -11,6 +11,9 @@ const MODEL_PRICING: Record<string, { input: number; output: number; cacheRead: 
   'claude-opus-4':     { input: 15,   output: 75,   cacheRead: 1.5 },
   'deepseek-chat':     { input: 0.27, output: 1.1,  cacheRead: 0.07 },
   'deepseek-reasoner': { input: 0.55, output: 2.19, cacheRead: 0.14 },
+  // GLM（智谱开放平台）——per 1M tokens, USD
+  'glm-4-flash':       { input: 0.014, output: 0.014, cacheRead: 0 },
+  'glm-4':             { input: 0.014, output: 0.014, cacheRead: 0 },
 };
 
 export interface TokenUsage {
@@ -47,6 +50,10 @@ function resolvePricing(model: string): { input: number; output: number; cacheRe
   if (model.startsWith('deepseek-')) {
     console.warn(`[cost-tracker] Unknown DeepSeek model "${model}", falling back to deepseek-chat pricing`);
     return MODEL_PRICING['deepseek-chat'];
+  }
+  if (model.startsWith('glm-')) {
+    console.warn(`[cost-tracker] Unknown GLM model "${model}", falling back to glm-4-flash pricing`);
+    return MODEL_PRICING['glm-4-flash'];
   }
 
   // 完全未知——gpt-4o 作为最通用默认

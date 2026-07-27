@@ -176,7 +176,7 @@ export type StoredState = {
 // ADR-0009 决策 11/12/14 + ADR-0007 决策 21
 export type SubagentSettings = {
   enabled: boolean;
-  provider: 'openai' | 'anthropic' | 'deepseek';
+  provider: 'openai' | 'anthropic' | 'deepseek' | 'glm';
   model: string;
   maxTurns: number;       // agent loop 轮次上限，默认 50
   timeoutSec: number;     // 整体超时秒数，默认 300

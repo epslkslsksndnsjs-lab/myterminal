@@ -20,7 +20,7 @@ export type SubagentStartInput = {
   deliverables?: string[];
   acceptanceCriteria?: string[];
   constraints?: string[];
-  provider?: 'openai' | 'anthropic' | 'deepseek';
+  provider?: 'openai' | 'anthropic' | 'deepseek' | 'glm';
   model?: string;
   maxTurns?: number;
   timeoutSec?: number;
