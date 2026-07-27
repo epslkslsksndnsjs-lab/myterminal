@@ -276,9 +276,90 @@ function scanDir(dir: string): Map<string, { manifest: SkillManifest; content: s
   return result;
 }
 
+// --- Built-in skills (hardcoded fallback, user files take priority) ---
+
+const BUILTIN_ADAPTIVE_GUARD_CONTENT = `# Adaptive Guard — Recovery Playbook
+
+Load this skill when any MyTerminal call returns an error, when OpenAI ends a turn prematurely, or when a task seems too large for the current context window.
+
+## Diagnostic Flow
+
+1. Read the \`error.code\` from the response (or identify the symptom).
+2. Match it to one of the categories below.
+3. Execute the recovery steps in order.
+4. After recovery, checkpoint(working) with the next planned action and continue.
+
+## Recovery Decision Tree
+
+### Category 1: Rate Limit (429 / RateLimitReached)
+
+- Step 1: checkpoint(working, summary:"rate limited, backing off 30s").
+- Step 2: Wait ~30 seconds, then retry the original call.
+- Step 3: Still 429 → wait 60 seconds, retry.
+- Step 4: Still 429 → checkpoint(blocked, blockers:["OpenAI rate limit persists after 3 attempts"]). Inform the user.
+
+### Category 2: Turn Ended Prematurely (summary-like result, mustContinue not set)
+
+- Step 1: Do NOT send a completion summary to the user.
+- Step 2: Immediately checkpoint(phase:"working", summary:"turn interrupted, continuing work") with nextCalls containing the exact next tool and input.
+- Step 3: Execute the returned nextCall in the same assistant turn.
+- Step 4: If the harness mode is \`off\`, continue working normally without waiting for nextCall enforcement.
+
+### Category 3: Tool Timeout (ACTION_TIMEOUT)
+
+- Step 1: Reduce input size — use read_file_range instead of read_file, narrow search_text query, or reduce execute_cli command scope.
+- Step 2: Retry with a larger timeoutSec if applicable.
+- Step 3: Still timing out → delegate to subagent_start({objective, timeoutSec:600}) for async execution. Poll subagent_status until terminal.
+
+### Category 4: Identity Stale (INVALID_IDENTITY / STALE_IDENTITY)
+
+- Step 1: Use the previous sessionToken with session_inherit({sessionId, sessionToken:<previous>}) to reclaim the session.
+- Step 2: If that fails, call extensionDiscover without identity, then session_register a new root.
+- Step 3: NEVER create a new root for the same unfinished task just because identity became stale.
+
+### Category 5: Network / Connection Error (WORKSPACE_UNAVAILABLE / RUNTIME_SHUTTING_DOWN)
+
+- Step 1: Wait 5 seconds, retry.
+- Step 2: Wait 10 seconds, retry.
+- Step 3: Wait 20 seconds, retry.
+- Step 4: Still failing → checkpoint(blocked, blockers:["workspace unreachable after 3 retries"]). Inform the user.
+
+### Category 6: Context Overflow / Task Too Large
+
+- Symptom: conversation exceeds ~15 turns, or tool results are too large to process.
+- Step 1: Break the remaining work into 2-3 independent sub-objectives.
+- Step 2: Use subagent_start for each sub-objective with a focused objective and acceptanceCriteria.
+- Step 3: Poll subagent_status(taskId) until each subagent completes.
+- Step 4: Aggregate results and continue.
+
+### Category 7: Response Data Too Large
+
+- Step 1: Replace read_file with read_file_range — read 500 lines at a time.
+- Step 2: Add maxBytes parameter to read_file (e.g., 50000).
+- Step 3: Narrow search_text queries to reduce match count.
+- Step 4: For execute_cli, pipe output through head/tail to limit size.
+
+## General Principles
+
+- Always checkpoint BEFORE attempting recovery, so progress is not lost.
+- After successful recovery, checkpoint(working) with the next planned action.
+- If 3 recovery attempts fail for the same category, escalate to blocked with clear blockers.
+- Never invent fake results or claim success when a tool returned an error.
+`;
+
+const BUILTIN_SKILLS: Map<string, SkillRecord> = new Map([
+  ['adaptive-guard', {
+    name: 'adaptive-guard',
+    description: 'Recovery strategies when encountering server limits, timeouts, turn interruptions, context overflow, or tool failures. Load this when any MyTerminal call returns an error or when work feels stuck.',
+    when_to_use: 'Load immediately when receiving any error response (429, TIMEOUT, INVALID_IDENTITY, WORKSPACE_UNAVAILABLE, NEXT_CALL_REQUIRED, etc.), when OpenAI ends a turn prematurely, or when a task seems too large for the current context window.',
+    mode: 'inline',
+    content: BUILTIN_ADAPTIVE_GUARD_CONTENT,
+  }],
+]);
+
 // --- Public API ---
 
-/** List installed skills (metadata only, no content). Global overrides project-level. */
+/** List installed skills (metadata only, no content). Global overrides project-level. Built-in skills appear unless overridden by user files. */
 export function listSkills(configDir: string, workspaceDir: string): SkillManifest[] {
   const project = scanDir(projectSkillsDir(workspaceDir));
   const global = scanDir(path.join(configDir, 'skills'));
@@ -288,10 +369,19 @@ export function listSkills(configDir: string, workspaceDir: string): SkillManife
     project.set(name, skill);
   }
 
-  return [...project.values()].map(({ manifest }) => manifest);
+  const result = [...project.values()].map(({ manifest }) => manifest);
+
+  // Inject built-in skills that are not overridden by user files
+  for (const [name, record] of BUILTIN_SKILLS) {
+    if (!project.has(name)) {
+      result.push({ name: record.name, description: record.description, when_to_use: record.when_to_use, mode: record.mode });
+    }
+  }
+
+  return result;
 }
 
-/** Load a skill's full content by name. Returns null if not found. */
+/** Load a skill's full content by name. Falls back to built-in skills if no user file is found. */
 export function loadSkill(configDir: string, workspaceDir: string, name: string): SkillRecord | null {
   // Global first (global takes priority)
   const globalPath = path.join(configDir, 'skills', name, SKILL_FILE);
@@ -306,6 +396,10 @@ export function loadSkill(configDir: string, workspaceDir: string, name: string)
     const parsed = readSkillFile(projectPath);
     if (parsed) return { ...parsed.manifest, content: parsed.content };
   }
+
+  // Fallback to built-in skills
+  const builtin = BUILTIN_SKILLS.get(name);
+  if (builtin) return builtin;
 
   return null;
 }

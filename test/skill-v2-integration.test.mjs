@@ -176,7 +176,7 @@ test('05: e2e——list/inline/fork/status-idempotent 全链路', async () => {
   );
   assert.equal(listRes.ok, true);
   const skills = listRes.data.result.skills;
-  assert.equal(skills.length, 2);
+  assert.equal(skills.length, 3); // 2 user skills + 1 built-in (adaptive-guard)
 
   // Step 2: skill(inline) → content
   const inlineRes = await ext.call(

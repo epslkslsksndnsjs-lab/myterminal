@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeActivity, memoizedMergeActivity } from '../dist/tui/model/timeline-merge.js';
 import { relativeTime } from '../dist/tui/model/relative-time.js';
@@ -6,6 +6,7 @@ import { copyFor } from '../dist/tui/copy/index.js';
 
 // ─── timeline-merge ───
 
+describe('tui-redesign-m3', () => {
 test('mergeActivity merges messages and audits in descending time order', () => {
   const messages = [
     { id: 'm1', from: 's1', to: 's2', body: 'hello', createdAt: '2026-07-26T10:00:00.000Z' },
@@ -192,4 +193,5 @@ test('homeSummary en: pending>0', () => {
 test('homeSummary en: both zero', () => {
   const copy = copyFor(false);
   assert.equal(copy.homeSummary(0, 0), 'All quiet. Press n to delegate, or type /new.');
+});
 });

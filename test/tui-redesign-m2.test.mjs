@@ -1,8 +1,9 @@
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { routeCommand, commandCompletions } from '../dist/tui/model/command-router.js';
 
 // ─── navigate ───
+describe('tui-redesign-m2', () => {
 test('routeCommand navigates to pages by command name', () => {
   assert.deepEqual(routeCommand('/home'), { kind: 'navigate', tab: 0 });
   assert.deepEqual(routeCommand('/overview'), { kind: 'navigate', tab: 0 });
@@ -86,4 +87,5 @@ test('commandCompletions works with Chinese prefix', () => {
   const results = commandCompletions('/日');
   assert.equal(results.length, 1);
   assert.equal(results[0], '/日志');
+});
 });

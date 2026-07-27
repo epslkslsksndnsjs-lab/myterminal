@@ -2,7 +2,7 @@
 // 决策 14 / 21 / 24 / 27 / 29
 // 目标：≥ 20 用例，覆盖率 ≥ 90%
 
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Import 构建产物 ──
@@ -108,6 +108,7 @@ function makeChatParams(overrides = {}) {
 
 // ── 用例 1：estimateTokens ──
 
+describe('subagent-m6', () => {
 test('estimateTokens — 基本文本', () => {
   assert.equal(estimateTokens('abcd'), 2); // 4 chars / 4 * 4/3 = 1.33 → ceil = 2
 });
@@ -1093,4 +1094,5 @@ test('normalizeMessages — 多条孤儿 tool_use', () => {
   assert.equal(toolResults.length, 2);
   assert.equal(toolResults[0].is_error, true);
   assert.equal(toolResults[1].is_error, true);
+});
 });

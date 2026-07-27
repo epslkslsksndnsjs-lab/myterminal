@@ -1,9 +1,10 @@
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mascotMoodFor } from '../dist/tui/model/mascot-mood.js';
 import { copyFor, verbFor, verbLabel, greetingFor } from '../dist/tui/copy/index.js';
 import { paletteFor } from '../dist/tui/theme/palette.js';
 
+describe('tui-redesign', () => {
 test('mascotMoodFor prioritizes sad > worried > expectant > thinking > happy', () => {
   assert.equal(mascotMoodFor({}), 'happy');
   assert.equal(mascotMoodFor({ busy: true }), 'thinking');
@@ -59,4 +60,5 @@ test('warm palettes provide all 16 roles as hex colors and differ per theme', ()
   assert.notEqual(dark.background, light.background);
   assert.notEqual(dark.accent, light.accent);
   assert.equal(paletteFor('dark') !== dark, true, 'paletteFor returns a fresh copy');
+});
 });

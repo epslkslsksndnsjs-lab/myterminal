@@ -170,7 +170,7 @@ async function walkFiles(searchDir: string): Promise<string[]> {
         if (IGNORE_DIRECTORIES.has(entry.name)) continue;
         queue.push(resolve(current, entry.name));
       } else if (entry.isFile()) {
-        files.push(relative(searchDir, resolve(current, entry.name)));
+        files.push(relative(searchDir, resolve(current, entry.name)).replace(/\\/g, '/'));
       }
     }
   }

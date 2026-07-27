@@ -116,7 +116,7 @@ export async function createGrep(
   for (const absPath of allFiles) {
     if (truncated) break;
 
-    const relPath = relative(searchDir, absPath);
+    const relPath = relative(searchDir, absPath).replace(/\\/g, '/');
 
     // include 过滤
     if (includeRegex && !includeRegex.test(relPath)) continue;

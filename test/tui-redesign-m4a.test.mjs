@@ -1,9 +1,10 @@
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { viewForHistoryEntry } from '../dist/tui/model/history-entry.js';
 
 // ═══ session_created ═══
 
+describe('tui-redesign-m4a', () => {
 test('viewForHistoryEntry session_created zh', () => {
   const entry = { at: '2026-07-25T09:39:38.541Z', type: 'session_created', data: { mode: 'root' } };
   const view = viewForHistoryEntry(entry, true);
@@ -271,4 +272,5 @@ test('viewForHistoryEntry tool_audit detail not truncated for short status', () 
   const entry = { at: '2026-07-25T09:39:38.544Z', type: 'tool_audit', data: { action: 'read', status: 'ok_custom_long_status_name_but_still_short' } };
   const view = viewForHistoryEntry(entry, false);
   assert.ok(view.detail.length <= 120);
+});
 });

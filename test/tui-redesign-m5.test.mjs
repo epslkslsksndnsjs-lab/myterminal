@@ -1,9 +1,10 @@
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { groupDiffLines } from '../dist/tui/model/diff-groups.js';
 
 // ─── groupDiffLines 基本切分 ───
 
+describe('tui-redesign-m5', () => {
 test('groupDiffLines splits multi-file diff', () => {
   const lines = [
     'diff --git a/src/a.ts b/src/a.ts',
@@ -88,4 +89,5 @@ test('groupDiffLines handles trailing preamble after last file', () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0].file, 'file.ts');
   assert.ok(groups[0].lines.includes('some trailing note'));
+});
 });

@@ -2,7 +2,7 @@
 // 决策 18 / 30 Bug 4 / 31 / 38 / 39 / 40
 // 目标：≥ 19 用例，覆盖率 ≥ 90%
 
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,6 +50,7 @@ test.afterEach(() => {
 // Schema 校验测试（≥ 4 用例）
 // ═══════════════════════════════════════════════
 
+describe('subagent-m5', () => {
 test('schema 校验——缺 required 参数', () => {
   const schema = {
     type: 'object',
@@ -800,4 +801,5 @@ test('执行——validateInput 校验失败返回 is_error', async () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
 });

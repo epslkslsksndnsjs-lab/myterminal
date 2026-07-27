@@ -1,9 +1,10 @@
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeActivity, memoizedMergeActivity } from '../dist/tui/model/timeline-merge.js';
 
 // ─── mergeActivity args/result pass-through (M4b enhancement) ───
 
+describe('tui-redesign-m4b', () => {
 test('mergeActivity audit entry passes through args field', () => {
   const audits = [
     { at: '2026-07-26T12:00:00.000Z', action: 'session_register', source: 'apps', status: 'completed', args: { mode: 'root' } },
@@ -101,4 +102,5 @@ test('memoizedMergeActivity args/result included in memoization', () => {
   const r2 = memoizedMergeActivity('r1', [], audits2, 10); // same revision, different audits — but memo uses revision only
   // same revision returns same cached reference regardless of new args
   assert.strictEqual(r1, r2);
+});
 });

@@ -2,7 +2,7 @@
 // 决策 5/8/9/12/20/21/24/25/29/37
 // 目标：覆盖率 ≥ 90%；变异体 9/9 被杀死
 
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -158,6 +158,7 @@ function cleanAll() {
 // 一、tui-bridge 测试
 // ═══════════════════════════════════════════════════════════
 
+describe('subagent-m7', () => {
 test('tui-bridge: emitAgUi listener receives event with subagentId/type/timestamp', async () => {
   cleanAll();
   const events = [];
@@ -893,4 +894,5 @@ test('onEvent 注入: 自定义 onEvent 收到完整事件流', async () => {
   assert.ok(typeof events[0].timestamp === 'number');
 
   rmSync(cwd, { recursive: true, force: true });
+});
 });

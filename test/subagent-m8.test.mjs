@@ -2,7 +2,7 @@
 // ADR-0009 决策 1/2/4/7/8/9/10/11/12/14
 // 目标：覆盖率 ≥ 70%；变异体 7/7 被杀死
 
-import test from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -99,6 +99,7 @@ function setupRunner(overrides = {}) {
 // Part A：Runner 单测（用例 1-7）
 // ══════════════════════════════════════════════════════
 
+describe('subagent-m8', () => {
 test('M8-runner-01: start returns sessionId + taskId + running', async () => {
   clearAllSubagents();
   resetSubagentRunner();
@@ -820,4 +821,5 @@ test('M8-tui-16: Subagents component smoke test', () => {
   // 清理
   clearAllSubagents();
   assert.equal(listAllSubagents().length, 0);
+});
 });

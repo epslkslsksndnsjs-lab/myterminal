@@ -372,11 +372,14 @@ describe('M4 集成用例', () => {
     const updated = await updateTool.call({ taskId: task.task.id, status: 'completed' }, agentCtx);
     assert.strictEqual(updated.allDone, true);
 
-    // 5. execute_cli 验证
+    // 5. execute_cli 验证（跨平台：echo 在所有 shell 都可用）
     const execTool = getTool('execute_cli');
-    const execResult = await execTool.call({ command: 'cat a.ts' }, agentCtx);
-    assert.ok(execResult.stdout.includes('地球'));
-    assert.ok(execResult.stdout.includes('hello'));
+    const execResult = await execTool.call({ command: 'echo hello-from-shell' }, agentCtx);
+    assert.ok(execResult.stdout.includes('hello-from-shell'), `echo failed: ${JSON.stringify(execResult)}`);
+    // 用 read_file 验证编辑结果（避免 shell 编码问题）
+    const verifyResult = await readTool.call({ path: 'a.ts' }, agentCtx);
+    assert.ok(verifyResult.content.includes('地球'));
+    assert.ok(verifyResult.content.includes('hello'));
   });
 });
 
