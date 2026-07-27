@@ -214,7 +214,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
     deliverables: z.array(z.string()).optional(),
     acceptanceCriteria: z.array(z.string()).optional(),
     constraints: z.array(z.string()).optional(),
-    provider: z.enum(['openai', 'anthropic', 'deepseek', 'glm']).optional(),
+    provider: z.enum(['openai', 'anthropic', 'deepseek', 'glm', 'qwen']).optional(),
     model: z.string().optional(),
     maxTurns: z.number().int().min(1).max(200).optional(),
     timeoutSec: z.number().int().min(30).max(3600).optional(),
