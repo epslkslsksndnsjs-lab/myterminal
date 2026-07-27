@@ -73,7 +73,7 @@ SUBAGENT
 - 可配置的 maxParallel 限制并发 subagent 数量。达到上限返回 FORBIDDEN；等待后重试。subagent 不能启动其他 subagent（递归防护）。
 
 SKILL
-- skill() 无参数调用列出可用 skill：[{name, description, when_to_use, mode}]。用于发现已安装的 skill。
+- skill() 无参数调用列出可用 skill：[{name, description, when_to_use, mode}]。用于发现已安装的 skill。内建 skill（如 adaptive-guard）自动出现；用户同名文件始终覆盖。
 - skill(name="example") 加载并按 skill 声明的 frontmatter mode 路由：
   - mode:inline（默认）返回 {name, description, mode, content}，包含完整 skill 正文。阅读并使用可用工具遵循其中的指令。
   - mode:fork 启动 subagent 异步运行该 skill。返回 {name, description, mode, taskId, status:"running"}。轮询 subagent_status(taskId) 直到终态。

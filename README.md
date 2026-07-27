@@ -99,7 +99,7 @@ Use the supplied [GPT instructions](docs/GPT_INSTRUCTIONS.md) to prevent schema-
 
 ### Skill system
 
-Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`. Each skill declares frontmatter (name, description, when_to_use, mode) and a markdown body. `skill()` without arguments lists installed skills; `skill(name="example")` loads and routes by mode — `inline` returns the full content for the GPT to follow directly, `fork` starts an isolated subagent to run the skill asynchronously. Skill names must match `[a-z][a-z0-9-]{2,63}` and files are capped at 100KB.
+Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`. Each skill declares frontmatter (name, description, when_to_use, mode) and a markdown body. `skill()` without arguments lists installed skills; `skill(name="example")` loads and routes by mode — `inline` returns the full content for the GPT to follow directly, `fork` starts an isolated subagent to run the skill asynchronously. Skill names must match `[a-z][a-z0-9-]{2,63}` and files are capped at 100KB. The system ships with a built-in `adaptive-guard` skill that provides error recovery strategies; it appears automatically in the skill list and is overridden by any user-authored file of the same name.
 
 ### Subagent system
 

@@ -1,8 +1,18 @@
 {
   "name": "myterminal",
   "version": "0.1.2",
-  "private": true,
+  "private": false,
   "description": "Local-first ChatGPT development bridge with auditable multi-session collaboration, Apps and Actions adapters, extensions, and a full OpenTUI interface.",
+  "author": "epslkslsksndnsjs-lab",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/epslkslsksndnsjs-lab/myterminal.git"
+  },
+  "homepage": "https://github.com/epslkslsksndnsjs-lab/myterminal#readme",
+  "bugs": {
+    "url": "https://github.com/epslkslsksndnsjs-lab/myterminal/issues"
+  },
   "type": "module",
   "main": "dist/cli.js",
   "files": [

@@ -73,7 +73,7 @@ SUBAGENT
 - A configurable maxParallel limit caps concurrent subagents. Hitting it returns FORBIDDEN; wait and retry. Subagents cannot start other subagents (recursion guard).
 
 SKILL
-- skill() without arguments lists available skills: [{name, description, when_to_use, mode}]. Use this to discover what skills are installed.
+- skill() without arguments lists available skills: [{name, description, when_to_use, mode}]. Use this to discover what skills are installed. Built-in skills (e.g. adaptive-guard) appear automatically; user-authored files of the same name override them.
 - skill(name="example") loads and routes by the skill's declared frontmatter mode:
   - mode:inline (default) returns {name, description, mode, content} with the full skill body. Read and follow its instructions using available tools.
   - mode:fork starts a subagent to run the skill asynchronously. Returns {name, description, mode, taskId, status:"running"}. Poll subagent_status(taskId) until terminal.

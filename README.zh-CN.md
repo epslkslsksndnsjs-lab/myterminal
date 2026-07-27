@@ -99,7 +99,7 @@ ChatGPT
 
 ### Skill 系统
 
-Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name>/` 下。每个 skill 通过 frontmatter 声明 name、description、when_to_use 和 mode，并带有 markdown 正文。`skill()` 无参数调用列出已安装 skill；`skill(name="example")` 加载并按 mode 路由——`inline` 返回完整内容供 GPT 直接遵循，`fork` 启动隔离的 subagent 异步运行该 skill。Skill 名称须匹配 `[a-z][a-z0-9-]{2,63}`，文件上限 100KB。
+Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name>/` 下。每个 skill 通过 frontmatter 声明 name、description、when_to_use 和 mode，并带有 markdown 正文。`skill()` 无参数调用列出已安装 skill；`skill(name="example")` 加载并按 mode 路由——`inline` 返回完整内容供 GPT 直接遵循，`fork` 启动隔离的 subagent 异步运行该 skill。Skill 名称须匹配 `[a-z][a-z0-9-]{2,63}`，文件上限 100KB。系统自带 `adaptive-guard` 内建 skill，提供错误恢复策略；它自动出现在 skill 列表中，用户同名文件始终优先。
 
 ### Subagent 系统
 

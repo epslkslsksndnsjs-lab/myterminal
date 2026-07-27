@@ -13,6 +13,16 @@
 
 discover/加载时两个目录都扫描，同名 skill 全局优先（全局覆盖项目级）。
 
+### 内建 Skill
+
+系统硬编码 `BUILTIN_SKILLS` Map（skills.ts），当前含 `adaptive-guard`（7 类错误恢复操作手册）。优先级：
+
+```
+全局用户文件 > 项目用户文件 > 内建 hardcode
+```
+
+用户同名文件始终覆盖内建。内建 skill 在新用户没有任何文件时作为兆底，确保首次连接即有错误恢复策略可用。
+
 - 不是可执行的 tool（那是 extension 的角色）。
 - AI 读取 skill 内容后，按指引调用其他 tool（execute_cli、write_file 等）完成工作流。
 - 例：git-commit skill 告诉 AI "当用户要提交时，先 git diff → 生成规范 message → execute_cli 执行"。
