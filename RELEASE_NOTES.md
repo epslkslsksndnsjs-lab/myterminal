@@ -1,3 +1,35 @@
+# MyTerminal v0.1.2
+
+MyTerminal v0.1.2 introduces two major new systems — **Skill** and **Subagent** — that extend the platform from a session-coordination bridge into a full agent orchestration layer. Existing settings, credentials, workspaces, sessions, messages, extensions, and history are preserved.
+
+> [!IMPORTANT]
+> **Known Windows limitation:** the supported PowerShell TUI path is keyboard-only compatibility mode. Mouse capture is disabled by default because it can become unresponsive or freeze under Windows PowerShell and PowerShell 7. All pages, forms, and exact session selectors remain keyboard-operable.
+
+## Highlights
+
+- **Skill system**. User-authored SKILL.md files in `.myterminal/skills/<name>/` declare frontmatter (name, description, when_to_use, mode, forkOptions). `skill()` without arguments lists installed skills; `skill(name="example")` loads the skill and routes by mode — `inline` returns the full content for the GPT to follow, `fork` starts an isolated subagent to run the skill asynchronously. Skill names must match `[a-z][a-z0-9-]{2,63}` and files are capped at 100KB.
+- **Subagent system**. An isolated agent loop with its own 8-tool set (execute_cli, read_file, write_file, edit_file, glob, grep, task_create, task_update), context window, and cost tracker. Runs asynchronously against a configured LLM provider — openai, anthropic, deepseek, glm, or qwen (default from config.json, per-call override supported). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send with taskId and origin.
+- **Multi-provider LLM adapter**. Unified streaming interface across 5 providers with 6-class error taxonomy (rate_limit, server_overload, auth, prompt_too_long, connection, system) and automatic retry with provider-specific backoff.
+- **Fork skill integration**. Fork-mode skills share the maxParallel limit with regular subagents. Fork subagents use the same 8-tool set and cannot load other skills. Fork options (provider, model, maxTurns, timeoutSec, readOnly, deliverables, acceptanceCriteria, constraints) can be declared in the skill frontmatter.
+- **GPT instructions updated**. The recommended GPT instructions now include dedicated SUBAGENT and SKILL sections in both English and Chinese, validated against v0.1.2.
+- **Provider configuration guide**. New bilingual `docs/SUBAGENT_SETUP.md` covers LLM provider setup, API key configuration, and model selection for each supported provider.
+
+## Skill and subagent interaction
+
+Skills and subagents compose naturally: inline skills are loaded into the parent session's context and executed directly by the GPT; fork skills delegate to a subagent that runs in isolation with its own tool set and context window. Both modes benefit from the subagent's cost tracking and the parent session's audit trail. The shared maxParallel limit ensures resource bounds are respected across all concurrent agent activity.
+
+## Binary release assets
+
+The release workflow builds, tests, packages, installs, and verifies:
+
+- macOS Apple Silicon (`darwin-arm64`)
+- macOS Intel (`darwin-x64`)
+- Linux ARM64 (`linux-arm64`)
+- Linux x64 (`linux-x64`)
+- Windows x64 (`windows-x64`)
+
+---
+
 # MyTerminal v0.1.1
 
 MyTerminal v0.1.1 focuses on long-task continuity, optional non-blocking execution, bounded history performance, Apps capability completeness, and Windows process reliability. Existing settings, credentials, workspaces, sessions, messages, extensions, and history are preserved.
@@ -77,6 +109,24 @@ The installers preserve configuration and workspace state, install into a versio
 The release candidate passed TypeScript checking, 88 automated tests, documentation/link checks, the bounded performance regression, standalone macOS and Windows x64 builds, and the PowerShell 5.1/7.6.3 VM checks above. The tag-triggered GitHub workflow repeats the full test and packaged-installer suite on all five platform runners before publishing assets.
 
 ## 中文说明
+
+MyTerminal v0.1.2 引入两大新系统——**Skill** 和 **Subagent**——将平台从 session 协调桥梁扩展为完整的智能体编排层。升级会保留已有配置、凭据、工作区、session、消息、扩展和历史。
+
+> [!IMPORTANT]
+> **Windows 已知限制：** PowerShell TUI 正式支持的是纯键盘兼容模式。鼠标捕获默认关闭，因为它在 Windows PowerShell 与 PowerShell 7 中可能无响应或导致界面卡死。所有页面、表单和精确 session 选择都可使用方向键、`PgUp/PgDn`、`Home/End`、`Enter` 与页面快捷键完成。
+
+本版本主要变化：
+
+- **Skill 系统**。用户在 `.myterminal/skills/<name>/` 放置 SKILL.md 文件，通过 frontmatter 声明 name、description、when_to_use、mode 和 forkOptions。`skill()` 无参调用列出已安装 skill；`skill(name="example")` 加载并按 mode 路由——`inline` 返回完整内容供 GPT 遵循，`fork` 启动隔离的 subagent 异步运行该 skill。Skill 名称须匹配 `[a-z][a-z0-9-]{2,63}`，文件上限 100KB。
+- **Subagent 系统**。隔离的智能体循环，拥有独立的 8 工具集（execute_cli、read_file、write_file、edit_file、glob、grep、task_create、task_update）、上下文窗口和费用追踪器。异步运行于已配置的 LLM 提供商——openai、anthropic、deepseek、glm 或 qwen（默认读取 config.json，支持单次调用覆盖）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session，消息包含 taskId 和 origin。
+- **多提供商 LLM 适配层**。5 个提供商统一流式接口，6 类错误分类（rate_limit、server_overload、auth、prompt_too_long、connection、system）并按提供商自动重试。
+- **Fork skill 集成**。fork 模式 skill 与普通 subagent 共享 maxParallel 限制。fork subagent 使用相同的 8 工具集，不能加载其他 skill。forkOptions 可在 frontmatter 中声明 provider、model、maxTurns、timeoutSec、readOnly、deliverables、acceptanceCriteria 和 constraints。
+- **GPT 预设指令更新**。推荐 GPT 指令新增 SUBAGENT 和 SKILL 专用章节，中英双语均已验证。
+- **提供商配置指南**。新增双语 `docs/SUBAGENT_SETUP.md`，覆盖各提供商的 LLM 配置、API key 设置和模型选择。
+
+---
+
+## 中文说明（v0.1.1）
 
 MyTerminal v0.1.1 重点完善长任务持续执行、可选非阻塞任务、有界历史性能、Apps 完整能力以及 Windows 进程可靠性。升级会保留已有配置、凭据、工作区、session、消息、扩展和历史。
 

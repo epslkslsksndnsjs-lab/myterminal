@@ -4,7 +4,7 @@
 
 MyTerminal 的核心目的，是让 **ChatGPT 的普通 Chat 对话模式也能以可控方式在本地电脑上工作**。通过为自定义 GPT 配置 Action，或接入 ChatGPT App，普通 ChatGPT 对话就可以查看和编辑获准的本地项目、运行受约束的工具、协调多个工作 session 并汇报进展；用户始终通过本地 TUI 保留控制权。MyTerminal 是 ChatGPT Chat 与本地电脑之间的桥梁，不是另一个聊天客户端。
 
-MyTerminal 0.1.1 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、用户自定义 Agent 上下文（AGENT.md）、Git 风格实时 diff，以及覆盖整个终端窗口的中英双语 OpenTUI 界面。
+MyTerminal 0.1.2 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、用户自定义 Agent 上下文（AGENT.md）、Git 风格实时 diff、覆盖整个终端窗口的中英双语 OpenTUI 界面、用户自定义的 **Skill** 可复用智能体工作流系统，以及支持多 LLM 提供商的隔离 **Subagent** 系统。
 
 ![MyTerminal session 层级](docs/assets/tui/sessions-zh-CN.svg)
 
@@ -12,24 +12,24 @@ MyTerminal 0.1.1 通过可审计、可继承的工作 session 层提供这座桥
 
 ### 第一次安装
 
-无需提前安装 Git、Node.js、Bun 或其他编程环境。安装脚本会下载与当前平台和 CPU 架构匹配的 `v0.1.1` 独立可执行文件，校验 SHA-256，把 `myterminal` 注册成当前用户的全局命令，然后启动 TUI。发行安装不再下载臃肿的源码包或安装运行时依赖。
+无需提前安装 Git、Node.js、Bun 或其他编程环境。安装脚本会下载与当前平台和 CPU 架构匹配的 `v0.1.2` 独立可执行文件，校验 SHA-256，把 `myterminal` 注册成当前用户的全局命令，然后启动 TUI。发行安装不再下载臃肿的源码包或安装运行时依赖。
 
 #### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-macos.sh)"
 ```
 
 #### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-linux.sh)"
 ```
 
 #### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-windows.ps1 | iex"
 ```
 
 > [!IMPORTANT]
@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 ### 第二次及以后快速启动
 
-重新打开一个终端、PowerShell 或命令提示符窗口，直接输入安装器为当前用户注册的全局命令。启动器通过版本化 `releases/<版本>` 目录和原子的 `current` 指针定位当前二进制。已经安装 GitHub `v1.0.1`、开发过程中的中间源码版本或旧二进制版本的用户，直接再次运行上面的 `v0.1.1` 命令即可无损迁移；用户配置、凭据、workspace、session、消息和历史不会被删除。
+重新打开一个终端、PowerShell 或命令提示符窗口，直接输入安装器为当前用户注册的全局命令。启动器通过版本化 `releases/<版本>` 目录和原子的 `current` 指针定位当前二进制。已经安装 GitHub `v1.0.1`、开发过程中的中间源码版本或旧二进制版本的用户，直接再次运行上面的 `v0.1.2` 命令即可无损迁移；用户配置、凭据、workspace、session、消息和历史不会被删除。
 
 ```text
 myterminal
@@ -96,6 +96,14 @@ ChatGPT
 ```
 
 使用项目提供的 [GPT 预设指令](docs/GPT_INSTRUCTIONS.zh-CN.md)避免 API 分层错误；向普通用户提供[短提示词手册](docs/PROMPT_PLAYBOOK.zh-CN.md)，不需要长篇提示词。
+
+### Skill 系统
+
+Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name>/` 下。每个 skill 通过 frontmatter 声明 name、description、when_to_use 和 mode，并带有 markdown 正文。`skill()` 无参数调用列出已安装 skill；`skill(name="example")` 加载并按 mode 路由——`inline` 返回完整内容供 GPT 直接遵循，`fork` 启动隔离的 subagent 异步运行该 skill。Skill 名称须匹配 `[a-z][a-z0-9-]{2,63}`，文件上限 100KB。
+
+### Subagent 系统
+
+Subagent 是隔离的智能体循环，拥有独立的 8 工具集、上下文窗口和费用追踪器。它异步运行于已配置的 LLM 提供商（openai、anthropic、deepseek、glm 或 qwen，默认读取 config.json；支持单次调用覆盖）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。提供商配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
 
 ## 可审计协作
 
@@ -150,6 +158,7 @@ MyTerminal 以本地运行为主，没有项目遥测。所选工作区是真实
 | 特定场景短提示词 | [打开](docs/PROMPT_PLAYBOOK.zh-CN.md) | [Open](docs/PROMPT_PLAYBOOK.md) |
 | 隐私与部署模板 | [打开](docs/PRIVACY.zh-CN.md) | [Open](docs/PRIVACY.md) |
 | 手动/离线安装 | [打开](docs/MANUAL_INSTALL.md#中文说明) | [Open](docs/MANUAL_INSTALL.md) |
+| Subagent 提供商配置 | [打开](docs/SUBAGENT_SETUP.zh-CN.md) | [Open](docs/SUBAGENT_SETUP.md) |
 | 架构与资源归属 | — | [Open](docs/architecture.md) |
 
 ## 开发与验证
@@ -174,7 +183,7 @@ bun run start -- --headless
 
 ## 更新
 
-MyTerminal 会在 TUI 启动时检查 GitHub 最新发行版。设置页会显示当前版本和最新版本；有新版本时按 `U` 可一键安装。更新器下载当前平台的预编译二进制与 SHA-256，安装到新的版本目录，再原子切换 `current` 指针；失败时保留原版本并自动回滚。Git 源码工作区不会被一键更新覆盖。完整迁移和后续更新说明见 [v0.1.1 发布说明](RELEASE_NOTES.md)。
+MyTerminal 会在 TUI 启动时检查 GitHub 最新发行版。设置页会显示当前版本和最新版本；有新版本时按 `U` 可一键安装。更新器下载当前平台的预编译二进制与 SHA-256，安装到新的版本目录，再原子切换 `current` 指针；失败时保留原版本并自动回滚。Git 源码工作区不会被一键更新覆盖。完整迁移和后续更新说明见 [v0.1.2 发布说明](RELEASE_NOTES.md)。
 
 工作区状态迁移采用可重复执行的增量合并：现有目标状态、旧全局状态、`state.migrated` 和工作区 `.myterminal` 会按稳定 ID 合并，session 历史文件会去重并完整保留。
 ## 共享端口与工作区路由

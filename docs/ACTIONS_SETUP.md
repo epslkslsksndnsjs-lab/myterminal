@@ -2,7 +2,7 @@
 
 [中文](ACTIONS_SETUP.zh-CN.md) · [Recommended GPT instructions](GPT_INSTRUCTIONS.md) · [Short prompt playbook](PROMPT_PLAYBOOK.md) · [Privacy](PRIVACY.md)
 
-This guide takes a new computer from installation to a tested private GPT. It uses MyTerminal 0.1.1 and the ChatGPT web editor. OpenAI currently makes GPT creation available to paid users, subject to workspace role and policy controls; Actions may also be restricted by allowed domains. A GPT can use **Apps or Actions, not both at the same time**. Actions are not available while the GPT uses ChatGPT's Pro mode, so the editor offers compatible non-Pro models for an Actions GPT. See OpenAI's [GPT creation guide](https://help.openai.com/en/articles/8554397-creating-a-gpt) and [Actions configuration guide](https://help.openai.com/en/articles/9442513).
+This guide takes a new computer from installation to a tested private GPT. It uses MyTerminal 0.1.2 and the ChatGPT web editor. OpenAI currently makes GPT creation available to paid users, subject to workspace role and policy controls; Actions may also be restricted by allowed domains. A GPT can use **Apps or Actions, not both at the same time**. Actions are not available while the GPT uses ChatGPT's Pro mode, so the editor offers compatible non-Pro models for an Actions GPT. See OpenAI's [GPT creation guide](https://help.openai.com/en/articles/8554397-creating-a-gpt) and [Actions configuration guide](https://help.openai.com/en/articles/9442513).
 
 > The ChatGPT screenshots are privacy-safe crops from local UI snapshots. They contain no conversation text, account identity, real endpoint, or real credential. ChatGPT's labels may move over time.
 
@@ -26,19 +26,19 @@ No Git, Node.js, or Bun installation is required beforehand.
 ### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-macos.sh)"
 ```
 
 ### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-linux.sh)"
 ```
 
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.1/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-windows.ps1 | iex"
 ```
 
 The installer downloads the matching standalone executable and SHA-256 file, verifies the checksum, installs the executable into a versioned release directory, registers `myterminal` in the current user's PATH, and opens the TUI. It does not install Git, Node.js, Bun, or package dependencies. Review the scripts before running them if your organization restricts remote scripts. For every later launch, open a new terminal and run only:
@@ -223,7 +223,7 @@ Create/save the GPT as **Only me** first. OpenAI may ask users to approve Action
 | Symptom | Fix |
 | --- | --- |
 | `Input should be '3.1.1' or '3.1.0'` | Update MyTerminal, import the exact `/openapi.json` URL, and remove any stale pasted schema. |
-| `components.schemas ... is not an object` | You are using an older or altered schema. MyTerminal 0.1.1 returns a concrete object. Re-import from the running service. |
+| `components.schemas ... is not an object` | You are using an older or altered schema. MyTerminal 0.1.2 returns a concrete object. Re-import from the running service. |
 | `ApiTypeError: Expected identity to be a dict` | Re-import `/openapi.json` and paste the current GPT instructions. Bootstrap calls should omit the `identity` key, not send `identity:null` or `identity:{}`. After updating to a build containing this compatibility fix, explicit null is also treated as an absent bootstrap identity. |
 | `spec must be an object` | `extensionRegister` needs top-level `spec:{...}`. Session creation belongs to `extensionCall` with `tool:"session_register"`. |
 | `input.name is required`, `input.to is required`, or `input.body is required` | Put concrete arguments inside `extensionCall.input`, for example `{tool:"message_send", input:{to:"reviewer", body:"Ready"}, identity:{...}}`. |
