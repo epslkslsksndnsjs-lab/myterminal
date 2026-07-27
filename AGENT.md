@@ -1,4 +1,4 @@
-# MyTerminal Agent 操作手册 — 2026-07-25
+# MyTerminal Agent 操作手册 — 2026-07-27 (v0.1.2)
 
 ## 两个通道
 
@@ -27,10 +27,10 @@ session_register({mode:"root", name:"main", role:"lead"})
 ### 2. 发现工具
 ```
 extension_discover({includeSchemas:true})
-→ 返回36个工具+参数schema
+→ 返回34个工具+参数schema
 ```
 
-### 3. 干活 — 36个工具速查
+### 3. 干活 — 34个工具速查
 
 #### 📂 文件 (7个)
 | 工具 | 用途 |
@@ -95,6 +95,18 @@ extension_discover({includeSchemas:true})
 | message_list | 收发列表 |
 | message_conversation {with} | 二人对话 |
 
+#### 🎯 Skill (1个)
+| 工具 | 用途 |
+|------|------|
+| skill {name?} | 无参=列出已安装skill；有参=按mode路由：inline返回内容供执行，fork启动subagent异步运行 |
+
+#### 🤖 Subagent (3个)
+| 工具 | 用途 |
+|------|------|
+| subagent_start {objective, provider?, model?, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?} | 启动隔离subagent，返回{taskId, status:"running"} |
+| subagent_status {taskId} | 轮询进度，返回{status, tasks, cost, result} |
+| subagent_abort {taskId} | 停止运行中的subagent |
+
 ### 4. 轮询（长任务专用）
 ```
 前提：config.json 中 nonBlockingTasksEnabled: true
@@ -103,7 +115,7 @@ extension_discover({includeSchemas:true})
 每次 poll 几十毫秒，永不超时
 ```
 
-### 5. Sub-Agent 分派
+### 5. Sub-Agent 分派（Delegate Session）
 ```
 session_register({mode:"delegate", name:"reviewer", role:"code-reviewer", task:{objective,background,deliverables,acceptanceCriteria,constraints}, blockedBy:["parentId"]})
 → 返回 {session, claimCode, handoffPrompt}
@@ -111,9 +123,30 @@ session_register({mode:"delegate", name:"reviewer", role:"code-reviewer", task:{
 子代理通过 message_send 回报结果
 ```
 
+### 6. Subagent 系统（隔离智能体循环）
+```
+subagent_start({objective:"...", provider:"openai", model:"gpt-4o"})
+→ {taskId:"sa_xxx", sessionId, status:"running"}
+轮询 subagent_status({taskId}) → running|completed|failed|aborted
+完成后自动通过 message_send 通知父session（含 taskId + origin）
+支持提供商：openai / anthropic / deepseek / glm / qwen（默认读取 config.json）
+maxParallel 限制并发；递归防护（subagent 不能启动 subagent）
+```
+
+### 7. Skill 系统
+```
+skill() → [{name, description, when_to_use, mode}]  // 列出
+skill(name="code-review") → 按 frontmatter mode 路由：
+  inline: {name, description, mode, content}  // 读取并遵循
+  fork: {name, description, mode, taskId, status:"running"}  // 启动subagent
+skill 文件：.myterminal/skills/<name>/SKILL.md（frontmatter + markdown 正文）
+```
+
 ## 关键注意事项
 - identity 嵌套在请求顶层 `{tool, input, identity}`，不是 input 里面
 - Delegate session 不返回 identity，需 session_inherit(claimCode) 获取
 - execute_cli 和 write_file 只能通过 extension_call 调用（不是直连工具）
 - apply_patch/run_checks/session_tag/session_subscribe 是隐藏工具，通过 extension_call 调用
-- 重启后 session 自动清理（reapOrphanDelegates），不会再弹"N个session等待接管"
+- 重启后 session 自动清理（reapOrphanDelegates），不会再弹“N个session等待接管”
+- subagent 完成后 1 小时自动清理；NOT_FOUND 表示已被清理
+- fork skill 与普通 subagent 共享 maxParallel 限制

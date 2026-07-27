@@ -87,6 +87,8 @@ Credentials are hidden by default and may be visible only while eligible `v` pre
 | Runtime/process | `server.ts`, `cluster.ts`, `cluster-router.ts`, `control-channel.ts`, `runtime-lifecycle.ts`, `instances.ts` | HTTP/control lifecycle, process topology, routing, leases |
 | Domain/state | `store.ts`, `types.ts`, `tui-model.ts` | sessions, messages, events, journal/snapshot persistence, audit history |
 | Extension facade | `extensions.ts`, `core-tools.ts`, `mcp.ts`, `openapi.ts` | authenticated tool discovery, registration and calls |
+| Skill system | `skills.ts` | SKILL.md scanning, frontmatter parsing, manifest loading, fork/inline routing |
+| Subagent system | `subagent/*.ts` | isolated agent loop, 8-tool set, multi-provider LLM adapter, cost tracking, permissions, file/shell state, result budget, TUI bridge |
 | Resource adapters | `session-resources.ts`, `diff.ts`, `security.ts`, `update.ts`, `update-transaction.ts` | OS helpers, Git sampling, path/credential safety, transactional updates |
 | TUI contracts/presentation | `tui/contracts.ts`, `tui/workspace-selector.ts`, `tui/renderer-profile.ts`, `runtime-settings.ts`, `tui/credential-visibility.ts` | shared view models, terminal profiles, and interaction contracts |
 | TUI orchestration/rendering | `tui/state.ts`, `tui/App.tsx`, screens/components | use cases and rendering |
@@ -103,6 +105,8 @@ Credentials are hidden by default and may be visible only while eligible `v` pre
 8. Process and cluster status shown in the TUI comes from runtime topology, not static labels.
 9. An Actions continuation queue advances only after the exact planned call completes successfully.
 10. Narrow Apps tools marked non-destructive do not overwrite existing workspace files; the separately exposed generic facade retains explicit overwrite and arbitrary-command capabilities.
+11. Subagents have an isolated context window and tool set; they cannot start other subagents (recursion guard) and share a global maxParallel limit with fork skills.
+12. Skill frontmatter is the single source of truth for routing (inline vs fork); the skill tool never silently downgrades a fork to inline.
 
 ## Change guidance
 

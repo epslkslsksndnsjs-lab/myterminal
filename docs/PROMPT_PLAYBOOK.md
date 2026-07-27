@@ -15,6 +15,8 @@ Replace only the text in angle brackets. Keep the prompt short; the GPT instruct
 | Use or create an extension | `Find a tool for <goal>. If none exists, validate the smallest safe extension spec before registering it.` |
 | Hand off current work | `Release the current session and give me the one-time handoff prompt.` |
 | Finish safely | `Run the project checks. If they pass, checkpoint the verified result as completed.` |
+| Run a skill | `List available skills, then run the skill best suited for <goal>.` |
+| Start a subagent | `Start a subagent to <objective> using <provider/model>. Poll until it finishes.` |
 
 ## What not to paste
 
