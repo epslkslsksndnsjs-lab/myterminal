@@ -71,6 +71,9 @@ bun run dev
 
 一个 GPT 不能同时使用 Apps 和 Actions。Actions 用户请阅读隐私安全的[中文完整教程](docs/ACTIONS_SETUP.zh-CN.md)或[英文教程](docs/ACTIONS_SETUP.md)，其中包括 HTTPS 隧道、schema 导入、Bearer 认证、GPT 配置、预览测试和常见报错。
 
+> [!IMPORTANT]
+> **Actions 确认提示：** 通过 GPT Actions 使用 MyTerminal 时，ChatGPT 会对**每一次工具调用**逐一弹出确认（读文件、跑命令、写文件），而 `extension_call` 目前**没有"始终允许"选项**，所以现阶段点击次数无法减少。`extension_discover` 是例外——它有"始终允许"，只需确认一次。这是已知体验问题，我们正在积极优化；同时**稳定模式（Stable Mode）正在研究**：单次对话支持更长轮次、中断后可恢复，并带来更顺畅的确认体验。
+
 ## 按连接方式区分的工具接口
 
 GPT Actions 始终只看到三个稳定 facade 操作：

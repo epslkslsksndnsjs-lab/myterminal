@@ -71,6 +71,9 @@ bun run dev
 
 A GPT can use Apps or Actions, not both at once. For Actions, follow the complete privacy-safe [English tutorial](docs/ACTIONS_SETUP.md) or [Chinese tutorial](docs/ACTIONS_SETUP.zh-CN.md). It covers HTTPS tunneling, schema import, Bearer authentication, GPT setup, Preview testing, and common error messages.
 
+> [!IMPORTANT]
+> **Actions confirmation notice:** when you drive MyTerminal through GPT Actions, ChatGPT confirms **every tool call** one by one (reads, commands, writes), and `extension_call` currently has **no "Always allow" option**, so the number of clicks cannot be reduced today. `extension_discover` is the exception — it offers "Always allow", so you confirm it only once. This is a known experience issue we are actively improving, and a **Stable Mode** is under research: longer single-conversation sessions that resume after interruption, with a smoother confirmation flow.
+
 ## Connection-specific tool surfaces
 
 GPT Actions sees exactly three stable facade operations:
