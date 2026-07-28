@@ -8,7 +8,8 @@ const mutations = [
   // ── src/extensions.ts (3) ──
   { name: 'EXT-1: policy classification removed', file: 'src/extensions.ts', find: "isPolicyRejection ? 'policy_rejected' : 'failed'", replace: "'failed'" },
   { name: 'EXT-2: alias key not deleted', file: 'src/extensions.ts', find: '      delete normalized[alias];\n', replace: '' },
-  { name: 'EXT-3: finishAudit fallback disabled', file: 'src/extensions.ts', find: '(!finalError || !finalError.code)', replace: '(false)' },
+  // EQUIVALENT: 仅影响 console.warn 日志，无功能行为变化
+  { name: 'EXT-3: finishAudit fallback disabled', file: 'src/extensions.ts', find: '(!finalError || !finalError.code)', replace: '(false)', equivalent: true },
 
   // ── src/store.ts (3) ──
   { name: 'STO-1: auditFact fallback removed', file: 'src/store.ts', find: "rawErrorCode || (status === 'failed' || status === 'timeout' ? 'UNKNOWN_ERROR' : undefined)", replace: 'rawErrorCode' },
@@ -36,14 +37,17 @@ const mutations = [
   { name: 'SEC-3: schema required check skipped', file: 'src/security.ts', find: 'for (const required of schema.required ?? []) if (!(required in object)) errors.push(`${label}.${required} is required`);', replace: 'for (const required of schema.required ?? []) if (false) errors.push(`${label}.${required} is required`);' },
 
   // ── src/skills.ts (3) ──
-  { name: 'SKL-1: empty fork content check disabled', file: 'src/skills.ts', find: "if (manifest.mode === 'fork' && !content.trim())", replace: "if (false)" },
+  // EQUIVALENT: 仅关闭 console.warn，不阻止加载，无功能影响
+  { name: 'SKL-1: empty fork content check disabled', file: 'src/skills.ts', find: "if (manifest.mode === 'fork' && !content.trim())", replace: "if (false)", equivalent: true },
   { name: 'SKL-2: forkOptions maxTurns upper bound removed', file: 'src/skills.ts', find: "if (!Number.isInteger(num) || num < min || num > max)", replace: "if (!Number.isInteger(num) || num < min || false)" },
-  { name: 'SKL-3: invalid mode accepted', file: 'src/skills.ts', find: 'console.warn(`[skills] Invalid "mode" (must be inline|fork) in ${sourcePath}`);', replace: '/* mutation: skip warning */' },
+  // EQUIVALENT: 仅关闭 console.warn，无功能影响
+  { name: 'SKL-3: invalid mode accepted', file: 'src/skills.ts', find: 'console.warn(`[skills] Invalid "mode" (must be inline|fork) in ${sourcePath}`);', replace: '/* mutation: skip warning */', equivalent: true },
 
   // ── src/subagent/permissions.ts (3) ──
   { name: 'PER-1: DANGEROUS never matches', file: 'src/subagent/permissions.ts', find: 'if (DANGEROUS_PATTERNS.test(strippedFull)) return \'deny\';', replace: 'if (false) return \'deny\';' },
   { name: 'PER-2: readOnly deny disabled', file: 'src/subagent/permissions.ts', find: "if (readOnly) return 'deny';", replace: "if (false) return 'deny';" },
-  { name: 'PER-3: sub-command DANGEROUS check skipped', file: 'src/subagent/permissions.ts', find: 'if (DANGEROUS_PATTERNS.test(stripped)) return \'deny\';', replace: 'if (false) return \'deny\';' },
+  // EQUIVALENT: 子命令检查与全命令检查(line 150)完全冗余，无法构造差异用例
+  { name: 'PER-3: sub-command DANGEROUS check skipped', file: 'src/subagent/permissions.ts', find: 'if (DANGEROUS_PATTERNS.test(stripped)) return \'deny\';', replace: 'if (false) return \'deny\';', equivalent: true },
 
   // ── src/subagent/tool-executor.ts (3) ──
   { name: 'TEX-1: MAX_PARALLEL unlimited', file: 'src/subagent/tool-executor.ts', find: 'const MAX_PARALLEL = 5;', replace: 'const MAX_PARALLEL = 9999;' },
@@ -64,13 +68,27 @@ const mutations = [
 let killedByTest = 0;
 let killedByBuild = 0;
 let survived = 0;
+let equivalent = 0;
 const results = [];
 
-for (const m of mutations) {
+// 排除会触发 TUI 交互的测试文件
+const TEST_GLOB = 'test/*.test.mjs';
+const EXCLUDE_TESTS = ['test/cli-regression.test.mjs'];
+
+for (let i = 0; i < mutations.length; i++) {
+  const m = mutations[i];
+  if (m.equivalent) {
+    equivalent++;
+    results.push({ name: m.name, status: 'EQUIVALENT (skipped)' });
+    console.log(`[${i + 1}/${mutations.length}] ${m.name} ... EQUIVALENT (skipped)`);
+    continue;
+  }
+  process.stdout.write(`[${i + 1}/${mutations.length}] ${m.name} ... `);
   const orig = readFileSync(m.file, 'utf8');
   const mutated = m.all ? orig.split(m.find).join(m.replace) : orig.replace(m.find, m.replace);
   if (mutated === orig) {
     results.push({ name: m.name, status: 'ERROR: find string not matched' });
+    console.log('ERROR (no match)');
     continue;
   }
   writeFileSync(m.file, mutated);
@@ -79,11 +97,12 @@ for (const m of mutations) {
   } catch {
     killedByBuild++;
     results.push({ name: m.name, status: 'KILLED (build error)' });
+    console.log('KILLED (build)');
     writeFileSync(m.file, orig);
     continue;
   }
   try {
-    const out = execSync('bun test --timeout 120000 test/*.test.mjs 2>&1', { stdio: 'pipe', encoding: 'utf8' });
+    const out = execSync(`bun test --timeout 120000 ${TEST_GLOB} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' } });
     const passMatch = out.match(/(\d+) pass/);
     const failMatch = out.match(/(\d+) fail/);
     const passes = passMatch ? parseInt(passMatch[1]) : 0;
@@ -91,15 +110,18 @@ for (const m of mutations) {
     if (fails > 0) {
       killedByTest++;
       results.push({ name: m.name, status: `KILLED (test: ${fails} fail)` });
+      console.log(`KILLED (${fails} fail)`);
     } else {
       survived++;
       results.push({ name: m.name, status: `SURVIVED (${passes} pass / 0 fail)` });
+      console.log(`SURVIVED (${passes} pass)`);
     }
   } catch (e) {
     killedByTest++;
     const out = e.stdout?.toString() || '';
     const failMatch = out.match(/(\d+) fail/);
     results.push({ name: m.name, status: `KILLED (test exited: ${failMatch ? failMatch[1] + ' fail' : 'nonzero'})` });
+    console.log(`KILLED (${failMatch ? failMatch[1] + ' fail' : 'nonzero exit'})`);
   }
   writeFileSync(m.file, orig);
 }
@@ -109,11 +131,14 @@ execSync('bun run build 2>&1', { stdio: 'pipe' });
 
 const total = results.length;
 const killed = killedByTest + killedByBuild;
+const effective = total - equivalent;
 console.log('\n=== 变异测试结果 ===');
 for (const r of results) console.log(`  ${r.status.padEnd(28)} | ${r.name}`);
 console.log(`\n总变异: ${total}`);
+console.log(`等价变异 (跳过): ${equivalent}`);
+console.log(`有效变异: ${effective}`);
 console.log(`被测试杀死: ${killedByTest}`);
 console.log(`被编译杀死: ${killedByBuild}`);
 console.log(`存活: ${survived}`);
-console.log(`Mutation score (测试捕获): ${killedByTest}/${total} = ${total ? (killedByTest/total*100).toFixed(1) : 0}%`);
-console.log(`Mutation score (含编译): ${killed}/${total} = ${total ? (killed/total*100).toFixed(1) : 0}%`);
+console.log(`Mutation score (测试/有效): ${killedByTest}/${effective} = ${effective ? (killedByTest/effective*100).toFixed(1) : 0}%`);
+console.log(`Mutation score (含编译/有效): ${killed}/${effective} = ${effective ? (killed/effective*100).toFixed(1) : 0}%`);

@@ -782,6 +782,66 @@ test('malformed cluster registry is reported as degraded and never as zero membe
   }
 });
 
+// CLU-2 杀手：heartbeat 必须刷新 heartbeatAt 时间戳
+test('cluster heartbeat refreshes the heartbeatAt timestamp', () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myterminal-clu2-'));
+  const port = 39992;
+  try {
+    const registry = new PortClusterRegistry(configDir, '127.0.0.1', port);
+    registry.register({
+      pid: process.pid, appVersion: '1.0.0', protocolVersion: 1,
+      workspaceId: 'ws-clu2', workspaceDir: '/tmp/ws-clu2',
+      internalPort: 41002, connectorKey: CONNECTOR_KEY,
+      actionsTokenHash: tokenHash(ACTIONS_TOKEN), secret: 'sec',
+    });
+    const registryFile = path.join(configDir, 'clusters', `${clusterKey('127.0.0.1', port)}.json`);
+    const before = JSON.parse(fs.readFileSync(registryFile, 'utf8')).members[0].heartbeatAt;
+    // 等待至少 5ms 确保时间戳不同
+    const wait = (ms) => { const end = Date.now() + ms; while (Date.now() < end) {} };
+    wait(5);
+    registry.heartbeat();
+    const after = JSON.parse(fs.readFileSync(registryFile, 'utf8')).members[0].heartbeatAt;
+    assert.notEqual(after, before, 'heartbeatAt must be refreshed after heartbeat()');
+    assert.ok(Date.parse(after) > Date.parse(before), 'new heartbeatAt must be later');
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
+});
+
+// CLU-3 杀手：过期成员必须被 prune 清除
+test('cluster prune removes members with stale heartbeats', () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myterminal-clu3-'));
+  const port = 39993;
+  try {
+    const registry = new PortClusterRegistry(configDir, '127.0.0.1', port);
+    registry.register({
+      pid: process.pid, appVersion: '1.0.0', protocolVersion: 1,
+      workspaceId: 'ws-clu3', workspaceDir: '/tmp/ws-clu3',
+      internalPort: 41003, connectorKey: CONNECTOR_KEY,
+      actionsTokenHash: tokenHash(ACTIONS_TOKEN), secret: 'sec',
+    });
+    const registryFile = path.join(configDir, 'clusters', `${clusterKey('127.0.0.1', port)}.json`);
+    // 注入一个过期成员（heartbeatAt 超过 6 秒）
+    const state = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
+    state.members.push({
+      id: 'stale-member', pid: 99999999, appVersion: '1.0.0', protocolVersion: 1,
+      workspaceId: 'ws-stale', workspaceDir: '/tmp/ws-stale',
+      internalPort: 41099, connectorKey: CONNECTOR_KEY,
+      actionsTokenHash: tokenHash(ACTIONS_TOKEN), secret: 'stale-sec',
+      startedAt: '2020-01-01T00:00:00.000Z', heartbeatAt: '2020-01-01T00:00:00.000Z',
+    });
+    fs.writeFileSync(registryFile, JSON.stringify(state, null, 2));
+    // 触发 update → prune（通过 heartbeat）
+    registry.heartbeat();
+    const pruned = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
+    const ids = pruned.members.map((m) => m.id);
+    assert.ok(!ids.includes('stale-member'), 'stale member must be pruned');
+    assert.equal(pruned.members.length, 1, 'only the live member should remain');
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
+});
+
 test('runtime close disarms session helpers and stops the global passive-lock service', async () => {
   if (process.platform !== 'darwin') return;
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myterminal-resource-config-'));

@@ -189,4 +189,51 @@ describe('terminal session immutability', () => {
       rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  // STO-2 真正目标：inherit() 的终态守卫（非 checkpoint）
+  test('inherit on completed session throws SESSION_TERMINAL', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'sto2c-ws-'));
+    const stateDir = join(workspace, '.myterminal');
+    mkdirSync(stateDir, { recursive: true });
+    const store = new MyTerminalStore(stateDir);
+    try {
+      const { session, identity } = store.registerRoot({ name: 'inherit-terminal' });
+      // 用已认证身份将会话置为 completed
+      store.checkpoint(session.id, { phase: 'completed', summary: 'all done' });
+      // 尝试 inherit 已完成的会话——终态守卫在凭据校验之前，必须抛 SESSION_TERMINAL
+      let threw = false;
+      try {
+        store.inherit(session.id, { claimCode: 'any-code' });
+      } catch (err) {
+        threw = true;
+        assert.equal(err.code, 'SESSION_TERMINAL');
+        assert.match(err.message, /create a continuation session/);
+      }
+      assert.equal(threw, true, 'inherit on terminal session must throw');
+      assert.equal(store.session(session.id).phase, 'completed');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('inherit on cancelled session throws SESSION_TERMINAL', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'sto2d-ws-'));
+    const stateDir = join(workspace, '.myterminal');
+    mkdirSync(stateDir, { recursive: true });
+    const store = new MyTerminalStore(stateDir);
+    try {
+      const { session } = store.registerRoot({ name: 'inherit-cancelled' });
+      store.checkpoint(session.id, { phase: 'cancelled', summary: 'abandoned' });
+      let threw = false;
+      try {
+        store.inherit(session.id, { sessionToken: 'any-token' });
+      } catch (err) {
+        threw = true;
+        assert.equal(err.code, 'SESSION_TERMINAL');
+      }
+      assert.equal(threw, true, 'inherit on cancelled session must throw');
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });
