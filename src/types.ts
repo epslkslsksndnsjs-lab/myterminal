@@ -125,6 +125,14 @@ export type AppSessionBinding = {
   boundAt: string;
 };
 
+/** ADR-0029: ephemeral MCP-session → MyTerminal session identity binding. Kept in-memory only (never persisted) so a process crash leaves no zombie bindings. */
+export type McpSessionBinding = {
+  mcpSessionId: string;
+  sessionId: string;
+  controllerId: string;
+  boundAt: string;
+};
+
 export type JsonSchema = {
   type?: string;
   description?: string;

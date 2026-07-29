@@ -3,7 +3,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import type {
-  AppSessionBinding, CustomExtensionSpec, JsonObject, MyTerminalMessage, MyTerminalSession, SessionCheckpoint,
+  AppSessionBinding, CustomExtensionSpec, JsonObject, McpSessionBinding, MyTerminalMessage, MyTerminalSession, SessionCheckpoint,
   SessionEvent, SessionEventKind, SessionIdentity, SessionPhase, StoredState, TaskPackage,
   SessionHistoryEntry, ToolAuditEvent, PlannedToolCall,
 } from './types.js';
@@ -106,6 +106,8 @@ const HISTORY_TAIL_LIMIT = 5_000;
 export class MyTerminalStore {
   private state: StoredState;
   private readonly statePath: string;
+  /** ADR-0029: ephemeral MCP session → identity binding cache. In-memory only; never persisted (see crash-recovery decision). */
+  private readonly mcpBindings = new Map<string, McpSessionBinding>();
   private readonly historyDir: string;
   private readonly journalPath: string;
   private readonly transientClaimCodes = new Map<string, string>();
@@ -292,6 +294,32 @@ export class MyTerminalStore {
     const session = this.findSession(binding.sessionId);
     if (!session?.controller || session.presence !== 'claimed' || session.controller.id !== binding.controllerId) return undefined;
     return structuredClone(session);
+  }
+
+  // ── ADR-0029: MCP session identity binding (ephemeral, in-memory) ──
+  bindMcp(mcpSessionId: string, sessionId: string): void {
+    const session = this.requireSession(sessionId);
+    if (!session.controller || session.presence !== 'claimed') throw new MyTerminalError('INVALID_IDENTITY', 'A claimed session is required before MCP binding.');
+    const binding: McpSessionBinding = { mcpSessionId, sessionId: session.id, controllerId: session.controller.id, boundAt: this.iso() };
+    this.mcpBindings.delete(mcpSessionId);
+    this.mcpBindings.set(mcpSessionId, binding);
+  }
+
+  resolveMcpBinding(mcpSessionId: string): MyTerminalSession | undefined {
+    this.refreshTemporalStates();
+    const binding = this.mcpBindings.get(mcpSessionId);
+    if (!binding) return undefined;
+    const session = this.findSession(binding.sessionId);
+    if (!session?.controller || session.presence !== 'claimed' || session.controller.id !== binding.controllerId) return undefined;
+    return structuredClone(session);
+  }
+
+  unbindMcp(mcpSessionId: string): void {
+    this.mcpBindings.delete(mcpSessionId);
+  }
+
+  hasMcpBinding(mcpSessionId: string): boolean {
+    return this.mcpBindings.has(mcpSessionId);
   }
 
   beforeOrdinaryCall(sessionId: string): void {
