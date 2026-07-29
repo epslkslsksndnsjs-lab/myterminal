@@ -672,7 +672,7 @@ export class MyTerminalStore {
       id: String(data.id || `legacy-${session.id}-${entry.at}-${action}`),
       timestamp: String(data.timestamp || data.startedAt || entry.at),
       completedAt: typeof data.completedAt === 'string' ? data.completedAt : undefined,
-      source: ['apps', 'actions', 'tui', 'test'].includes(String(data.source)) ? data.source as ToolAuditEvent['source'] : 'test',
+      source: ['apps', 'actions', 'tui', 'test', 'mcp'].includes(String(data.source)) ? data.source as ToolAuditEvent['source'] : 'test',
       action,
       status,
       durationMs: Number(data.durationMs || 0),

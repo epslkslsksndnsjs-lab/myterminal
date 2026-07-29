@@ -7,7 +7,7 @@ export type ActionsContinuationMode = 'off' | 'adaptive' | 'next-call' | 'lookah
 export type SessionIdentity = { sessionId: string; sessionToken: string };
 
 export type ToolAuditStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'policy_rejected';
-export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test' | 'subagent'; // ADR-0009 决策 3
+export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test' | 'subagent' | 'mcp'; // ADR-0009 决策 3；ADR-0029 新增 'mcp'
 export type ToolAuditEvent = {
   id: string;
   /** Stable invocation start time. Completion updates keep this value unchanged. */
@@ -226,7 +226,9 @@ export type InvocationContext = {
   identity?: SessionIdentity;
   authenticatedSession?: MyTerminalSession;
   clientSessionKey?: string;
-  transport: 'apps' | 'actions' | 'tui' | 'test' | 'subagent'; // ADR-0009 决策 3
+  /** ADR-0029: MCP session id (mcp-session-id header) used as the identity-binding key */
+  mcpSessionId?: string;
+  transport: 'apps' | 'actions' | 'tui' | 'test' | 'subagent' | 'mcp'; // ADR-0009 决策 3；ADR-0029 加 'mcp'
   signal?: AbortSignal;
 };
 

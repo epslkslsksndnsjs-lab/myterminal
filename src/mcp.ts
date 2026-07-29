@@ -109,9 +109,12 @@ function toToolResult(response: ToolResponse, summary: string) {
 }
 
 function contextFromCall(callContext: unknown): InvocationContext {
-  const meta = (callContext as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const extra = callContext as { sessionId?: string; _meta?: Record<string, unknown> } | undefined;
+  const mcpSessionId = typeof extra?.sessionId === 'string' ? extra.sessionId : undefined;
+  const meta = extra?._meta;
   return {
-    transport: 'apps',
+    transport: 'mcp',
+    mcpSessionId,
     clientSessionKey: typeof meta?.['openai/session'] === 'string' ? meta['openai/session'] : undefined,
   };
 }
