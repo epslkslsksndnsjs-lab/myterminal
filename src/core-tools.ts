@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, publicSession, type MyTerminalStore } from './store.js';
-import { resolveWorkspacePath } from './security.js';
+import { resolveWorkspacePath, validateSafeRegex } from './security.js';
 import type { JsonObject, JsonSchema, TaskPackage, ToolDefinition } from './types.js';
 import { disarmSessionResources } from './session-resources.js';
 import { continuationPolicy } from './continuation.js';
@@ -12,6 +12,11 @@ import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
 
 const IGNORED_DIRECTORIES = new Set(['.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo']);
+
+// Bounded wall-clock budget for search_text. The regex-safety gate (see
+// validateSafeRegex) blocks the catastrophic-backtracking class; this is a
+// defense-in-depth ceiling on total scan time for slow-but-legal patterns.
+const SEARCH_TEXT_BUDGET_MS = 8000;
 
 type CommandResult = {
   command: string;
@@ -238,12 +243,14 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     aliases: { pattern: 'query' },
     invoke: async (input) => {
       const query = asString(input.query, 'query');
+      if (input.regex) validateSafeRegex(query);
       const matcher = input.regex ? new RegExp(query, 'i') : undefined;
+      const searchDeadline = Date.now() + SEARCH_TEXT_BUDGET_MS;
       const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
       const files = await walkFiles(config, asOptionalString(input.path) || '.', 2_000);
       const matches: Array<{ path: string; line: number; text: string }> = [];
       for (const file of files) {
-        if (matches.length >= limit) break;
+        if (Date.now() > searchDeadline) break;
         const fileStat = await stat(file);
         if (fileStat.size > 1_000_000) continue;
         let text: string;
@@ -252,8 +259,10 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
           if (matcher ? matcher.test(line) : line.toLowerCase().includes(query.toLowerCase())) matches.push({ path: relative(config, file), line: index + 1, text: line.slice(0, 500) });
           if (matches.length >= limit) break;
         }
+        if (matches.length >= limit) break;
       }
-      return { matches, truncated: matches.length >= limit };
+      const timedOut = Date.now() > searchDeadline;
+      return { matches, truncated: matches.length >= limit || timedOut };
     },
   });
   add({
@@ -394,7 +403,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input, context) => {
       const revision = asString(input.revision, 'revision');
       if (!/^[A-Za-z0-9_./~^{}:@+-]+$/.test(revision)) throw new Error('Unsafe Git revision syntax.');
-      return await runCommand({ executable: 'git', argv: ['show', '--stat', '--oneline', revision], cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
+      return await runCommand({ executable: 'git', argv: ['show', '--stat', '--oneline', '--', revision], cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
     },
   });
   add({
