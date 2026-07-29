@@ -573,12 +573,12 @@ export class MyTerminalRuntime {
     this.app.post('/actions/extensions/register', this.requireActionsAuth, async (req, res) => this.sendAction(res, await this.extensions.register(req.body, { transport: 'actions' })));
     this.app.post('/actions/extensions/call', this.requireActionsAuth, async (req, res) => this.sendAction(res, await this.extensions.call(req.body, { transport: 'actions' })));
     this.app.post('/cluster/owns', async (req, res) => {
-      if (!this.clusterMember || req.header('x-myterminal-cluster-secret') !== this.clusterMember.secret) { res.status(404).json({ error: 'Not found.' }); return; }
+      if (!this.clusterMember || !safeEqual(String(req.header('x-myterminal-cluster-secret') || ''), this.clusterMember.secret)) { res.status(404).json({ error: 'Not found.' }); return; }
       const clientSessionKey = typeof req.body?.clientSessionKey === 'string' ? req.body.clientSessionKey : '';
       res.json({ owned: Boolean(clientSessionKey && this.store.hasAppBinding(clientSessionKey)) });
     });
     this.app.post('/cluster/rpc/:method', async (req, res) => {
-      if (!this.clusterMember || req.header('x-myterminal-cluster-secret') !== this.clusterMember.secret) { res.status(404).json({ error: 'Not found.' }); return; }
+      if (!this.clusterMember || !safeEqual(String(req.header('x-myterminal-cluster-secret') || ''), this.clusterMember.secret)) { res.status(404).json({ error: 'Not found.' }); return; }
       const body = req.body as { input?: Record<string, unknown>; context?: Record<string, unknown> };
       const input = body.input || {};
       const context = (body.context || { transport: 'actions' }) as never;
