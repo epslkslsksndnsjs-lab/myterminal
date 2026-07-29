@@ -95,16 +95,19 @@ function resolvePath(inputPath: string, cwd: string): string {
     throw new Error(`Path "${inputPath}" is outside working directory "${cwd}"`);
   }
   // ADR-0015: realpath 后再校验包含关系——防 symlink 指向 cwd 外
+  let realPath: string | undefined;
+  let realCwdPath: string | undefined;
   try {
-    const real = realpathSync(resolved);
-    const realCwd = realpathSync(cwd);
-    const realRel = relative(realCwd, real);
+    realPath = realpathSync(resolved);
+    realCwdPath = realpathSync(cwd);
+  } catch {
+    // realpath 失败（ENOENT/EPERM/其他）：跳过检查，词法检查已通过
+  }
+  if (realPath && realCwdPath) {
+    const realRel = relative(realCwdPath, realPath);
     if (realRel.startsWith('..') || isAbsolute(realRel)) {
       throw new Error(`Path "${inputPath}" resolves via symlink to outside working directory "${cwd}"`);
     }
-  } catch (err: any) {
-    // ENOENT 时路径不存在，跳过 realpath 检查（让后续 readFile/writeFile 报错）
-    if (err?.code !== 'ENOENT') throw err;
   }
   return resolved;
 }

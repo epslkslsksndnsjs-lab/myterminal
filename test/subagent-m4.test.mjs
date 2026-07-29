@@ -230,6 +230,8 @@ describe('M4 read_file / write_file / edit_file', () => {
   });
 
   it('ADR-0015 resolvePath symlink 逃逸拒绝（#20 核心）', async () => {
+    // Windows 上 symlink 行为不同，跳过
+    if (process.platform === 'win32') return;
     // 在 cwd 内创建指向 /etc/passwd 的 symlink
     const symlinkPath = join(TMP, 'escape-link');
     try { symlinkSync('/etc/passwd', symlinkPath); } catch { /* 已存在 */ }
