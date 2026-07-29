@@ -10,6 +10,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { readdir } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import type { JsonObject, JsonSchema } from '../types.js';
 import { recordFileRead, validateEdit, applyEdit } from './file-state.js';
@@ -86,11 +87,24 @@ export type HookResult = {
 // ── 辅助函数 ──
 
 // 决策 4：路径限制在 cwd 内（防目录穿越）
+// ADR-0015: realpath 检查防止 symlink 逃逸
 function resolvePath(inputPath: string, cwd: string): string {
   const resolved = isAbsolute(inputPath) ? inputPath : resolve(cwd, inputPath);
   const rel = relative(cwd, resolved);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`Path "${inputPath}" is outside working directory "${cwd}"`);
+  }
+  // ADR-0015: realpath 后再校验包含关系——防 symlink 指向 cwd 外
+  try {
+    const real = realpathSync(resolved);
+    const realCwd = realpathSync(cwd);
+    const realRel = relative(realCwd, real);
+    if (realRel.startsWith('..') || isAbsolute(realRel)) {
+      throw new Error(`Path "${inputPath}" resolves via symlink to outside working directory "${cwd}"`);
+    }
+  } catch (err: any) {
+    // ENOENT 时路径不存在，跳过 realpath 检查（让后续 readFile/writeFile 报错）
+    if (err?.code !== 'ENOENT') throw err;
   }
   return resolved;
 }
@@ -727,3 +741,8 @@ toolRegistry.set('glob', globTool);
 toolRegistry.set('grep', grepTool);
 toolRegistry.set('task_create', taskCreateTool);
 toolRegistry.set('task_update', taskUpdateTool);
+
+// ADR-0022: per-agent localTasks 清理（防内存泄漏）
+export function clearLocalTasks(agentId: string): void {
+  localTasks.delete(agentId);
+}

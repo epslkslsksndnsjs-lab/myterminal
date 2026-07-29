@@ -32,6 +32,7 @@ export class PortClusterRegistry {
   private readonly file: string;
   private readonly lock: string;
   private localMember?: ClusterMember;
+  private lockToken?: string; // ADR-0018: 锁所有权 token
 
   constructor(private readonly configDir: string, readonly host: string, readonly port: number) {
     const dir = path.join(configDir, 'clusters');
@@ -53,11 +54,14 @@ export class PortClusterRegistry {
     const deadline = Date.now() + 2000;
     for (;;) {
       try {
-        writeFileSync(this.lock, `${process.pid}`, { flag: 'wx', mode: 0o600 });
+        const token = `${process.pid}:${randomBytes(8).toString('hex')}`;
+        writeFileSync(this.lock, token, { flag: 'wx', mode: 0o600 });
+        this.lockToken = token;
         break;
       } catch {
         try {
-          const owner = Number(readFileSync(this.lock, 'utf8'));
+          const lockContent = readFileSync(this.lock, 'utf8');
+          const owner = Number(lockContent.split(':')[0]);
           const stale = Date.now() - statSync(this.lock).mtimeMs > 5000;
           let alive = true;
           try { process.kill(owner, 0); } catch { alive = false; }
@@ -74,7 +78,13 @@ export class PortClusterRegistry {
       renameSync(temporary, this.file);
       return next;
     } finally {
-      try { if (existsSync(this.lock)) unlinkSync(this.lock); } catch { /* best effort */ }
+      // ADR-0018: compare-before-unlink——只删自己的锁
+      try {
+        if (existsSync(this.lock) && this.lockToken) {
+          const current = readFileSync(this.lock, 'utf8');
+          if (current === this.lockToken) unlinkSync(this.lock);
+        }
+      } catch { /* best effort */ }
     }
   }
 

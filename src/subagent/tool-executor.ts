@@ -8,7 +8,7 @@
 // ADR-0007 决策 40：Pre/Post Hooks——v1 空数组但接口支撑
 
 import type { JsonObject, JsonSchema } from '../types.js';
-import { getTool } from './tools.js';
+import { getTool, getToolNames } from './tools.js';
 import type { SubagentTool, SubagentToolContext } from './tools.js';
 import { addAuditLog } from './store.js';
 import type { ToolAuditLog } from './store.js';
@@ -141,9 +141,15 @@ export function partitionToolCalls(calls: ToolCall[]): Batch[] {
     }
 
     // 决策 31：isConcurrencySafe 函数化——求值时机在分区时
-    const concurrencySafe = typeof tool.isConcurrencySafe === 'function'
-      ? tool.isConcurrencySafe(call.input)
-      : tool.isConcurrencySafe;
+    // ADR-0017: try/catch 防崩溃——非法输入降级为非并发安全，走单条执行→schema 校验拒绝
+    let concurrencySafe: boolean;
+    try {
+      concurrencySafe = typeof tool.isConcurrencySafe === 'function'
+        ? tool.isConcurrencySafe(call.input)
+        : tool.isConcurrencySafe;
+    } catch {
+      concurrencySafe = false;
+    }
 
     const lastBatch = batches.length > 0 ? batches[batches.length - 1] : undefined;
 
@@ -199,6 +205,16 @@ async function executeSingleTool(
     if (!tool) {
       errorType = 'execution_error';
       errorMessage = `Unknown tool: ${call.name}`;
+      success = false;
+      const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
+      resultSizeChars = result.content.length;
+      return result;
+    }
+
+    // ADR-0014: 只读执行层硬门禁——readOnly 模式下拒绝非只读工具
+    if (ctx.readOnly && !getToolNames({ readOnly: true }).includes(call.name)) {
+      errorType = 'execution_error';
+      errorMessage = `Tool "${call.name}" is not allowed in read-only mode.`;
       success = false;
       const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
       resultSizeChars = result.content.length;

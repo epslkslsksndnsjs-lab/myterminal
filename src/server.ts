@@ -419,9 +419,12 @@ export class MyTerminalRuntime {
 
   private startConfiguredPassiveLock(): void {
     if (!this.config.passiveLockEnabled || process.platform !== 'darwin') return;
-    try {
-      if (!passiveLockStatus(this.config).running) startPassiveLockService(this.config, 'standby');
-    } catch (error) { this.log(error instanceof Error ? error.message : String(error), 'error'); }
+    // ADR-0024: 异步启动被动锁，不阻塞 runtime
+    (async () => {
+      try {
+        if (!passiveLockStatus(this.config).running) await startPassiveLockService(this.config, 'standby');
+      } catch (error) { this.log(error instanceof Error ? error.message : String(error), 'error'); }
+    })();
   }
 
   private async becomeStandaloneLeader(port: number): Promise<void> {
@@ -534,7 +537,7 @@ export class MyTerminalRuntime {
     // owned by an individual workspace runtime. Stop it only after this lease
     // is released and no other live MyTerminal process remains.
     if (process.platform === 'darwin' && activeWorkspaceRuntimePids(path.dirname(this.config.settingsPath), process.pid).length === 0) {
-      try { commandPassiveLock(this.config, 'stop'); }
+      try { await commandPassiveLock(this.config, 'stop'); }
       catch (error) { this.log(error instanceof Error ? error.message : String(error), 'error'); }
     }
     this.persistRuntimeLifecycle('stopped', 'runtime closed');

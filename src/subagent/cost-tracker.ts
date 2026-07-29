@@ -73,8 +73,18 @@ export class CostTracker {
   private outputTokens = 0;
   private cacheReadTokens = 0;
   private pricing: { input: number; output: number; cacheRead: number };
+  private settledUSD = 0; // ADR-0020 fix: 模型切换前已结算的固定金额
 
   constructor(model: string) {
+    this.pricing = resolvePricing(model);
+  }
+
+  // ADR-0020: 降级模型切换时——先按旧定价结算已累积 token，再重置计数器
+  setModel(model: string): void {
+    this.settledUSD += this.getTotalCost();
+    this.inputTokens = 0;
+    this.outputTokens = 0;
+    this.cacheReadTokens = 0;
     this.pricing = resolvePricing(model);
   }
 
@@ -87,7 +97,7 @@ export class CostTracker {
   }
 
   getTotalCost(): number {
-    return (
+    return this.settledUSD + (
       this.inputTokens * this.pricing.input +
       this.outputTokens * this.pricing.output +
       this.cacheReadTokens * this.pricing.cacheRead

@@ -4,7 +4,7 @@
 
 import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -864,6 +864,68 @@ test('readOnly 模式: 只包含只读工具', async () => {
   });
 
   assert.equal(result.status, 'completed');
+
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+test('ADR-0014 readOnly 执行层硬门禁: write_file 被拒绝（#19 核心）', async () => {
+  cleanAll();
+  const cwd = tempDir();
+
+  // 脚本化 adapter 让 LLM 尝试调用 write_file（绕过 schema 过滤，直接测试执行层）
+  const adapter = scriptedAdapter([
+    {
+      toolCalls: [{ id: 'w1', name: 'write_file', input: { path: 'evil.txt', content: 'pwned' } }],
+      usage: { input_tokens: 10, output_tokens: 20 },
+    },
+    {
+      text: 'Done',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+  ]);
+
+  const result = await runSubagent({
+    agentId: 'test-ro-gate',
+    task: 'Write in readOnly',
+    cwd,
+    settings: defaultSettings(),
+    adapter,
+    readOnly: true,
+  });
+
+  // write_file 应被执行层门禁拒绝，文件不应被创建
+  assert.equal(result.status, 'completed');
+  assert.ok(!existsSync(join(cwd, 'evil.txt')), 'write_file should be blocked by execution gate');
+
+  rmSync(cwd, { recursive: true, force: true });
+});
+
+test('ADR-0017 非法工具输入不杀 subagent（#23 核心）', async () => {
+  cleanAll();
+  const cwd = tempDir();
+
+  // 脚本化 adapter 让 LLM 调用 execute_cli 但不传 command（schema 校验应拒绝）
+  const adapter = scriptedAdapter([
+    {
+      toolCalls: [{ id: 'bad1', name: 'execute_cli', input: {} }],
+      usage: { input_tokens: 10, output_tokens: 20 },
+    },
+    {
+      text: 'Done',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    },
+  ]);
+
+  const result = await runSubagent({
+    agentId: 'test-bad-input',
+    task: 'Bad input',
+    cwd,
+    settings: defaultSettings(),
+    adapter,
+  });
+
+  // subagent 不应被杀死——应正常完成，工具调用返回错误结果
+  assert.equal(result.status, 'completed', 'subagent should complete despite bad tool input');
 
   rmSync(cwd, { recursive: true, force: true });
 });

@@ -69,9 +69,10 @@ export function Timeline({
   const entryCount = pageEntries.length;
   const safeIdx = entryCount > 0 ? Math.max(0, Math.min(selectedIdx, entryCount - 1)) : 0;
 
-  function entryKey(entry: ActivityEntry, idx: number): string {
-    if (entry.kind === 'audit') return `audit-${entry.action}-${entry.at}-${idx}`;
-    return `msg-${entry.fromId}-${entry.toId}-${entry.at}-${idx}`;
+  function entryKey(entry: ActivityEntry, _idx: number): string {
+    // ADR-0023: 去掉 idx——at+id 已足够唯一，idx 导致新消息到达时全部 remount
+    if (entry.kind === 'audit') return `audit-${entry.action}-${entry.at}`;
+    return `msg-${entry.fromId}-${entry.toId}-${entry.at}`;
   }
 
   function toggleExpand(key: string) {
@@ -81,7 +82,7 @@ export function Timeline({
       else next.add(key);
       return next;
     });
-    onExpandToggle();
+    // ADR-0023: 不调用 onExpandToggle()——避免 scrollKey 变化导致 remount 重置 expanded
   }
 
   const selectItem = useCallback((delta: number) => {
