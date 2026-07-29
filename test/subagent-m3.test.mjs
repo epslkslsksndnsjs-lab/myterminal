@@ -63,6 +63,100 @@ test('splitCommands 空命令处理', () => {
   assert.deepEqual(splitCommands('   '), []);
 });
 
+// ── ADR-0012: 换行符切分（#17 回归）──
+
+test('splitCommands \\n 换行分隔', () => {
+  const result = splitCommands('cat foo\ntouch /tmp/pwn');
+  assert.deepEqual(result, ['cat foo', 'touch /tmp/pwn']);
+});
+
+test('splitCommands \\r\\n (CRLF) 作为单个分隔符', () => {
+  const result = splitCommands('ls\r\npwd');
+  assert.deepEqual(result, ['ls', 'pwd']);
+});
+
+test('splitCommands 单独 \\r 也切分', () => {
+  const result = splitCommands('cat a\rcat b');
+  assert.deepEqual(result, ['cat a', 'cat b']);
+});
+
+test('splitCommands 引号内换行不拆', () => {
+  const result = splitCommands('echo "line1\nline2"');
+  assert.deepEqual(result, ['echo "line1\nline2"']);
+});
+
+test('splitCommands 单引号内换行不拆', () => {
+  const result = splitCommands("echo 'a\nb'");
+  assert.deepEqual(result, ["echo 'a\nb'"]);
+});
+
+test('checkCommandSafety readOnly 拒绝换行注入写命令（#17 核心）', () => {
+  assert.equal(checkCommandSafety('cat foo\ntouch /tmp/pwn', true), 'deny');
+});
+
+test('checkCommandSafety readOnly 拒绝 CRLF 注入', () => {
+  assert.equal(checkCommandSafety('ls\r\nmkdir /tmp/evil', true), 'deny');
+});
+
+test('checkCommandSafety write 模式允许换行命令（不影响正常流程）', () => {
+  assert.equal(checkCommandSafety('cat foo\ntouch /tmp/ok', false), 'allow');
+});
+
+test('checkCommandSafety readOnly 纯安全多行仍允许', () => {
+  assert.equal(checkCommandSafety('ls\ncat README.md', true), 'allow');
+});
+
+test('checkCommandSafety 换行后接危险命令 → deny（任何模式）', () => {
+  assert.equal(checkCommandSafety('ls\nrm -rf /', false), 'deny');
+  assert.equal(checkCommandSafety('ls\nrm -rf /', true), 'deny');
+});
+
+// ── ADR-0013: DANGEROUS_PATTERNS 加固 + 解释器壳递归（#18 回归）──
+
+test('checkCommandSafety rm -Rf /（大写 R）→ deny', () => {
+  assert.equal(checkCommandSafety('rm -Rf /', false), 'deny');
+  assert.equal(checkCommandSafety('rm -Rf /', true), 'deny');
+});
+
+test('checkCommandSafety rm --recursive --force → deny', () => {
+  assert.equal(checkCommandSafety('rm --recursive --force /tmp', false), 'deny');
+});
+
+test('checkCommandSafety rm --force → deny', () => {
+  assert.equal(checkCommandSafety('rm --force somefile', false), 'deny');
+});
+
+test('checkCommandSafety chmod -R 777 → deny', () => {
+  assert.equal(checkCommandSafety('chmod -R 777 /', false), 'deny');
+});
+
+test('checkCommandSafety echo \'rm -rf /\' 不误杀', () => {
+  assert.equal(checkCommandSafety("echo 'rm -rf /'", false), 'allow');
+});
+
+test('checkCommandSafety bash -c \'rm -rf ~\' 解释器壳递归 deny（#18 核心）', () => {
+  assert.equal(checkCommandSafety("bash -c 'rm -rf ~'", false), 'deny');
+  assert.equal(checkCommandSafety("bash -c 'rm -rf ~'", true), 'deny');
+});
+
+test('checkCommandSafety sh -c \'sudo rm\' 解释器壳递归 deny', () => {
+  assert.equal(checkCommandSafety("sh -c 'sudo rm -rf /'", false), 'deny');
+});
+
+test('checkCommandSafety python -c "import os; os.system(\'rm\')" 解释器壳 deny', () => {
+  assert.equal(checkCommandSafety('python -c "import os; os.system(\'rm -rf\')"', false), 'deny');
+});
+
+test('checkCommandSafety eval 内层危险 → deny', () => {
+  assert.equal(checkCommandSafety('eval "rm -rf /"', false), 'deny');
+});
+
+test('checkCommandSafety bash -c \'ls\' 内层安全 → 正常流程', () => {
+  // bash -c 'ls' 内层安全，但 bash 不在 SAFE 列表，走 unknown
+  assert.equal(checkCommandSafety("bash -c 'ls'", true), 'deny');
+  assert.equal(checkCommandSafety("bash -c 'ls'", false), 'allow');
+});
+
 // ── hasCommandSubstitution ──
 
 test('hasCommandSubstitution 检测 $(...)', () => {

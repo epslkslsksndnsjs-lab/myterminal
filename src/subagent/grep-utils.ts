@@ -54,7 +54,8 @@ function includePatternToRegex(pattern: string): RegExp {
       i++;
     }
   }
-  return new RegExp(regexStr);
+  // ADR-0021: 锚定 ^...$ 防止 *.ts 误匹配 .tsx/.ts.bak
+  return new RegExp(`^${regexStr}$`);
 }
 
 // 递归遍历目录，跳过 IGNORE_DIRECTORIES

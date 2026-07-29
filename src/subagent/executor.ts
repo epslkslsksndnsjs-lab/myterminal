@@ -23,8 +23,9 @@ import { clearFileState } from './file-state.js';
 import { cleanupAgentShellTasks } from './shell-tracker.js';
 import { executeToolCalls } from './tool-executor.js';
 import type { ToolCall } from './tool-executor.js';
-import { getToolNames, getAllToolSchemas } from './tools.js';
+import { getToolNames, getAllToolSchemas, clearLocalTasks } from './tools.js';
 import type { SubagentToolContext } from './tools.js';
+import { resetReplacementDecisions } from './result-budget.js';
 import { emitAgUi } from './tui-bridge.js';
 import type { AgUiEvent } from './tui-bridge.js';
 
@@ -604,7 +605,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
           // server_overload 降级——换 fallback model
           if (settings.fallbackModel) {
             currentModel = settings.fallbackModel;
-            // 更新 costTracker——降级到不同 model 的定价
+            // ADR-0020: 同步更新 costTracker 定价
+            costTracker.setModel(currentModel);
           }
         }
 
@@ -690,7 +692,9 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     // 决策 8：清理顺序固定
     cleanupAgentShellTasks(agentId);   // ① 杀 shell 进程组
     clearFileState(agentId);           // ② 清文件状态缓存
-    messages.length = 0;               // ③ 释放 messages（决策 9）
-    // ④ 终态事件与 store 更新在 finishXxx 里已做
+    resetReplacementDecisions();       // ADR-0022: ③ 清 replacement 决策缓存
+    clearLocalTasks(agentId);          // ADR-0022: ④ 清 localTasks
+    messages.length = 0;               // ⑤ 释放 messages（决策 9）
+    // ⑥ 终态事件与 store 更新在 finishXxx 里已做
   }
 }

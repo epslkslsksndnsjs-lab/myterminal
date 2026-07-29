@@ -282,7 +282,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'write_file', title: 'Write file', description: 'Create or replace one UTF-8 file inside the workspace.',
     inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, content: { type: 'string' }, expectedSha256: { type: 'string' }, createParents: { type: 'boolean' } }, required: ['path', 'content'], additionalProperties: false }, annotations: mutating,
-    invoke: async (input) => {
+    invoke: async (input, context) => {
+      actor(context); // ADR-0016: 纵深防御鉴权
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
       if (input.expectedSha256) {
         const current = await readFile(file);
@@ -297,7 +298,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'apply_patch', title: 'Apply exact patch', description: 'Apply exact text replacements with optional SHA protection.',
     inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, expectedSha256: { type: 'string' }, replacements: { type: 'array', minItems: 1, items: { type: 'object', properties: { oldText: { type: 'string' }, newText: { type: 'string' }, replaceAll: { type: 'boolean' } }, required: ['oldText', 'newText'], additionalProperties: false } } }, required: ['path', 'replacements'], additionalProperties: false }, annotations: mutating,
-    invoke: async (input) => {
+    invoke: async (input, context) => {
+      actor(context); // ADR-0016: 纵深防御鉴权
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
       let content = await readFile(file, 'utf8');
       const beforeHash = createHash('sha256').update(content).digest('hex');
@@ -317,7 +319,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'blob_create', title: 'Create local blob', description: 'Store UTF-8 or base64 content in a local content-addressed staging blob without changing workspace files or contacting external services.',
     inputSchema: { type: 'object', properties: { content: { type: 'string', maxLength: 1_400_000 }, encoding: { type: 'string', enum: ['utf-8', 'base64'], default: 'utf-8' } }, required: ['content'], additionalProperties: false }, annotations: localCreate,
-    invoke: async (input) => {
+    invoke: async (input, context) => {
+      actor(context); // ADR-0016: 纵深防御鉴权
       const buffer = decodeBlob(asString(input.content, 'content'), asOptionalString(input.encoding) || 'utf-8');
       if (buffer.length > 1_000_000) throw new Error('Decoded blob content must not exceed 1,000,000 bytes.');
       const sha256 = createHash('sha256').update(buffer).digest('hex');
@@ -344,7 +347,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'blob_write_file', title: 'Create file from blob', description: 'Create a workspace file from a staged blob. Repeating the same content succeeds; different existing content is never overwritten.',
     inputSchema: { type: 'object', properties: { sha256: { type: 'string', minLength: 64, maxLength: 64 }, path: { type: 'string', minLength: 1 }, createParents: { type: 'boolean', default: false } }, required: ['sha256', 'path'], additionalProperties: false }, annotations: localCreate,
-    invoke: async (input) => {
+    invoke: async (input, context) => {
+      actor(context); // ADR-0016: 纵深防御鉴权
       const sha256 = asString(input.sha256, 'sha256');
       if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('sha256 must contain 64 lowercase hexadecimal characters.');
       const buffer = await readFile(path.join(config.stateDir, 'blobs', sha256));
@@ -367,6 +371,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: { type: 'object', properties: { command: { type: 'string', minLength: 1, maxLength: 20_000 }, cwd: { type: 'string' }, timeoutSec: { type: 'integer', minimum: 1, maximum: 3600 } }, required: ['command'], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
     invoke: async (input, context) => {
+      actor(context); // ADR-0016: 纵深防御鉴权
       const cwd = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.');
       return await runShellCommand({ command: asString(input.command, 'command'), cwd, stateDir: config.stateDir, timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : config.commandTimeoutSec, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
     },

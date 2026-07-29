@@ -1,4 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execFileAsync = promisify(execFile);
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -76,7 +79,7 @@ function existingPid(config: MyTerminalConfig, sessionId: string): number | unde
   return undefined;
 }
 
-function compileHelper(config: MyTerminalConfig): string {
+async function compileHelper(config: MyTerminalConfig): Promise<string> {
   if (process.platform !== 'darwin') throw new MyTerminalError('UNSUPPORTED_PLATFORM', 'The one-shot awake lock tool is available only on macOS.');
   const source = sourcePath();
   if (!existsSync(source)) throw new MyTerminalError('NOT_FOUND', `macOS helper source is missing: ${source}`);
@@ -112,18 +115,15 @@ function compileHelper(config: MyTerminalConfig): string {
 `, { mode: 0o600 });
   const architecture = process.arch === 'x64' ? 'x86_64' : 'arm64';
   const target = `${architecture}-apple-macosx${HELPER_DEPLOYMENT_TARGET}`;
-  const result = spawnSync('xcrun', ['swiftc', '-O', '-target', target, source, '-o', output, '-framework', 'AppKit', '-framework', 'ApplicationServices', '-framework', 'CoreGraphics', '-framework', 'IOKit'], {
+  const result = await execFileAsync('xcrun', ['swiftc', '-O', '-target', target, source, '-o', output, '-framework', 'AppKit', '-framework', 'ApplicationServices', '-framework', 'CoreGraphics', '-framework', 'IOKit'], {
     cwd: config.workspaceDir,
-    encoding: 'utf8',
     timeout: 120_000,
+  }).catch((err: any) => {
+    throw new MyTerminalError('HELPER_BUILD_FAILED', err.stderr?.trim() || err.message || 'Failed to compile the macOS helper.');
   });
-  if (result.error || result.status !== 0) {
-    throw new MyTerminalError('HELPER_BUILD_FAILED', result.stderr?.trim() || result.error?.message || 'Failed to compile the macOS helper.');
-  }
-  const signing = spawnSync('codesign', ['--force', '--sign', '-', '--identifier', 'io.myterminal.passive-lock', app], { encoding: 'utf8', timeout: 30_000 });
-  if (signing.error || signing.status !== 0) {
-    throw new MyTerminalError('HELPER_SIGN_FAILED', signing.stderr?.trim() || signing.error?.message || 'Failed to sign the macOS helper app.');
-  }
+  await execFileAsync('codesign', ['--force', '--sign', '-', '--identifier', 'io.myterminal.passive-lock', app], { timeout: 30_000 }).catch((err: any) => {
+    throw new MyTerminalError('HELPER_SIGN_FAILED', err.stderr?.trim() || err.message || 'Failed to sign the macOS helper app.');
+  });
   writeFileSync(marker, `${buildHash}\n`, { mode: 0o600 });
   return output;
 }
@@ -154,13 +154,13 @@ export function passiveLockStatus(config: MyTerminalConfig): { supported: boolea
   return { supported: true, running: true, state, pid };
 }
 
-export function startPassiveLockService(config: MyTerminalConfig, command: 'arm' | 'standby' = 'arm'): { running: true; pid: number; command: string } {
+export async function startPassiveLockService(config: MyTerminalConfig, command: 'arm' | 'standby' = 'arm'): Promise<{ running: true; pid: number; command: string }> {
   if (process.platform !== 'darwin') throw new MyTerminalError('UNSUPPORTED_PLATFORM', 'Passive lock is available only on macOS.');
   const current = passiveLockStatus(config);
   const control = { command, revision: nextPassiveLockRevision(config) };
   writeFileSync(passiveLockControlFile(config), `${JSON.stringify(control)}\n`, { mode: 0o600 });
   if (current.running && current.pid) return { running: true, pid: current.pid, command };
-  const helper = compileHelper(config);
+  const helper = await compileHelper(config);
   rmSync(passiveLockLogFile(config), { force: true });
   const child = spawn(helper, ['--service', passiveLockControlFile(config), passiveLockLogFile(config)], { cwd: config.workspaceDir, detached: true, stdio: ['ignore', 'ignore', 'ignore'] });
   child.unref();
@@ -169,21 +169,21 @@ export function startPassiveLockService(config: MyTerminalConfig, command: 'arm'
   return { running: true, pid: child.pid, command };
 }
 
-export function commandPassiveLock(config: MyTerminalConfig, command: 'arm' | 'standby' | 'stop'): { command: string; pid?: number } {
+export async function commandPassiveLock(config: MyTerminalConfig, command: 'arm' | 'standby' | 'stop'): Promise<{ command: string; pid?: number }> {
   const current = passiveLockStatus(config);
   if (command === 'stop') {
     if (current.pid) { try { process.kill(current.pid, 'SIGTERM'); } catch { /* already exited */ } }
     rmSync(passiveLockPidFile(config), { force: true });
     return { command, pid: current.pid };
   }
-  const started = startPassiveLockService(config, command);
+  const started = await startPassiveLockService(config, command);
   return { command, pid: started.pid };
 }
 
-export function armMacOneShotAwakeLock(config: MyTerminalConfig, sessionId: string): { launched: true; oneShot: true; pid: number; sessionId: string; state: 'waiting_for_permission_or_armed' } {
+export async function armMacOneShotAwakeLock(config: MyTerminalConfig, sessionId: string): Promise<{ launched: true; oneShot: true; pid: number; sessionId: string; state: 'waiting_for_permission_or_armed' }> {
   const existing = existingPid(config, sessionId);
   if (existing) return { launched: true, oneShot: true, pid: existing, sessionId, state: 'waiting_for_permission_or_armed' };
-  const helper = compileHelper(config);
+  const helper = await compileHelper(config);
   const logFile = path.join(resourceDir(config), `${sessionId}.log`);
   rmSync(logFile, { force: true });
   const child = spawn(helper, [path.join(config.stateDir, 'state.json'), sessionId, logFile], {

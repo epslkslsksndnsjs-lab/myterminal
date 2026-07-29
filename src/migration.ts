@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import type { StoredState } from './types.js';
 
@@ -80,9 +80,14 @@ export function migrateWorkspaceState(targetDir: string, sourceDirs: string[]): 
   const states = [readState(targetDir), ...sources.map(readState)].filter((item): item is StoredState => Boolean(item));
   if (states.length) {
     const merged = mergeStoredStates(states);
-    writeFileSync(path.join(targetDir, 'state.json'), `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+    // ADR-0019: 原子写——write-to-temp → rename
+    const stateFile = path.join(targetDir, 'state.json');
+    writeFileSync(`${stateFile}.tmp`, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+    renameSync(`${stateFile}.tmp`, stateFile);
     mergeHistory(targetDir, sources);
-    writeFileSync(path.join(targetDir, 'migration.json'), `${JSON.stringify({ schemaVersion: 1, sources, sessions: merged.sessions.length, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+    const migrationFile = path.join(targetDir, 'migration.json');
+    writeFileSync(`${migrationFile}.tmp`, `${JSON.stringify({ schemaVersion: 1, sources, sessions: merged.sessions.length, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 });
+    renameSync(`${migrationFile}.tmp`, migrationFile);
     return { sources, sessions: merged.sessions.length };
   }
   return { sources, sessions: 0 };

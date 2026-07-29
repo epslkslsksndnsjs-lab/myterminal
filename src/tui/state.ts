@@ -416,7 +416,7 @@ export class TuiController {
     } else if (errors.length) { this.currentRuntime.log(errors.join(' '), 'error'); return; }
     await this.applySettings(next);
     if (process.platform === 'darwin' && passiveAction) {
-      commandPassiveLock(this.currentRuntime.config, passiveAction === 'off' ? 'stop' : passiveAction);
+      await commandPassiveLock(this.currentRuntime.config, passiveAction === 'off' ? 'stop' : passiveAction);
       const status = passiveLockStatus(this.currentRuntime.config);
       this.currentRuntime.log(this.text(`Passive lock: ${status.state}`, `被动锁屏：${status.state}`));
     }

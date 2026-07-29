@@ -7,9 +7,15 @@
 // 放行名单——前缀匹配，\b 边界防止 warm 误伤 rm（决策 17）
 const SAFE_PATTERNS = /^\s*(ls|cat|echo|pwd|grep|rg|head|tail|wc|find|git\s+(status|log|diff|show|branch)|npm\s+(test|run|ls)|bun\s+(test|run)|node\s+--version|tsc)\b/;
 
-// 拦截名单——命中即 deny，无论模式（决策 17 + 32）
+// 拦截名单——命中即 deny，无论模式（决策 17 + 32 + ADR-0013 加固）
 // \b 边界防子串误判（如 warm → rm）；curl/wget 管道到 shell 拦截
-const DANGEROUS_PATTERNS = /\b(rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r|sudo|chmod\s+777|mkfs|dd\s+.*of=\/dev|:\(\)\s*\{|shutdown|reboot|kill\s+-9\s+1\b)\b|\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh)\b/;
+// ADR-0013: rm 覆盖大写 R/F、分开 flag、长选项；chmod 允许 -R 夹在中间
+const DANGEROUS_PATTERNS = /\b(rm\s+(-[a-zA-Z]*[rRfF]|--recursive|--force)|sudo|chmod\s+(-[a-zA-Z]+\s+)*777|mkfs|dd\s+.*of=\/dev|:\(\)\s*\{|shutdown|reboot|kill\s+-9\s+1\b)\b|\b(curl|wget)\b[^|]*\|\s*(sh|bash|zsh)\b/;
+
+// ADR-0013: 解释器壳模式——提取内层命令递归检查
+const INTERPRETER_SHELL = /\b(bash|sh|zsh|dash|ksh)\s+-c\s+(['"])([\s\S]*)\2/;
+const INTERPRETER_LANG = /\b(python[23]?|perl|ruby|node)\s+-c\s+(['"])([\s\S]*)\2/;
+const EVAL_PATTERN = /\beval\s+([\s\S]+)/;
 
 // ── 步骤 1：命令分割（决策 32 第 1 层）──
 
@@ -61,6 +67,11 @@ export function splitCommands(command: string): string[] {
       i++; // 跳过下一个 |
     } else if (ch === ';') {
       // ; 分隔符
+      segments.push(current.trim());
+      current = '';
+    } else if (ch === '\n' || ch === '\r') {
+      // ADR-0012: 换行符分隔符（shell 视 \n 为命令分隔，\r\n 跳过 \r 后由 \n 切）
+      if (ch === '\r' && next === '\n') i++; // CRLF 作为单个分隔符
       segments.push(current.trim());
       current = '';
     } else if (ch === '|') {
@@ -129,6 +140,28 @@ function stripSingleQuotedContent(str: string): string {
   return str.replace(/'[^']*'/g, "''");
 }
 
+// ADR-0013: 解释器壳内层命令提取
+// 返回 { inner, isShell } —— shell 内层可递归走 checkCommandSafety，语言内层走原始 DANGEROUS 匹配
+function extractInterpreterInner(command: string): { inner: string; isShell: boolean } | null {
+  const shellMatch = INTERPRETER_SHELL.exec(command);
+  if (shellMatch) return { inner: shellMatch[3], isShell: true };
+  const langMatch = INTERPRETER_LANG.exec(command);
+  if (langMatch) return { inner: langMatch[3], isShell: false };
+  const evalMatch = EVAL_PATTERN.exec(command);
+  if (evalMatch) return { inner: evalMatch[1], isShell: true };
+  return null;
+}
+
+// 解释器壳分发——shell 递归 checkCommandSafety，语言走 DANGEROUS 原始匹配
+function checkInterpreterInner(command: string, readOnly: boolean, depth: number): 'deny' | null {
+  const extracted = extractInterpreterInner(command);
+  if (extracted === null) return null;
+  if (extracted.isShell) {
+    return checkCommandSafety(extracted.inner, readOnly, depth + 1) === 'deny' ? 'deny' : null;
+  }
+  return DANGEROUS_PATTERNS.test(extracted.inner) ? 'deny' : null;
+}
+
 // ── 步骤 3：模式匹配与主入口（决策 17 + 32）──
 
 /**
@@ -143,7 +176,13 @@ function stripSingleQuotedContent(str: string): string {
  * | 含命令替换且内含命令命中 DANGEROUS       | deny          | deny           |
  * | 含命令替换但未命中 DANGEROUS             | deny          | allow          |
  */
-export function checkCommandSafety(command: string, readOnly: boolean): 'allow' | 'deny' {
+export function checkCommandSafety(command: string, readOnly: boolean, _depth = 0): 'allow' | 'deny' {
+  // ADR-0013: 递归深度限制（防无限循环）
+  if (_depth > 3) return readOnly ? 'deny' : 'allow';
+
+  // ADR-0013: 解释器壳递归检查——提取内层命令独立判断
+  if (checkInterpreterInner(command, readOnly, _depth) === 'deny') return 'deny';
+
   // ① 先对完整命令（去引号版本）检查 DANGEROUS
   //    这能捕获 curl ... | sh 等需要完整管道上下文才能识别的危险模式（决策 32）
   const strippedFull = stripSingleQuotedContent(command);
@@ -154,6 +193,8 @@ export function checkCommandSafety(command: string, readOnly: boolean): 'allow' 
   for (const sub of subCommands) {
     const stripped = stripSingleQuotedContent(sub);
     if (DANGEROUS_PATTERNS.test(stripped)) return 'deny';
+    // ADR-0013: 每个子命令也检查解释器壳
+    if (checkInterpreterInner(sub, readOnly, _depth) === 'deny') return 'deny';
   }
 
   // ③ 命令替换检测——含替换的命令不能简单地视为 safe

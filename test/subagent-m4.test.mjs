@@ -2,7 +2,7 @@
 // ≥ 25 用例：接口/工厂(4) + execute_cli(6) + read/write/edit(8) + glob/grep(4) + task(3) + 集成(1)
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -227,6 +227,18 @@ describe('M4 read_file / write_file / edit_file', () => {
       () => tool.call({ path: '../../etc/passwd' }, makeCtx()),
       /outside working directory/,
     );
+  });
+
+  it('ADR-0015 resolvePath symlink 逃逸拒绝（#20 核心）', async () => {
+    // 在 cwd 内创建指向 /etc/passwd 的 symlink
+    const symlinkPath = join(TMP, 'escape-link');
+    try { symlinkSync('/etc/passwd', symlinkPath); } catch { /* 已存在 */ }
+    const tool = getTool('read_file');
+    await assert.rejects(
+      () => tool.call({ path: 'escape-link' }, makeCtx()),
+      /symlink|outside/,
+    );
+    try { unlinkSync(symlinkPath); } catch { /* ignore */ }
   });
 });
 
