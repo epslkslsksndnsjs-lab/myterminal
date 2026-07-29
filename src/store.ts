@@ -7,6 +7,7 @@ import type {
   SessionEvent, SessionEventKind, SessionIdentity, SessionPhase, StoredState, TaskPackage,
   SessionHistoryEntry, ToolAuditEvent, PlannedToolCall,
 } from './types.js';
+import { redact } from './redact.js';
 
 const EMPTY_STATE: StoredState = {
   schemaVersion: 2, revision: 0, sessions: [], messages: [], events: [], subscriptions: [], appBindings: [], extensions: [],
@@ -614,10 +615,10 @@ export class MyTerminalStore {
 
   auditEvent(sessionId: string, event: ToolAuditEvent): ToolAuditEvent {
     const session = this.requireSession(sessionId);
-    const sensitiveValues = this.collectSensitiveValues(event.args);
-    const args = this.sanitize(event.args, '', sensitiveValues);
-    const result = this.sanitize(event.result, '', sensitiveValues);
-    const error = event.error ? this.sanitize(event.error, '', sensitiveValues) : undefined;
+    const redacted = redact(event);
+    const args = redacted.args;
+    const result = redacted.result;
+    const error = event.error ? redacted.error : undefined;
     const data = {
       ...event,
       error,
@@ -939,34 +940,6 @@ export class MyTerminalStore {
       if (entries.length < limit && carry.length) consume(carry);
     } finally { closeSync(fd); }
     return entries;
-  }
-
-  private collectSensitiveValues(value: unknown, key = '', found = new Set<string>()): Set<string> {
-    if (/token|authorization|claimcode|credential|connectorkey|secret|password|api[_-]?key|body|content/i.test(key)) {
-      if (typeof value === 'string' && value.length >= 4) found.add(value);
-      return found;
-    }
-    if (Array.isArray(value)) for (const item of value) this.collectSensitiveValues(item, '', found);
-    else if (value && typeof value === 'object') for (const [childKey, child] of Object.entries(value as JsonObject)) this.collectSensitiveValues(child, childKey, found);
-    return found;
-  }
-
-  private redactSensitiveText(value: string, sensitiveValues: Set<string>): string {
-    let redacted = value
-      .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]')
-      .replace(/(["']?(?:token|authorization|credential|claimCode|connectorKey|secret|password|api[_-]?key)["']?\s*[:=]\s*)(["']?)[^\s,}\]]+/gi, '$1$2[REDACTED]')
-      .replace(/([?&](?:token|key|secret|password|api[_-]?key)=)[^&\s]+/gi, '$1[REDACTED]');
-    for (const secret of sensitiveValues) redacted = redacted.split(secret).join('[REDACTED]');
-    return redacted;
-  }
-
-  private sanitize(value: unknown, key = '', sensitiveValues = new Set<string>()): unknown {
-    if (/token|authorization|claimcode|credential|connectorkey|secret|password|api[_-]?key/i.test(key)) return '[REDACTED]';
-    if (/body|content/i.test(key)) return typeof value === 'string' ? `[REDACTED ${value.length} chars]` : '[REDACTED]';
-    if (typeof value === 'string') return this.redactSensitiveText(value, sensitiveValues);
-    if (Array.isArray(value)) return value.map((item) => this.sanitize(item, '', sensitiveValues));
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as JsonObject).map(([childKey, child]) => [childKey, this.sanitize(child, childKey, sensitiveValues)]));
-    return value;
   }
 
   private fitProjection(projection: JsonObject, limit: number): JsonObject {

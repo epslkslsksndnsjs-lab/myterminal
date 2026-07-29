@@ -11,6 +11,7 @@ import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
 import { activeWorkspaceRuntimePids, appendWorkspaceLog, workspaceId } from './instances.js';
+import { redact } from './redact.js';
 import { WorkspaceCatalog } from './workspace-catalog.js';
 import { PortClusterRegistry, tokenHash, type ClusterMember } from './cluster.js';
 import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
@@ -283,8 +284,8 @@ export class MyTerminalRuntime {
     const entry: RuntimeLog = {
       at: event.timestamp,
       level: event.status === 'failed' || event.status === 'timeout' ? 'error' : 'info',
-      message: `Action ${event.status}: ${event.action} · session ${event.session}${suffix}${error}`,
-      audit: structuredClone(event),
+      message: redact(`Action ${event.status}: ${event.action} · session ${event.session}${suffix}${error}`) as string,
+      audit: redact(event) as ToolAuditEvent,
     };
     const index = this.logs.findIndex((item) => item.audit?.id === event.id);
     if (index >= 0) this.logs[index] = entry;
@@ -295,7 +296,7 @@ export class MyTerminalRuntime {
   }
 
   log(message: string, level: RuntimeLog['level'] = 'info'): void {
-    const entry = { at: new Date().toISOString(), level, message };
+    const entry = { at: new Date().toISOString(), level, message: redact(message) as string };
     this.logs.push(entry);
     try { appendWorkspaceLog(this.config.stateDir, entry); } catch { /* logging must never crash the runtime */ }
     if (this.logs.length > 500) this.logs.shift();
