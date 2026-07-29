@@ -18,6 +18,7 @@ import { trackShellTask } from './shell-tracker.js';
 import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
 import { truncateResult } from './result-budget.js';
 import { syncTasks, getSubagent } from './store.js';
+import { redact } from '../redact.js';
 import { createGrep } from './grep-utils.js';
 
 // ── 常量 ──
@@ -610,12 +611,15 @@ const grepTool = buildTool({
         results: truncateResult(fullText),
       };
     } catch (err) {
-      const msg = (err as Error).message;
-      // 非法正则提示
-      if (msg.includes('Invalid regular expression') || msg.includes('SyntaxError')) {
-        return { is_error: true, message: `Invalid regex pattern: ${pattern}. ${msg}` };
+      // ADR-0028: 不再用消息子串猜错误类型。先确定性校验正则语法，
+      // 非法正则直接返回友好消息，不暴露引擎内部细节；其他失败返回脱敏后的消息。
+      try {
+        new RegExp(pattern);
+      } catch {
+        return { is_error: true, message: `Invalid regex pattern: ${pattern}.` };
       }
-      return { is_error: true, message: `Grep failed: ${msg}` };
+      const detail = err instanceof Error ? err.message : String(err);
+      return { is_error: true, message: `Grep failed: ${redact(detail)}` };
     }
   },
 });

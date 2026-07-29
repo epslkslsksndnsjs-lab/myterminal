@@ -9,6 +9,7 @@ import {
   createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost,
   countRunning, getRecentAuditLogs, listAllSubagents,
 } from './store.js';
+import { MyTerminalError } from '../store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
 import type { UsageSummary } from './cost-tracker.js';
 
@@ -137,7 +138,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       // 决策 11：并发限制
       const running = countRunning();
       if (running >= settings.maxParallel) {
-        throw new Error(`Max parallel subagents reached (${settings.maxParallel}). Wait for existing subagents to complete or abort one.`);
+        throw new MyTerminalError('FORBIDDEN', `Max parallel subagents reached (${settings.maxParallel}). Wait for existing subagents to complete or abort one.`);
       }
 
       // 组装任务

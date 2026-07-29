@@ -360,7 +360,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         const existing = await readFile(file);
         const existingSha256 = createHash('sha256').update(existing).digest('hex');
-        if (existingSha256 !== sha256) throw new Error('Target file already exists with different content; blob_write_file never overwrites files.');
+        if (existingSha256 !== sha256) throw new MyTerminalError('EXTENSION_ERROR', 'Target file already exists with different content; blob_write_file never overwrites files.');
         return { path: relative(config, file), bytes: existing.length, sha256, alreadyExisted: true };
       }
       return { path: relative(config, file), bytes: buffer.length, sha256, alreadyExisted: false };
@@ -571,12 +571,12 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
           ...record.forkOptions,
         }, { type: 'skill', skillName: name });
         return { name: record.name, description: record.description, mode: 'fork', taskId: started.taskId, sessionId: started.sessionId, status: started.status };
-      } catch (err) {
-        // 决策 18：maxParallel 超限 → FORBIDDEN；其他启动失败 → EXTENSION_ERROR
-        const message = err instanceof Error ? err.message : String(err);
-        const code = message.includes('Max parallel') ? 'FORBIDDEN' : 'EXTENSION_ERROR';
-        throw new MyTerminalError(code, message);
-      }
+    } catch (err) {
+      // 决策 18：maxParallel 超限 → FORBIDDEN（runner.start 已携码抛出）；
+      // 其他启动失败 → EXTENSION_ERROR。不再用消息子串猜 code（ADR-0028）。
+      if (err instanceof MyTerminalError) throw err;
+      throw new MyTerminalError('EXTENSION_ERROR', err instanceof Error ? err.message : String(err));
+    }
     },
   });
 
