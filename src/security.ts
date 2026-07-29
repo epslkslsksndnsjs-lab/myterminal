@@ -9,6 +9,38 @@ export function safeEqual(left: string, right: string): boolean {
   return timingSafeEqual(leftHash, rightHash);
 }
 
+// Rejects regular-expression sources that can trigger catastrophic backtracking
+// (ReDoS). Heuristic: detect a quantifier applied to a sub-expression that itself
+// contains a quantifier (e.g. (a+)+, ([a-z]+){2,}). This is the dominant ReDoS
+// shape. It is a heuristic gate, not a full solver: it removes the practical
+// class of user-supplied pathological patterns without forbidding legitimate
+// repetition. Pattern length is also bounded.
+const REGEX_SOURCE_MAX_LENGTH = 1000;
+
+export function validateSafeRegex(source: string): void {
+  if (typeof source !== 'string' || source.length === 0) throw new Error('Regex source must be a non-empty string.');
+  if (source.length > REGEX_SOURCE_MAX_LENGTH) throw new Error(`Regex source exceeds the ${REGEX_SOURCE_MAX_LENGTH}-character limit.`);
+  const normalized = source
+    .replace(/\\./g, '·') // drop escaped chars so '.' etc. are not read as atoms
+    .replace(/\[[^\]]*\]/g, 'x'); // collapse char classes to a single atom
+  const groupHasQuantifier: boolean[] = [];
+  const isQuantifier = (ch: string): boolean => ch === '*' || ch === '+' || ch === '?' || ch === '{';
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
+    if (ch === '(') {
+      groupHasQuantifier.push(false);
+    } else if (ch === ')') {
+      if (groupHasQuantifier.length === 0) throw new Error('Unbalanced parentheses in regex source.');
+      const had = groupHasQuantifier.pop()!;
+      if (had && groupHasQuantifier.length > 0) groupHasQuantifier[groupHasQuantifier.length - 1] = true;
+      if (had && isQuantifier(normalized[i + 1] ?? '')) throw new Error('Regex contains nested quantifiers and may cause catastrophic backtracking (ReDoS).');
+    } else if (isQuantifier(ch)) {
+      if (groupHasQuantifier.length > 0) groupHasQuantifier[groupHasQuantifier.length - 1] = true;
+    }
+  }
+  if (groupHasQuantifier.length !== 0) throw new Error('Unbalanced parentheses in regex source.');
+}
+
 export function resolveWorkspacePath(workspaceDir: string, stateDir: string, input = '.'): string {
   const realWorkspace = realpathSync(workspaceDir);
   const realState = existsSync(stateDir) ? realpathSync(stateDir) : path.resolve(realWorkspace, path.relative(workspaceDir, stateDir));

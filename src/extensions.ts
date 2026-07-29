@@ -78,9 +78,11 @@ function validateSpec(value: unknown, builtins: Map<string, ToolDefinition>): Cu
 
 function failure(error: unknown): ToolResponse {
   if (error instanceof MyTerminalError) return { ok: false, error: { code: error.code, message: error.message, retryable: error.retryable, details: error.details } };
-  const message = error instanceof Error ? error.message : String(error);
-  const code = message.includes('not found') ? 'NOT_FOUND' : message.includes('required') || message.includes('must') ? 'INVALID_INPUT' : 'EXTENSION_ERROR';
-  return { ok: false, error: { code, message, retryable: false } };
+  // ADR-0028: never guess an error code by scanning the message text. Unknown
+  // errors surface as a generic INTERNAL error to the caller. The original
+  // detail is captured by the audit trail, which is redacted at the sink
+  // (ADR-0026), so it can never leak into the protocol response.
+  return { ok: false, error: { code: 'INTERNAL', message: 'An internal error occurred.', retryable: false } };
 }
 
 function resultProblem(value: unknown): ResultProblem | undefined {

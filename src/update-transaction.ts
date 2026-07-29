@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { redact } from './redact.js';
 
 export type UpdateRestoreResult = {
   restored: string[];
@@ -68,11 +69,7 @@ function stageCode(stage: UpdateAuditRecord['stage'], error: unknown): string {
 
 function safeErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/\bBearer\s+\S+/gi, 'Bearer [REDACTED]')
-    .replace(/(["']?(?:token|authorization|credential|claimCode|connectorKey|secret|password|api[_-]?key)["']?\s*[:=]\s*)(["']?)[^\s,}\]]+/gi, '$1$2[REDACTED]')
-    .replace(/([?&](?:token|key|secret|password)=)[^&\s]+/gi, '$1[REDACTED]')
-    .slice(0, 1000);
+  return redact(raw).slice(0, 1000);
 }
 
 export async function executeUpdateTransaction<TSnapshot>(options: UpdateTransactionOptions<TSnapshot>): Promise<UpdateAuditRecord> {

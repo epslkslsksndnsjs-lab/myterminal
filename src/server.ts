@@ -11,6 +11,7 @@ import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
 import { activeWorkspaceRuntimePids, appendWorkspaceLog, workspaceId } from './instances.js';
+import { redact } from './redact.js';
 import { WorkspaceCatalog } from './workspace-catalog.js';
 import { PortClusterRegistry, tokenHash, type ClusterMember } from './cluster.js';
 import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
@@ -283,8 +284,8 @@ export class MyTerminalRuntime {
     const entry: RuntimeLog = {
       at: event.timestamp,
       level: event.status === 'failed' || event.status === 'timeout' ? 'error' : 'info',
-      message: `Action ${event.status}: ${event.action} · session ${event.session}${suffix}${error}`,
-      audit: structuredClone(event),
+      message: redact(`Action ${event.status}: ${event.action} · session ${event.session}${suffix}${error}`) as string,
+      audit: redact(event) as ToolAuditEvent,
     };
     const index = this.logs.findIndex((item) => item.audit?.id === event.id);
     if (index >= 0) this.logs[index] = entry;
@@ -295,7 +296,7 @@ export class MyTerminalRuntime {
   }
 
   log(message: string, level: RuntimeLog['level'] = 'info'): void {
-    const entry = { at: new Date().toISOString(), level, message };
+    const entry = { at: new Date().toISOString(), level, message: redact(message) as string };
     this.logs.push(entry);
     try { appendWorkspaceLog(this.config.stateDir, entry); } catch { /* logging must never crash the runtime */ }
     if (this.logs.length > 500) this.logs.shift();
@@ -572,12 +573,12 @@ export class MyTerminalRuntime {
     this.app.post('/actions/extensions/register', this.requireActionsAuth, async (req, res) => this.sendAction(res, await this.extensions.register(req.body, { transport: 'actions' })));
     this.app.post('/actions/extensions/call', this.requireActionsAuth, async (req, res) => this.sendAction(res, await this.extensions.call(req.body, { transport: 'actions' })));
     this.app.post('/cluster/owns', async (req, res) => {
-      if (!this.clusterMember || req.header('x-myterminal-cluster-secret') !== this.clusterMember.secret) { res.status(404).json({ error: 'Not found.' }); return; }
+      if (!this.clusterMember || !safeEqual(String(req.header('x-myterminal-cluster-secret') || ''), this.clusterMember.secret)) { res.status(404).json({ error: 'Not found.' }); return; }
       const clientSessionKey = typeof req.body?.clientSessionKey === 'string' ? req.body.clientSessionKey : '';
       res.json({ owned: Boolean(clientSessionKey && this.store.hasAppBinding(clientSessionKey)) });
     });
     this.app.post('/cluster/rpc/:method', async (req, res) => {
-      if (!this.clusterMember || req.header('x-myterminal-cluster-secret') !== this.clusterMember.secret) { res.status(404).json({ error: 'Not found.' }); return; }
+      if (!this.clusterMember || !safeEqual(String(req.header('x-myterminal-cluster-secret') || ''), this.clusterMember.secret)) { res.status(404).json({ error: 'Not found.' }); return; }
       const body = req.body as { input?: Record<string, unknown>; context?: Record<string, unknown> };
       const input = body.input || {};
       const context = (body.context || { transport: 'actions' }) as never;
