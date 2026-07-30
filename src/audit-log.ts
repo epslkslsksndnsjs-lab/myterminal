@@ -20,6 +20,9 @@ export type AuditFact = ToolAuditEvent & {
 
 export type AuditFactsPage = { total: number; offset: number; nextOffset?: number; facts: AuditFact[] };
 
+/** Upper bound on facts any single reader pass considers. */
+const MAX_WINDOW = 5000;
+
 /** Seam boundary: everything AuditLog needs from the surrounding store. */
 export interface AuditLogIo {
   appendToolAudit(sessionId: string, data: JsonObject): void;
@@ -72,13 +75,34 @@ export class AuditLog {
 
   /** Most recent `limit` facts across all sessions, oldest first. */
   facts(limit = 500): AuditFact[] {
-    return structuredClone(this.all().slice(-Math.max(1, Math.min(5000, limit))));
+    return structuredClone(this.all().slice(-Math.max(1, Math.min(MAX_WINDOW, limit))));
+  }
+
+  /**
+   * Backwards pagination for log views (ADR-0033 #62): page 0 is the newest
+   * `limit` facts at or before `until`. Owns the anchor filter and the slice
+   * arithmetic the Logs screen used to redo on every frame. `nextOffset` points
+   * at the start of the next (older) page, or undefined at the oldest page.
+   */
+  recentFactsPage(page = 0, limit = 100, until?: string): AuditFactsPage {
+    const count = Math.max(1, Math.min(MAX_WINDOW, limit));
+    const recent = this.all().slice(-MAX_WINDOW);
+    const facts = until ? recent.filter((fact) => fact.at <= until) : recent;
+    const total = facts.length;
+    const end = Math.max(0, total - Math.max(0, page) * count);
+    const start = Math.max(0, end - count);
+    return {
+      total,
+      offset: start,
+      nextOffset: start > 0 ? Math.max(0, start - count) : undefined,
+      facts: structuredClone(facts.slice(start, end)),
+    };
   }
 
   /** Coherent forward pagination over the same fact stream (shared with #62). */
   factsPage(offset = 0, limit = 100): AuditFactsPage {
     const facts = this.all();
-    const count = Math.max(1, Math.min(5000, limit));
+    const count = Math.max(1, Math.min(MAX_WINDOW, limit));
     const total = facts.length;
     const start = Math.max(0, Math.min(total, offset));
     return {

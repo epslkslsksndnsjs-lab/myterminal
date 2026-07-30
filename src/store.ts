@@ -641,6 +641,9 @@ export class MyTerminalStore {
   /** Coherent pagination over the audit stream (ADR-0032 #64 seam, consumed by #62). */
   auditFactsPage(offset = 0, limit = 100): AuditFactsPage { return this.audit.factsPage(offset, limit); }
 
+  /** Backwards-paginated audit view for log screens (ADR-0033 #62). */
+  auditRecentFactsPage(page = 0, limit = 100, until?: string): AuditFactsPage { return this.audit.recentFactsPage(page, limit, until); }
+
   cumulativeContextChars(sessionId?: string): number {
     const facts = this.auditFacts(5000).filter((f) => !sessionId || f.sessionId === sessionId);
     return facts.reduce((sum, f) => sum + JSON.stringify(f.args || {}).length + JSON.stringify(f.result || {}).length, 0);

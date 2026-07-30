@@ -89,10 +89,8 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
     }
   } catch { /* cross-workspace logs are best effort */ }
   if (showAudit) {
-    const audit = runtime.store.auditFacts(5000).filter((fact) => !anchorAt || fact.at <= anchorAt);
-    const auditEnd = Math.max(0, audit.length - page * PAGE_SIZE);
-    const auditStart = Math.max(0, auditEnd - PAGE_SIZE);
-    for (const fact of audit.slice(auditStart, auditEnd)) entries.push({
+    // 分页与 anchorAt 截断由 store 的 audit seam 负责（#62）——屏内不再全量扫描重排。
+    for (const fact of runtime.store.auditRecentFactsPage(page, PAGE_SIZE, anchorAt).facts) entries.push({
       at: fact.at,
       kind: 'audit',
       level: fact.status === 'running' ? 'info' : fact.status === 'completed' ? 'ok' : 'error',
