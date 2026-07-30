@@ -1,14 +1,9 @@
 // ADR-0007 决策 33/34：grep 引擎——递归遍历 + ignore + include 过滤 + maxMatches 截断
 // 不引 npm 库，手动实现 glob→regex 转换
 
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { resolve as pathResolve, relative } from 'node:path';
-
-// 与 tools.ts 的 IGNORE_DIRECTORIES 保持同步（决策 33：与 core-tools.ts 对齐）
-const IGNORE_DIRECTORIES = new Set([
-  '.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo',
-  'build', '.cache',
-]);
+import { walkFiles } from '../utils/fs.js';
 
 // 决策 34：grep 默认截断上限
 const DEFAULT_MAX_MATCHES = 200;
@@ -56,32 +51,6 @@ function includePatternToRegex(pattern: string): RegExp {
   }
   // ADR-0021: 锚定 ^...$ 防止 *.ts 误匹配 .tsx/.ts.bak
   return new RegExp(`^${regexStr}$`);
-}
-
-// 递归遍历目录，跳过 IGNORE_DIRECTORIES
-async function walkFiles(searchDir: string): Promise<string[]> {
-  const files: string[] = [];
-  const queue = [searchDir];
-
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      continue; // 跳过不可读目录
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (IGNORE_DIRECTORIES.has(entry.name)) continue;
-        queue.push(pathResolve(current, entry.name));
-      } else if (entry.isFile()) {
-        files.push(pathResolve(current, entry.name));
-      }
-    }
-  }
-
-  return files;
 }
 
 /**

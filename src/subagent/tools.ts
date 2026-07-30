@@ -9,7 +9,6 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { readdir } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import type { JsonObject, JsonSchema } from '../types.js';
@@ -20,6 +19,7 @@ import { truncateResult } from './result-budget.js';
 import { syncTasks, getSubagent } from './store.js';
 import { redact } from '../redact.js';
 import { createGrep } from './grep-utils.js';
+import { IGNORE_DIRECTORIES, walkFiles } from '../utils/fs.js';
 
 // ── 常量 ──
 
@@ -31,11 +31,7 @@ const BINARY_EXTENSIONS = new Set([
   '.o', '.a', '.class', '.jar', '.wasm',
 ]);
 
-// 决策 33：glob/grep 忽略目录——与 core-tools.ts IGNORED_DIRECTORIES 对齐 + build/ .cache/
-const IGNORE_DIRECTORIES = new Set([
-  '.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo',
-  'build', '.cache',
-]);
+// 决策 33：glob/grep 忽略目录——单一真相源见 ../utils/fs.ts 的 IGNORE_DIRECTORIES（含 build/.cache）
 
 // 决策 34：glob 最大返回条数
 const MAX_GLOB_RESULTS = 200;
@@ -169,30 +165,6 @@ function globToRegex(pattern: string): RegExp {
     }
   }
   return new RegExp(`^${regexStr}$`);
-}
-
-// 递归遍历目录：skip IGNORE_DIRECTORIES，返回所有文件路径（相对 searchDir）
-async function walkFiles(searchDir: string): Promise<string[]> {
-  const files: string[] = [];
-  const queue = [searchDir];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      continue; // 跳过不可读目录
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (IGNORE_DIRECTORIES.has(entry.name)) continue;
-        queue.push(resolve(current, entry.name));
-      } else if (entry.isFile()) {
-        files.push(relative(searchDir, resolve(current, entry.name)).replace(/\\/g, '/'));
-      }
-    }
-  }
-  return files;
 }
 
 // ── 工厂 + 注册表（决策 13）──
@@ -539,8 +511,8 @@ const globTool = buildTool({
     const pattern = input.pattern as string;
 
     try {
-      // 决策 33：递归遍历，跳过 IGNORE_DIRECTORIES
-      const allFiles = await walkFiles(searchDir);
+      // 决策 33：递归遍历，跳过 IGNORE_DIRECTORIES（共享单源 ../utils/fs.ts，返回绝对路径 → 转相对供 glob 匹配）
+      const allFiles = (await walkFiles(searchDir)).map((f) => relative(searchDir, f).replace(/\\/g, '/'));
       const regex = globToRegex(pattern);
       const matches = allFiles.filter((f) => regex.test(f)).sort();
       const total = matches.length;
