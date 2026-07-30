@@ -1,8 +1,11 @@
 // ADR-0007 决策 6：完全独立的内存 Map，不碰主 store / ExtensionService
 // ADR-0007 决策 7：结果保留到父 AI 拿走 + 1 小时超时兜底
 // ADR-0007 决策 39：审计日志结构
+// ADR-0032 #34：状态收敛到 SubagentContext，函数追加可选末参 ctx（缺省 defaultContext）
 
 import type { UsageSummary } from './cost-tracker.js';
+import { defaultContext } from './context.js';
+import type { SubagentContext } from './context.js';
 
 // ── 类型（决策 6 + 39）──
 
@@ -42,9 +45,7 @@ export interface SubagentRecord {
   completedAt?: number;
 }
 
-// ── 存储 ──
-
-const subagents = new Map<string, SubagentRecord>();
+// ── 存储（ADR-0032 #34：状态移入 SubagentContext）──
 
 // 可注入的清理延迟（供测试用）
 let cleanupDelayMs = 60 * 60 * 1000; // 1 小时，决策 7
@@ -63,6 +64,7 @@ export function getCleanupDelayMs(): number {
 export function createSubagent(
   id: string,
   fields: { subject: string; description?: string },
+  ctx: SubagentContext = defaultContext,
 ): SubagentRecord {
   const record: SubagentRecord = {
     id,
@@ -78,20 +80,21 @@ export function createSubagent(
     auditLogs: [],
     createdAt: Date.now(),
   };
-  subagents.set(id, record);
+  ctx.subagents.set(id, record);
   return record;
 }
 
-export function getSubagent(id: string): SubagentRecord | undefined {
-  return subagents.get(id);
+export function getSubagent(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  return ctx.subagents.get(id);
 }
 
 export function updateSubagentStatus(
   id: string,
   status: SubagentStatus,
   extra?: { result?: string; error?: string },
+  ctx: SubagentContext = defaultContext,
 ): SubagentRecord | undefined {
-  const record = subagents.get(id);
+  const record = ctx.subagents.get(id);
   if (!record) return undefined;
 
   record.status = status;
@@ -104,26 +107,26 @@ export function updateSubagentStatus(
 
     // 1 小时兜底清理（决策 7），timer 必须 unref()
     setTimeout(() => {
-      subagents.delete(id);
+      ctx.subagents.delete(id);
     }, cleanupDelayMs).unref();
   }
 
   return record;
 }
 
-export function collectSubagentResult(id: string): SubagentRecord | undefined {
-  const record = subagents.get(id);
+export function collectSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  const record = ctx.subagents.get(id);
   if (!record) return undefined;
-  subagents.delete(id);
+  ctx.subagents.delete(id);
   return record;
 }
 
-export function getSubagentResult(id: string): SubagentRecord | undefined {
-  return subagents.get(id);
+export function getSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  return ctx.subagents.get(id);
 }
 
-export function addAuditLog(id: string, log: ToolAuditLog): void {
-  const record = subagents.get(id);
+export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext = defaultContext): void {
+  const record = ctx.subagents.get(id);
   if (!record) return;
 
   // 截断输入到 1000 字符
@@ -143,42 +146,42 @@ export function addAuditLog(id: string, log: ToolAuditLog): void {
   }
 }
 
-export function updateCost(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalUSD: number }): void {
-  const record = subagents.get(id);
+export function updateCost(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalUSD: number }, ctx: SubagentContext = defaultContext): void {
+  const record = ctx.subagents.get(id);
   if (!record) return;
   record.cost = { ...usage };
 }
 
-export function countRunning(): number {
+export function countRunning(ctx: SubagentContext = defaultContext): number {
   let count = 0;
-  for (const record of subagents.values()) {
+  for (const record of ctx.subagents.values()) {
     if (record.status === 'running') count++;
   }
   return count;
 }
 
 /** 查询时返回最近 20 条 auditLogs（决策 39） */
-export function getRecentAuditLogs(id: string): ToolAuditLog[] {
-  const record = subagents.get(id);
+export function getRecentAuditLogs(id: string, ctx: SubagentContext = defaultContext): ToolAuditLog[] {
+  const record = ctx.subagents.get(id);
   if (!record) return [];
   return record.auditLogs.slice(-20);
 }
 
 /** M8：列出所有 subagent（TUI 列表页数据源） */
-export function listAllSubagents(): SubagentRecord[] {
-  return [...subagents.values()];
+export function listAllSubagents(ctx: SubagentContext = defaultContext): SubagentRecord[] {
+  return [...ctx.subagents.values()];
 }
 
-/** 仅供测试——清空全部状态 */
+/** 仅供测试——清空 defaultContext 全部状态 */
 export function clearAllSubagents(): void {
-  subagents.clear();
+  defaultContext.subagents.clear();
 }
 
 // ── 计费状态更新 ──
 // 外部（CostTracker）每轮累积后通过此函数写入 store
 
-export function updateSubagentCost(id: string, usage: UsageSummary): void {
-  const record = subagents.get(id);
+export function updateSubagentCost(id: string, usage: UsageSummary, ctx: SubagentContext = defaultContext): void {
+  const record = ctx.subagents.get(id);
   if (!record) return;
   record.cost = usage;
 }
