@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { LOCK_STALE_THRESHOLD_MS } from './lock-thresholds.js';
 
 export type PortOwner = { pid: number; command: string; user?: string };
 export type WorkspaceRecord = {
@@ -60,7 +61,7 @@ function updateWorkspaceRegistry(configDir: string, update: (records: WorkspaceR
       try {
         const observed = readFileSync(lock, 'utf8');
         const owner = Number(observed.split(':', 1)[0]);
-        const tooOld = Date.now() - statSync(lock).mtimeMs > 30_000;
+        const tooOld = Date.now() - statSync(lock).mtimeMs > LOCK_STALE_THRESHOLD_MS;
         let alive = Number.isInteger(owner) && owner > 0;
         if (alive) { try { process.kill(owner, 0); } catch { alive = false; } }
         if ((!alive || tooOld) && readFileSync(lock, 'utf8') === observed) {

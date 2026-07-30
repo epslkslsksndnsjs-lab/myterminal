@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { LOCK_STALE_THRESHOLD_MS } from './lock-thresholds.js';
 
 export type ClusterMember = {
   id: string;
@@ -62,7 +63,7 @@ export class PortClusterRegistry {
         try {
           const lockContent = readFileSync(this.lock, 'utf8');
           const owner = Number(lockContent.split(':')[0]);
-          const stale = Date.now() - statSync(this.lock).mtimeMs > 5000;
+          const stale = Date.now() - statSync(this.lock).mtimeMs > LOCK_STALE_THRESHOLD_MS;
           let alive = true;
           try { process.kill(owner, 0); } catch { alive = false; }
           if (!alive || stale) { unlinkSync(this.lock); continue; }
