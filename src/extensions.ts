@@ -297,6 +297,11 @@ export class ExtensionService {
     }
   }
 
+  /** ADR-0029: drop the ephemeral MCP identity binding for a closed MCP session so no zombie binding survives. */
+  mcpSessionClosed(mcpSessionId: string): void {
+    this.store.unbindMcp(mcpSessionId);
+  }
+
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
     let sessionId: string | undefined;
@@ -412,7 +417,8 @@ export class ExtensionService {
       }
       const result = await operation;
       if (!sessionId && result.identity && typeof result.identity === 'object') sessionId = String((result.identity as JsonObject).sessionId || '');
-      if (sessionId && context.transport === 'apps' && context.clientSessionKey) this.store.bindApp(context.clientSessionKey, sessionId);
+      if ((bootstrapRoot || bootstrapInherit) && sessionId && context.transport === 'apps' && context.clientSessionKey) this.store.bindApp(context.clientSessionKey, sessionId);
+      if ((bootstrapRoot || bootstrapInherit) && sessionId && context.transport === 'mcp' && context.mcpSessionId) this.store.bindMcp(context.mcpSessionId, sessionId);
       if (sessionId && !auditStarted) {
         this.beginAudit(sessionId, actionId, context.transport, input.tool, args, started);
         auditStarted = true;
@@ -588,10 +594,15 @@ export class ExtensionService {
     if (identity) {
       const session = this.store.authenticate(identity);
       if (context.transport === 'apps' && context.clientSessionKey) this.store.bindApp(context.clientSessionKey, session.id);
+      else if (context.transport === 'mcp' && context.mcpSessionId) this.store.bindMcp(context.mcpSessionId, session.id);
       return session;
     }
     if (context.transport === 'apps' && context.clientSessionKey) {
       const bound = this.store.resolveAppBinding(context.clientSessionKey);
+      if (bound) return bound;
+    }
+    if (context.transport === 'mcp' && context.mcpSessionId) {
+      const bound = this.store.resolveMcpBinding(context.mcpSessionId);
       if (bound) return bound;
     }
     if (allowMissing) return undefined;

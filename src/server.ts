@@ -16,7 +16,7 @@ import { WorkspaceCatalog } from './workspace-catalog.js';
 import { PortClusterRegistry, tokenHash, type ClusterMember } from './cluster.js';
 import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
 import { commandPassiveLock, disarmAllSessionResources, passiveLockStatus, reapSessionResources, startPassiveLockService } from './session-resources.js';
-import type { MyTerminalConfig, MyTerminalSettings, ToolAuditEvent, ToolResponse } from './types.js';
+import type { JsonObject, MyTerminalConfig, MyTerminalSettings, ToolAuditEvent, ToolResponse } from './types.js';
 import { assessRuntimeEnvironment, type RuntimeEnvironmentStatus } from './config.js';
 import { readMyTerminalSettings } from './config.js';
 import { ControlChannelMonitor, isExternalControlUrl, type ControlChannelState } from './control-channel.js';
@@ -586,6 +586,7 @@ export class MyTerminalRuntime {
       if (method === 'discover') { res.json(await this.extensions.discover(input, context)); return; }
       if (method === 'register') { res.json(await this.extensions.register(input, context)); return; }
       if (method === 'call') { res.json(await this.extensions.call(input, context)); return; }
+      if (method === 'mcpSessionClosed') { this.extensions.mcpSessionClosed(String((input as JsonObject).mcpSessionId || '')); res.json({ ok: true }); return; }
       res.status(404).json({ error: 'Not found.' });
     });
     this.app.use((_req, res) => res.status(404).json({ error: 'Not found.' }));

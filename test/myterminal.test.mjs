@@ -1475,13 +1475,14 @@ test('Apps exposes full generic and narrow direct tools, binds root sessions aut
     assert.equal(collision.data.result.structuredContent.ok, false);
     assert.match(collision.data.result.structuredContent.error.message, /different content/);
     const appFacts = server.runtime.store.auditFacts(100);
-    assert.ok(appFacts.some((fact) => fact.source === 'apps' && fact.action === 'session_register' && fact.status === 'completed'));
-    assert.equal(appFacts.every((fact) => fact.source === 'apps'), true);
+    assert.ok(appFacts.some((fact) => fact.source === 'mcp' && fact.action === 'session_register' && fact.status === 'completed'));
+    assert.equal(appFacts.every((fact) => fact.source === 'mcp'), true);
     const completedAppCall = appFacts.find((fact) => fact.action === 'session_register' && fact.result);
     assert.ok(completedAppCall.timestamp);
     assert.ok(completedAppCall.completedAt);
     assert.equal(completedAppCall.result.ok, true);
-    const differentChat = await rpcPost(url, { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'session_list', arguments: {}, _meta: { 'openai/session': 'chat-b' } } }, init.sessionId);
+    const initB = await rpcPost(url, { jsonrpc: '2.0', id: 90, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'myterminal-test-b', version: '1.0.0' } } });
+    const differentChat = await rpcPost(url, { jsonrpc: '2.0', id: 91, method: 'tools/call', params: { name: 'session_list', arguments: {} } }, initB.sessionId);
     assert.equal(differentChat.data.result.structuredContent.error.code, 'IDENTITY_REQUIRED');
   } finally { await server.close(); }
 });

@@ -3,7 +3,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import type {
-  AppSessionBinding, CustomExtensionSpec, JsonObject, MyTerminalMessage, MyTerminalSession, SessionCheckpoint,
+  AppSessionBinding, CustomExtensionSpec, JsonObject, McpSessionBinding, MyTerminalMessage, MyTerminalSession, SessionCheckpoint,
   SessionEvent, SessionEventKind, SessionIdentity, SessionPhase, StoredState, TaskPackage,
   SessionHistoryEntry, ToolAuditEvent, PlannedToolCall,
 } from './types.js';
@@ -106,6 +106,8 @@ const HISTORY_TAIL_LIMIT = 5_000;
 export class MyTerminalStore {
   private state: StoredState;
   private readonly statePath: string;
+  /** ADR-0029: ephemeral MCP session → identity binding cache. In-memory only; never persisted (see crash-recovery decision). */
+  private readonly mcpBindings = new Map<string, McpSessionBinding>();
   private readonly historyDir: string;
   private readonly journalPath: string;
   private readonly transientClaimCodes = new Map<string, string>();
@@ -292,6 +294,39 @@ export class MyTerminalStore {
     const session = this.findSession(binding.sessionId);
     if (!session?.controller || session.presence !== 'claimed' || session.controller.id !== binding.controllerId) return undefined;
     return structuredClone(session);
+  }
+
+  // ── ADR-0029: MCP session identity binding (ephemeral, in-memory) ──
+  bindMcp(mcpSessionId: string, sessionId: string): void {
+    const session = this.requireSession(sessionId);
+    if (!session.controller || session.presence !== 'claimed') throw new MyTerminalError('INVALID_IDENTITY', 'A claimed session is required before MCP binding.');
+    const binding: McpSessionBinding = { mcpSessionId, sessionId: session.id, controllerId: session.controller.id, boundAt: this.iso() };
+    this.mcpBindings.delete(mcpSessionId);
+    this.mcpBindings.set(mcpSessionId, binding);
+  }
+
+  resolveMcpBinding(mcpSessionId: string): MyTerminalSession | undefined {
+    this.refreshTemporalStates();
+    const binding = this.mcpBindings.get(mcpSessionId);
+    if (!binding) return undefined;
+    const session = this.findSession(binding.sessionId);
+    if (!session?.controller || session.presence !== 'claimed' || session.controller.id !== binding.controllerId) return undefined;
+    return structuredClone(session);
+  }
+
+  unbindMcp(mcpSessionId: string): void {
+    this.mcpBindings.delete(mcpSessionId);
+  }
+
+  hasMcpBinding(mcpSessionId: string): boolean {
+    return this.mcpBindings.has(mcpSessionId);
+  }
+
+  /** ADR-0029: drop every MCP binding tied to a session that is being released or reclaimed, so a later connection cannot inherit a stale identity. */
+  unbindMcpForSession(sessionId: string): void {
+    for (const [key, binding] of this.mcpBindings) {
+      if (binding.sessionId === sessionId) this.mcpBindings.delete(key);
+    }
   }
 
   beforeOrdinaryCall(sessionId: string): void {
@@ -672,7 +707,7 @@ export class MyTerminalStore {
       id: String(data.id || `legacy-${session.id}-${entry.at}-${action}`),
       timestamp: String(data.timestamp || data.startedAt || entry.at),
       completedAt: typeof data.completedAt === 'string' ? data.completedAt : undefined,
-      source: ['apps', 'actions', 'tui', 'test'].includes(String(data.source)) ? data.source as ToolAuditEvent['source'] : 'test',
+      source: ['apps', 'actions', 'tui', 'test', 'mcp'].includes(String(data.source)) ? data.source as ToolAuditEvent['source'] : 'test',
       action,
       status,
       durationMs: Number(data.durationMs || 0),
@@ -811,6 +846,7 @@ export class MyTerminalStore {
     session.presence = 'claimed'; session.updatedAt = now;
     this.transientClaimCodes.delete(session.id);
     this.state.appBindings = this.state.appBindings.filter((item) => item.sessionId !== session.id);
+    this.unbindMcpForSession(session.id);
     return { sessionId: session.id, sessionToken };
   }
 
@@ -819,6 +855,7 @@ export class MyTerminalStore {
     session.presence = 'unclaimed';
     session.updatedAt = this.iso();
     this.state.appBindings = this.state.appBindings.filter((item) => item.sessionId !== session.id);
+    this.unbindMcpForSession(session.id);
     const code = issueCode ? this.issueClaimCode(session) : undefined;
     this.emitEvent(session.id, session.id, kind, { phase: session.phase, presence: session.presence });
     this.appendHistory(session.id, kind, { phase: session.phase, presence: session.presence });

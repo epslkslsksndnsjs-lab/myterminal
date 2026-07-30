@@ -10,7 +10,7 @@ import { CURRENT_VERSION } from './version.js';
 
 type LiveSession = { server: McpServer; transport: StreamableHTTPServerTransport };
 
-export type ExtensionFacade = Pick<ExtensionService, 'discover' | 'register' | 'call'>;
+export type ExtensionFacade = Pick<ExtensionService, 'discover' | 'register' | 'call' | 'mcpSessionClosed'>;
 
 const responseSchema = {
   ok: z.boolean(),
@@ -109,9 +109,12 @@ function toToolResult(response: ToolResponse, summary: string) {
 }
 
 function contextFromCall(callContext: unknown): InvocationContext {
-  const meta = (callContext as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const extra = callContext as { sessionId?: string; _meta?: Record<string, unknown> } | undefined;
+  const mcpSessionId = typeof extra?.sessionId === 'string' ? extra.sessionId : undefined;
+  const meta = extra?._meta;
   return {
-    transport: 'apps',
+    transport: 'mcp',
+    mcpSessionId,
     clientSessionKey: typeof meta?.['openai/session'] === 'string' ? meta['openai/session'] : undefined,
   };
 }
@@ -247,9 +250,9 @@ export class MyTerminalMcpTransport {
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => { this.sessions.set(id, { server, transport }); },
-        onsessionclosed: (id) => { this.sessions.delete(id); },
+        onsessionclosed: (id) => { this.service.mcpSessionClosed(id); this.sessions.delete(id); },
       });
-      transport.onclose = () => { if (transport.sessionId) this.sessions.delete(transport.sessionId); };
+      transport.onclose = () => { if (transport.sessionId) { this.service.mcpSessionClosed(transport.sessionId); this.sessions.delete(transport.sessionId); } };
       await server.connect(transport);
       session = { server, transport };
     }
@@ -261,7 +264,8 @@ export class MyTerminalMcpTransport {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.sessions.values()].map(async ({ server, transport }) => {
+    await Promise.all([...this.sessions.entries()].map(async ([id, { server, transport }]) => {
+      this.service.mcpSessionClosed(id);
       await transport.close().catch(() => undefined);
       await server.close().catch(() => undefined);
     }));
