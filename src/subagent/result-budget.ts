@@ -1,10 +1,6 @@
 // ADR-0007 决策 19：工具结果预算——大小限制 + 截断 + 消息组预算
-// ADR-0007 决策 30 Bug 1：replacementDecisions 跨 turn 冻结必须“先 get 再 set”
+// ADR-0007 决策 30 Bug 1：replacementDecisions 跨 turn 冻结必须"先 get 再 set"
 // ADR-0007 决策 18：ToolResult 类型在此定义并导出，M5 直接 import
-// ADR-0032 #34：replacementDecisions 收敛到 SubagentContext，函数追加可选末参 ctx（缺省 defaultContext）
-
-import { defaultContext } from './context.js';
-import type { SubagentContext } from './context.js';
 
 // ── 常量（决策 19）──
 
@@ -21,14 +17,21 @@ export type ToolResult = {
   is_error: boolean;
 };
 
-// ── 跨 turn 冻结 Map（ADR-0032 #34：移入 SubagentContext）──
+// ── 跨 turn 冻结 Map（模块级，决策 19 + Bug 1 修复）──
+
+/**
+ * 跨 turn 冻结替换决策。
+ * 一旦决定截断某 tool_use_id 的结果，后续 turn 也用截断版（prompt cache 稳定性）。
+ * 注意：这是模块级变量，不需要导出（通过 enforceMessageBudget 间接读/写）。
+ */
+const replacementDecisions = new Map<string, 'full' | 'preview'>();
 
 /**
  * 重置冻结决策——compact 后或测试用。
  * 注释标注用途，避免误用。
  */
-export function resetReplacementDecisions(ctx: SubagentContext = defaultContext): void {
-  ctx.replacementDecisions.clear();
+export function resetReplacementDecisions(): void {
+  replacementDecisions.clear();
 }
 
 // ── 单结果截断（决策 19）──
@@ -64,10 +67,10 @@ function truncateToPreview(content: string): string {
  * @param results 本消息组的所有工具结果
  * @returns 应用预算后的结果数组（原地修改）
  */
-export function enforceMessageBudget(results: ToolResult[], ctx: SubagentContext = defaultContext): ToolResult[] {
+export function enforceMessageBudget(results: ToolResult[]): ToolResult[] {
   // ① 先应用已冻结的截断决策（Bug 1 修复：之前只 set 不 get）
   for (const r of results) {
-    if (ctx.replacementDecisions.get(r.tool_use_id) === 'preview') {
+    if (replacementDecisions.get(r.tool_use_id) === 'preview') {
       r.content = truncateToPreview(r.content);
     }
   }
@@ -93,7 +96,7 @@ export function enforceMessageBudget(results: ToolResult[], ctx: SubagentContext
     currentTotal -= originalSize - r.content.length;
 
     // 冻结决策——后续 turn 也用截断版
-    ctx.replacementDecisions.set(r.tool_use_id, 'preview');
+    replacementDecisions.set(r.tool_use_id, 'preview');
   }
 
   return results;
