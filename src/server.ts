@@ -15,7 +15,8 @@ import { redact } from './redact.js';
 import { WorkspaceCatalog } from './workspace-catalog.js';
 import { PortClusterRegistry, tokenHash, type ClusterMember } from './cluster.js';
 import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
-import { commandPassiveLock, disarmAllSessionResources, passiveLockStatus, reapSessionResources, startPassiveLockService } from './session-resources.js';
+import { commandPassiveLock, passiveLockStatus, startPassiveLockService } from './session-resources.js';
+import { sessionResourceManager } from './session-resource-manager.js';
 import type { JsonObject, MyTerminalConfig, MyTerminalSettings, ToolAuditEvent, ToolResponse } from './types.js';
 import { assessRuntimeEnvironment, type RuntimeEnvironmentStatus } from './config.js';
 import { readMyTerminalSettings } from './config.js';
@@ -65,7 +66,7 @@ export class MyTerminalRuntime {
 
   constructor(readonly config: MyTerminalConfig) {
     this.workspaceCatalog = WorkspaceCatalog.fromConfig(config);
-    reapSessionResources(config);
+    sessionResourceManager.reap(config);
     this.store = new MyTerminalStore(config.stateDir);
     const builtins = createBuiltinTools(config, this.store);
     this.extensions = new ExtensionService(config, this.store, builtins, (event) => this.logAuditEvent(event));
@@ -509,7 +510,7 @@ export class MyTerminalRuntime {
   private async closeOnce(): Promise<void> {
     this.healthState = { ...this.healthState, phase: 'shutting_down', lastCheckedAt: new Date().toISOString() };
     this.persistRuntimeLifecycle('shutting_down', 'runtime close requested');
-    disarmAllSessionResources(this.config);
+    sessionResourceManager.disarmAll(this.config);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.electionTimer) clearInterval(this.electionTimer);
     if (this.resumeTimer) clearInterval(this.resumeTimer);

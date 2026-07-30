@@ -21,13 +21,12 @@ import { estimateMessageTokens, getAutoCompactThreshold, getModelContextWindow }
 import { CostTracker } from './cost-tracker.js';
 import { getSubagent, updateSubagentStatus, updateSubagentCost, createSubagent, countRunning } from './store.js';
 import { clearFileState } from './file-state.js';
-import { cleanupAgentShellTasks } from './shell-tracker.js';
 import { executeToolCalls } from './tool-executor.js';
 import type { ToolCall } from './tool-executor.js';
 import { getToolNames, getAllToolSchemas } from './tools.js';
 import type { SubagentToolContext } from './tools.js';
-import { resetReplacementDecisions } from './result-budget.js';
 import { emitAgUi } from './tui-bridge.js';
+import { sessionResourceManager } from '../session-resource-manager.js';
 import type { AgUiEvent } from './tui-bridge.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -545,11 +544,9 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     return finishFailed((err as Error).message);
 
   } finally {
-    // 决策 8：清理顺序固定
-    cleanupAgentShellTasks(agentId);   // ① 杀 shell 进程组
-    clearFileState(agentId);           // ② 清文件状态缓存
-    resetReplacementDecisions();       // ADR-0022: ③ 清 replacement 决策缓存
-    // ADR-0032 #47：④ localTasks 镜像已移除（record 自带 1h 兜底清理，无需 clearLocalTasks）
+    // 决策 8：清理顺序固定——统一收口到 SessionResourceManager（ADR-0032 #38）
+    // 注册顺序即现状 ①②③：agent-shell-tasks / file-state / replacement-decisions
+    sessionResourceManager.disposeAgent(agentId);
     messages.length = 0;               // ⑤ 释放 messages（决策 9）
     // ⑥ 终态事件与 store 更新在 finishXxx 里已做
   }

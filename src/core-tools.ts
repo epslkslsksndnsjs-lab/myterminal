@@ -6,7 +6,7 @@ import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, publicSession, type MyTerminalStore } from './store.js';
 import { resolveWorkspacePath, validateSafeRegex } from './security.js';
 import type { JsonObject, JsonSchema, TaskPackage, ToolDefinition } from './types.js';
-import { disarmSessionResources } from './session-resources.js';
+import { sessionResourceManager } from './session-resource-manager.js';
 import { continuationPolicy } from './continuation.js';
 import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
@@ -464,7 +464,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
         }
       }
       const session = store.checkpoint(current.id, input);
-      if (session.phase === 'completed' || session.phase === 'cancelled') disarmSessionResources(config, current.id);
+      if (session.phase === 'completed' || session.phase === 'cancelled') sessionResourceManager.disposeSession(config, current.id);
       return { session: publicSession(session) };
     },
   });
