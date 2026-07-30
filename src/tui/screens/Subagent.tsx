@@ -12,6 +12,7 @@ import type { Theme } from '../state.js';
 import type { Copy } from '../copy/index.js';
 import { Heading, Line } from './shared.js';
 import { statusToVisual } from '../status-color.js';
+import { useI18n } from '../copy/context.js';
 
 /** 事件渲染条目 */
 type EventEntry = {
@@ -42,12 +43,11 @@ function truncate(str: string, max: number): string {
   return str.length > max ? `${str.slice(0, max)}...` : str;
 }
 
-export function SubagentDetail({ subagentId, theme, zh, copy }: {
+export function SubagentDetail({ subagentId, theme }: {
   subagentId: string;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
 }) {
+  const { t } = useI18n();
   const [events, setEvents] = useState<EventEntry[]>([]);
   const [live, setLive] = useState<LiveState>({
     text: '',
@@ -181,10 +181,10 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
     };
   }, [subagentId, handleEvent]);
 
-  const statusText = live.status === 'running' ? (zh ? '运行中' : 'Running')
-    : live.status === 'completed' ? (zh ? '已完成' : 'Completed')
-    : live.status === 'failed' ? (zh ? '失败' : 'Failed')
-    : (zh ? '已中止' : 'Aborted');
+  const statusText = live.status === 'running' ? (t('Running', '运行中'))
+    : live.status === 'completed' ? (t('Completed', '已完成'))
+    : live.status === 'failed' ? (t('Failed', '失败'))
+    : (t('Aborted', '已中止'));
 
   const statusColor = theme[statusToVisual(live.status)];
 
@@ -195,12 +195,12 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
         <Heading theme={theme}>{subagentId}</Heading>
         <text fg={statusColor} wrapMode="none">{statusText}</text>
       </box>
-      <Line color={theme.muted}>{`${zh ? '轮次' : 'Turns'}: ${live.turns}`}</Line>
+      <Line color={theme.muted}>{`${t('Turns', '轮次')}: ${live.turns}`}</Line>
 
       {/* 任务进度 */}
       {live.tasks.length > 0 ? (
         <box flexDirection="column" border borderColor={theme.border} padding={1} backgroundColor={theme.panel}>
-          <text fg={theme.text}><b>{zh ? '任务进度' : 'Task Progress'}</b></text>
+          <text fg={theme.text}><b>{t('Task Progress', '任务进度')}</b></text>
           {live.tasks.map((task) => (
             <Line key={task.id} color={task.status === 'completed' ? theme.good : task.status === 'in_progress' ? theme.accent : theme.muted}>
               {`  ${task.status === 'completed' ? '✓' : task.status === 'in_progress' ? '○' : '·'} ${task.subject}`}
@@ -212,7 +212,7 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
       {/* 流式文本 */}
       {live.text ? (
         <box flexDirection="column" border borderColor={theme.border} padding={1} backgroundColor={theme.panel}>
-          <text fg={theme.text}><b>{zh ? '输出' : 'Output'}</b></text>
+          <text fg={theme.text}><b>{t('Output', '输出')}</b></text>
           <text fg={theme.muted} wrapMode="word">{live.text.slice(-5000)}</text>
         </box>
       ) : null}
@@ -220,7 +220,7 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
       {/* 工具调用记录 */}
       {live.tools.length > 0 ? (
         <box flexDirection="column" border borderColor={theme.border} padding={1} backgroundColor={theme.panel}>
-          <text fg={theme.text}><b>{zh ? '工具调用' : 'Tool Calls'} ({live.tools.length})</b></text>
+          <text fg={theme.text}><b>{t('Tool Calls', '工具调用')} ({live.tools.length})</b></text>
           {live.tools.map((tool, i) => (
             <box key={`${tool.id}-${i}`} flexDirection="column" paddingLeft={1} marginTop={i > 0 ? 1 : 0}>
               <text fg={theme.accent} wrapMode="none">{`▸ ${tool.name}`}</text>
@@ -238,14 +238,14 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
       {/* 错误 */}
       {live.error ? (
         <box flexDirection="column" border borderColor={theme.bad} padding={1}>
-          <text fg={theme.bad}>{`${zh ? '错误' : 'Error'}: ${live.error}`}</text>
+          <text fg={theme.bad}>{`${t('Error', '错误')}: ${live.error}`}</text>
         </box>
       ) : null}
 
       {/* 结果 */}
       {live.result && live.status === 'completed' ? (
         <box flexDirection="column" border borderColor={theme.good} padding={1}>
-          <text fg={theme.good}><b>{zh ? '完成' : 'Completed'}</b></text>
+          <text fg={theme.good}><b>{t('Completed', '完成')}</b></text>
           <text fg={theme.muted} wrapMode="word">{live.result.slice(0, 1000)}</text>
         </box>
       ) : null}
@@ -253,7 +253,7 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
       {/* 事件流（最近 50 条） */}
       {events.length > 0 ? (
         <box flexDirection="column" border={['left']} borderColor={theme.border} paddingLeft={1}>
-          <text fg={theme.muted}><b>{zh ? '事件流' : 'Event Stream'} ({events.length})</b></text>
+          <text fg={theme.muted}><b>{t('Event Stream', '事件流')} ({events.length})</b></text>
           {events.slice(-50).map((entry) => (
             <text key={entry.id} fg={theme.muted} wrapMode="none">
               {`${entry.type}: ${JSON.stringify(entry.data).slice(0, 100)}`}

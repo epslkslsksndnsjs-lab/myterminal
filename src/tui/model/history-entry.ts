@@ -12,6 +12,7 @@
  * detail — 次要信息（可选，截断 120 字符）
  */
 import { statusToVisual } from '../status-color.js';
+import type { Translate } from '../copy/i18n.js';
 
 export type HistoryEntryView = {
   type: string;
@@ -45,11 +46,11 @@ function strs(data: unknown, key: string): string[] {
  * 将单条持久化历史条目转为语义化视图。
  * 覆盖 11 种实测类型（按 src/store.ts SessionHistoryEntry 格式），未知类型走 fallback。
  * @param entry — { at, type, data } 来自 historiesForTui
- * @param zh — 是否中文
+ * @param t — 就地翻译函数（#31），取自 `i18nFor(lang).t`
  */
 export function viewForHistoryEntry(
   entry: { at: string; type: string; data: unknown },
-  zh: boolean,
+  t: Translate,
 ): HistoryEntryView {
   const { type, data } = entry;
 
@@ -60,8 +61,8 @@ export function viewForHistoryEntry(
       type,
       icon: '◆',
       tone: 'accent',
-      title: zh ? '创建会话' : 'Session created',
-      detail: mode ? `${zh ? '模式' : 'mode'}: ${mode}` : undefined,
+      title: t('Session created', '创建会话'),
+      detail: mode ? `${t('mode', '模式')}: ${mode}` : undefined,
     };
   }
 
@@ -76,7 +77,7 @@ export function viewForHistoryEntry(
 
     const tone = statusToVisual(status);
 
-    const title = tool || (zh ? '工具调用' : 'Tool call');
+    const title = tool || t('Tool call', '工具调用');
     const detailParts: string[] = [];
     if (status) detailParts.push(status);
     if (status === 'completed' && durationMs > 0) detailParts.push(`${durationMs}ms`);
@@ -92,7 +93,7 @@ export function viewForHistoryEntry(
       type,
       icon: '⏺',
       tone: 'accent',
-      title: summary || (zh ? '检查点' : 'Checkpoint'),
+      title: summary || t('Checkpoint', '检查点'),
       detail: [phase, tags.length ? `#${tags.join(' #')}` : ''].filter(Boolean).join(' ') || undefined,
     };
   }
@@ -105,8 +106,8 @@ export function viewForHistoryEntry(
       type,
       icon: '▸',
       tone: 'muted',
-      title: kind || (zh ? '事件' : 'Event'),
-      detail: sourceSessionId ? `${zh ? '来源' : 'from'}: ${clip(sourceSessionId, 40)}` : undefined,
+      title: kind || t('Event', '事件'),
+      detail: sourceSessionId ? `${t('from', '来源')}: ${clip(sourceSessionId, 40)}` : undefined,
     };
   }
 
@@ -116,14 +117,14 @@ export function viewForHistoryEntry(
     const from = str(data, 'from');
     const to = str(data, 'to');
     const direction = type === 'message_received'
-      ? (zh ? '收到' : 'Received')
-      : (zh ? '发送' : 'Sent');
+      ? t('Received', '收到')
+      : t('Sent', '发送');
     return {
       type,
       icon: '✉',
       tone: 'accent',
-      title: clip(body || (zh ? '(空消息)' : '(empty)'), 100),
-      detail: `${direction}${from ? ` ${zh ? '来自' : 'from'} ${clip(from, 30)}` : ''}${to ? ` → ${clip(to, 30)}` : ''}`,
+      title: clip(body || t('(empty)', '(空消息)'), 100),
+      detail: `${direction}${from ? ` ${t('from', '来自')} ${clip(from, 30)}` : ''}${to ? ` → ${clip(to, 30)}` : ''}`,
     };
   }
 
@@ -134,7 +135,7 @@ export function viewForHistoryEntry(
       type,
       icon: '◆',
       tone: 'good',
-      title: zh ? '已接管' : 'Claimed',
+      title: t('Claimed', '已接管'),
       detail: controllerId ? clip(controllerId, 40) : undefined,
     };
   }
@@ -147,14 +148,14 @@ export function viewForHistoryEntry(
       type,
       icon: '◆',
       tone: 'muted',
-      title: zh ? '已释放' : 'Released',
+      title: t('Released', '已释放'),
       detail: [phase, presence].filter(Boolean).join(' / ') || undefined,
     };
   }
 
   // ── stale ──
   if (type === 'stale') {
-    return { type, icon: '◆', tone: 'warn', title: zh ? '已过期' : 'Stale' };
+    return { type, icon: '◆', tone: 'warn', title: t('Stale', '已过期') };
   }
 
   // ── tags_updated ──
@@ -164,8 +165,8 @@ export function viewForHistoryEntry(
       type,
       icon: '◆',
       tone: 'muted',
-      title: tags.length ? tags.join(', ') : (zh ? '(无标签)' : '(no tags)'),
-      detail: zh ? '标签已更新' : 'Tags updated',
+      title: tags.length ? tags.join(', ') : t('(no tags)', '(无标签)'),
+      detail: t('Tags updated', '标签已更新'),
     };
   }
 
@@ -178,8 +179,8 @@ export function viewForHistoryEntry(
       type,
       icon: '◆',
       tone: 'accent',
-      title: clip(objective || (zh ? '(无目标)' : '(no objective)'), 100),
-      detail: [background, deliverables.length ? `${zh ? '交付' : 'dels'}: ${deliverables.length}` : '']
+      title: clip(objective || t('(no objective)', '(无目标)'), 100),
+      detail: [background, deliverables.length ? `${t('dels', '交付')}: ${deliverables.length}` : '']
         .filter(Boolean).join(' · ') || undefined,
     };
   }

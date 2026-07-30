@@ -3,6 +3,7 @@ import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
 import { copyToHostClipboard, notifySystem, playAttentionSound } from './host-io.js';
 import { buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
 export { copyToHostClipboard } from './host-io.js';
+import { i18nFor, type I18n } from './copy/i18n.js';
 import { logicalSessionGroups } from '../tui-model.js';
 import type { MyTerminalRuntime, RuntimeLog } from '../server.js';
 import type { CustomExtensionSpec, MyTerminalSession, MyTerminalSettings, SessionPhase, StoredState, TaskPackage } from '../types.js';
@@ -58,8 +59,10 @@ export class TuiController {
   }
 
   get runtime(): MyTerminalRuntime { return this.currentRuntime; }
-  get zh(): boolean { return this.currentRuntime.config.uiLanguage === 'zh-CN'; }
-  text(en: string, zh: string): string { return this.zh ? zh : en; }
+  /** 语言判定收敛到 copy/i18n.ts 单源（#31）；以下三个成员只是它的转发面，语义不变。 */
+  get i18n(): I18n { return i18nFor(this.currentRuntime.config.uiLanguage); }
+  get zh(): boolean { return this.i18n.zh; }
+  text(en: string, zh: string): string { return this.i18n.t(en, zh); }
 
   start(): void { this.diff.start(); void this.refreshUpdateStatus(); }
 
@@ -280,7 +283,7 @@ export class TuiController {
         port: this.currentRuntime.port,
         pid: process.pid,
       },
-      zh: config.uiLanguage === 'zh-CN',
+      t: this.i18n.t,
     });
     const workspaceItems = workspaceSelector.items;
     const passiveStatus = process.platform === 'darwin' ? passiveLockStatus(config) : { state: 'unsupported' };
@@ -297,7 +300,7 @@ export class TuiController {
       current,
       workspaceQuestion: workspaceItems.length ? workspaceSelector.question : undefined,
       passiveFallback,
-      text: (en, zh) => this.text(en, zh),
+      text: this.i18n.t,
     });
     if (!built.ok) {
       this.currentRuntime.log(this.text('Workspace catalog is unavailable; workspace selection cannot continue.', '工作区目录不可用，无法继续选择工作区。'), 'error');

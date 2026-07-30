@@ -4,18 +4,19 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormQuestion, Theme } from '../state.js';
 import { initialQuestionState, nextTextValue, optionAnswer, toggleSelectedOption } from '../form-model.js';
 import { Modal } from './Modal.js';
+import { useI18n } from '../copy/context.js';
 
-export function FormDialog({ questions, preamble, theme, width, height, zh, mouseEnabled = true, onComplete, onCancel }: {
+export function FormDialog({ questions, preamble, theme, width, height, mouseEnabled = true, onComplete, onCancel }: {
   questions: FormQuestion[];
   preamble: string[];
   theme: Theme;
   width: number;
   height: number;
-  zh: boolean;
   mouseEnabled?: boolean;
   onComplete: (answers: string[]) => void;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<string[]>([]);
   const initial = initialQuestionState(questions[0]);
@@ -54,7 +55,7 @@ export function FormDialog({ questions, preamble, theme, width, height, zh, mous
 
   const submit = async (raw: string) => {
     if (question?.options && disabled[optionIndexRef.current]) {
-      setValidation(zh ? '该选项当前不可用。' : 'This option is currently unavailable.');
+      setValidation(t('This option is currently unavailable.', '该选项当前不可用。'));
       return;
     }
     const answer = raw.trim() || question?.fallback || '';
@@ -137,7 +138,7 @@ export function FormDialog({ questions, preamble, theme, width, height, zh, mous
   const columnOptions = question.optionsLayout === 'column';
 
   return (
-    <Modal title={zh ? '输入' : 'Input'} theme={theme} width={width} height={height}>
+    <Modal title={t('Input', '输入')} theme={theme} width={width} height={height}>
       <box flexDirection="column" flexGrow={1} minHeight={0}>
         <scrollbox flexGrow={1} minHeight={0} viewportCulling>
           {preamble.map((line, lineIndex) => <text key={`pre-${lineIndex}`} fg={lineIndex === 0 ? theme.warn : theme.muted} wrapMode="word">{line}</text>)}
@@ -160,7 +161,7 @@ export function FormDialog({ questions, preamble, theme, width, height, zh, mous
                 const selected = question.multiSelect ? selectedOptions.includes(option) : active;
                 return (
                   <box id={`form-option-${index}-${position}`} key={option} flexDirection="column" width={columnOptions ? '100%' : undefined} paddingLeft={1} paddingRight={1} backgroundColor={active ? theme.selected : theme.panelAlt} onMouseDown={() => {
-                    if (unavailable) { setValidation(zh ? '该选项当前不可用。' : 'This option is currently unavailable.'); return; }
+                    if (unavailable) { setValidation(t('This option is currently unavailable.', '该选项当前不可用。')); return; }
                     const wasArmed = mouseArmedOptionRef.current === position;
                     optionIndexRef.current = position;
                     setOptionIndex(position);
@@ -230,14 +231,14 @@ export function FormDialog({ questions, preamble, theme, width, height, zh, mous
             />
           )}
           {validation ? <text fg={theme.bad} wrapMode="word">{validation}</text> : null}
-          {validating ? <text fg={theme.warn}>{zh ? '正在校验…' : 'Validating…'}</text> : null}
+          {validating ? <text fg={theme.warn}>{t('Validating…', '正在校验…')}</text> : null}
           <text fg={theme.muted}>{question.options
             ? (question.multiSelect
-              ? (mouseEnabled ? (zh ? '方向键选择 · Space 勾选 · Enter 确认 · 鼠标点击切换' : 'Arrows choose · Space toggle · Enter confirm · click to toggle') : (zh ? '方向键选择 · Space 勾选 · Enter 确认' : 'Arrows choose · Space toggle · Enter confirm'))
-              : (mouseEnabled ? (zh ? '方向键选择 · Enter 确认 · 鼠标第一次选中、第二次确认' : 'Arrows choose · Enter confirm · first click selects, second click confirms') : (zh ? '方向键选择 · Enter 确认' : 'Arrows choose · Enter confirm')))
+              ? (mouseEnabled ? (t('Arrows choose · Space toggle · Enter confirm · click to toggle', '方向键选择 · Space 勾选 · Enter 确认 · 鼠标点击切换')) : (t('Arrows choose · Space toggle · Enter confirm', '方向键选择 · Space 勾选 · Enter 确认')))
+              : (mouseEnabled ? (t('Arrows choose · Enter confirm · first click selects, second click confirms', '方向键选择 · Enter 确认 · 鼠标第一次选中、第二次确认')) : (t('Arrows choose · Enter confirm', '方向键选择 · Enter 确认'))))
             : question.multiline
-              ? (zh ? 'Ctrl+Enter 下一步 · Ctrl+U 清空 · Esc 取消' : 'Ctrl+Enter next · Ctrl+U clear · Esc cancel')
-              : (zh ? 'Enter 下一步 · Ctrl+U 清空 · Esc 取消' : 'Enter next · Ctrl+U clear · Esc cancel')}</text>
+              ? (t('Ctrl+Enter next · Ctrl+U clear · Esc cancel', 'Ctrl+Enter 下一步 · Ctrl+U 清空 · Esc 取消'))
+              : (t('Enter next · Ctrl+U clear · Esc cancel', 'Enter 下一步 · Ctrl+U 清空 · Esc 取消'))}</text>
         </box>
       </box>
     </Modal>

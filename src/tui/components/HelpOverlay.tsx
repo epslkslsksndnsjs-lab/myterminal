@@ -1,5 +1,6 @@
 import { useBindings } from '@opentui/keymap/react';
 import type { Theme } from '../state.js';
+import { useI18n } from '../copy/context.js';
 
 /**
  * HelpOverlay — 命令与快捷键帮助浮层（ADR-0004 决策 4 附录 A.7）。
@@ -33,13 +34,13 @@ const SHORTCUTS: { key: string; descZh: string; descEn: string }[] = [
   { key: 'Esc', descZh: '返回 / 关闭输入', descEn: 'Back / close input' },
 ];
 
-export function HelpOverlay({ theme, zh, width, height, onClose }: {
+export function HelpOverlay({ theme, width, height, onClose }: {
   theme: Theme;
-  zh: boolean;
   width: number;
   height: number;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   useBindings(() => ({
     priority: 300,
     bindings: [
@@ -54,26 +55,26 @@ export function HelpOverlay({ theme, zh, width, height, onClose }: {
     <box position="absolute" left={0} top={0} width={width} height={height} alignItems="center" justifyContent="center" backgroundColor={`${theme.background}cc`}>
       <box width={panelWidth} height={panelHeight} border borderColor={theme.accent} backgroundColor={theme.panel} flexDirection="column" padding={1}>
         <box flexDirection="row" justifyContent="space-between" marginBottom={1}>
-          <text fg={theme.accent}><b>{zh ? '帮助' : 'Help'}</b></text>
-          <text fg={theme.muted} wrapMode="none">Esc {zh ? '关闭' : 'close'}</text>
+          <text fg={theme.accent}><b>{t('Help', '帮助')}</b></text>
+          <text fg={theme.muted} wrapMode="none">Esc {t('close', '关闭')}</text>
         </box>
         <scrollbox flexGrow={1} minHeight={0} viewportCulling>
-          <text fg={theme.text}><b>{zh ? '命令（输入栏以 / 开头）' : 'Commands (start with / in InputBar)'}</b></text>
+          <text fg={theme.text}><b>{t('Commands (start with / in InputBar)', '命令（输入栏以 / 开头）')}</b></text>
           <text> </text>
           {COMMAND_LIST.map((item) => (
             <box key={item.cmd} flexDirection="row" gap={2}>
               <text fg={theme.accent} wrapMode="none">{item.cmd}</text>
               {item.alias ? <text fg={theme.muted} wrapMode="none">{item.alias}</text> : null}
-              <text fg={theme.text} wrapMode="none">— {zh ? item.descZh : item.descEn}</text>
+              <text fg={theme.text} wrapMode="none">— {t(item.descEn, item.descZh)}</text>
             </box>
           ))}
           <text> </text>
-          <text fg={theme.text}><b>{zh ? '快捷键' : 'Shortcuts'}</b></text>
+          <text fg={theme.text}><b>{t('Shortcuts', '快捷键')}</b></text>
           <text> </text>
           {SHORTCUTS.map((item) => (
             <box key={item.key} flexDirection="row" gap={2}>
               <text fg={theme.accent} wrapMode="none">{item.key}</text>
-              <text fg={theme.text} wrapMode="none">— {zh ? item.descZh : item.descEn}</text>
+              <text fg={theme.text} wrapMode="none">— {t(item.descEn, item.descZh)}</text>
             </box>
           ))}
         </scrollbox>

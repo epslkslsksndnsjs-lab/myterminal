@@ -2,6 +2,7 @@ import type { WorkspaceRecord } from '../instances.js';
 import { workspaceSelectionIndex, workspaceSelectionItems, type CurrentWorkspaceRuntime, type WorkspaceSelectionItem } from '../workspace-selection.js';
 import { workspaceChoiceQuestion } from './form-model.js';
 import type { FormQuestion } from './contracts.js';
+import type { Translate } from './copy/i18n.js';
 
 export type WorkspaceSelectorModel = {
   items: WorkspaceSelectionItem[];
@@ -13,9 +14,9 @@ export function buildWorkspaceSelectorModel(input: {
   records: WorkspaceRecord[];
   currentWorkspaceDir: string;
   currentRuntime?: CurrentWorkspaceRuntime;
-  zh: boolean;
+  t: Translate;
 }): WorkspaceSelectorModel {
-  const items = workspaceSelectionItems(input.records, input.currentRuntime, input.zh, true);
+  const items = workspaceSelectionItems(input.records, input.currentRuntime, input.t, true);
   return {
     items,
     question: workspaceChoiceQuestion(

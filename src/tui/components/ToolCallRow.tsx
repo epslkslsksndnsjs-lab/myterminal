@@ -6,6 +6,7 @@
 import type { Theme } from '../theme/index.js';
 import type { ToolAuditEvent } from '../../types.js';
 import { statusToVisual } from '../status-color.js';
+import { useI18n } from '../copy/context.js';
 
 function timeOf(at: string): string {
   const parsed = new Date(at);
@@ -25,7 +26,6 @@ export function ToolCallRow({
   audit,
   workspace,
   theme,
-  zh,
   expanded,
   onToggle,
   selected = false,
@@ -33,11 +33,11 @@ export function ToolCallRow({
   audit: Pick<ToolAuditEvent, 'timestamp' | 'source' | 'action' | 'status' | 'durationMs' | 'error' | 'args' | 'result'> & { sessionName?: string };
   workspace?: string;
   theme: Theme;
-  zh: boolean;
   expanded: boolean;
   onToggle: () => void;
   selected?: boolean;
 }) {
+  const { t } = useI18n();
   const statusColor = theme[statusToVisual(audit.status)];
 
   let statusText: string;
@@ -69,11 +69,11 @@ export function ToolCallRow({
       {expanded ? (
         <box flexDirection="column" paddingLeft={3} width="100%">
           <box flexDirection="row" gap={1} width="100%">
-            <text fg={theme.muted} wrapMode="none">{zh ? '参数' : 'ARGS'}</text>
+            <text fg={theme.muted} wrapMode="none">{t('ARGS', '参数')}</text>
             <text fg={theme.text} wrapMode="word" flexGrow={1}>{clip(safeJson(audit.args), 200)}</text>
           </box>
           <box flexDirection="row" gap={1} width="100%">
-            <text fg={theme.muted} wrapMode="none">{zh ? '返回' : 'RESULT'}</text>
+            <text fg={theme.muted} wrapMode="none">{t('RESULT', '返回')}</text>
             <text
               fg={audit.status === 'failed' || audit.status === 'timeout' ? theme.bad : audit.status === 'policy_rejected' ? theme.warn : theme.text}
               wrapMode="word"
