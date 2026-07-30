@@ -98,7 +98,7 @@ function getSubagentSystemPrompt(task: string, toolNames: string[], cwd: string)
  * write_file/edit_file/task_create/task_update 的结果**不压缩**（小且重要）。
  * 决策 20：从后往前计数，保证最近 5 个保留。
  */
-function microCompact(messages: NormalizedMessage[]): NormalizedMessage[] {
+export function microCompact(messages: NormalizedMessage[]): NormalizedMessage[] {
   // 展平所有 tool_result block，标记它们的位置
   interface ResultSlot {
     msgIndex: number;
