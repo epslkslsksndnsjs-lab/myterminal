@@ -151,6 +151,35 @@ forkOptions:
   cleanup(root);
 });
 
+test('06b: forkOptions.provider qwen 合法 → 正常解析（#61 红灯）', () => {
+  const { root, configDir, workspaceDir } = tempDirs();
+  const fm = `mode: fork
+forkOptions:
+  provider: qwen
+`;
+  writeProjectSkill(workspaceDir, 'qwen-fork', VALID_HEADER('qwen-fork', fm) + '\nWork.\n');
+  const record = loadSkill(configDir, workspaceDir, 'qwen-fork');
+  assert.ok(record, 'provider: qwen must be accepted by the skills fork path');
+  assert.equal(record.forkOptions.provider, 'qwen');
+  cleanup(root);
+});
+
+test('06c: FORK_PROVIDERS 派生自 types.ts 单源——联合类型全员被 fork 路径接受（#61 防漂移）', async () => {
+  // G6：期望值来自独立真相源 types.ts（SUBAGENT_PROVIDERS），而非 skills.ts 自身
+  const { SUBAGENT_PROVIDERS } = await import('../dist/types.js');
+  assert.ok(Array.isArray(SUBAGENT_PROVIDERS) && SUBAGENT_PROVIDERS.length >= 5, 'types.ts 必须导出运行时单源 SUBAGENT_PROVIDERS');
+  const { root, configDir, workspaceDir } = tempDirs();
+  for (const provider of SUBAGENT_PROVIDERS) {
+    const name = `sp-${provider}`;
+    const fm = `mode: fork\nforkOptions:\n  provider: ${provider}\n`;
+    writeProjectSkill(workspaceDir, name, VALID_HEADER(name, fm) + '\nWork.\n');
+    const record = loadSkill(configDir, workspaceDir, name);
+    assert.ok(record, `provider=${provider} 必须被 fork 路径接受（新增 provider 只改 types.ts 一处）`);
+    assert.equal(record.forkOptions.provider, provider);
+  }
+  cleanup(root);
+});
+
 test('07: maxTurns 越界 0 和 201 → null（杀 M2）', () => {
   const { root, configDir, workspaceDir } = tempDirs();
   for (const [name, turns] of [['turns-low', 0], ['turns-high', 201]]) {
