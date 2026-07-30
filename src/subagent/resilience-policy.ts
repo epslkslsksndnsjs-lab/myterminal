@@ -90,11 +90,6 @@ class CircuitBreaker {
 
     // half-open——允许通过（探测）
   }
-
-  /** 测试辅助：读取当前状态 */
-  getState(): 'closed' | 'open' | 'half-open' {
-    return this.state;
-  }
 }
 
 // ════════════════════════════════════════════════════════════════
