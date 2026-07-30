@@ -103,7 +103,7 @@ export function microCompact(messages: NormalizedMessage[]): NormalizedMessage[]
   interface ResultSlot {
     msgIndex: number;
     blockIndex: number;
-    toolName: string;
+    toolUseId: string;
   }
   const resultSlots: ResultSlot[] = [];
 
@@ -113,22 +113,31 @@ export function microCompact(messages: NormalizedMessage[]): NormalizedMessage[]
     for (let bi = 0; bi < msg.content.length; bi++) {
       const block = msg.content[bi];
       if (block.type === 'tool_result') {
-        // 从 tool_use_id 近似提取工具名——格式通常是 tool_use 的 id 中有名称前缀
-        // 实际上 tool_result 本身不存工具名。我们遍历所有 assistant 消息中的 tool_use，
-        // 通过 tool_use_id 匹配来确定工具名。
-        resultSlots.push({ msgIndex: mi, blockIndex: bi, toolName: resolveToolName(block.tool_use_id, messages) });
+        resultSlots.push({ msgIndex: mi, blockIndex: bi, toolUseId: block.tool_use_id });
       }
     }
   }
 
   if (resultSlots.length <= KEEP_RECENT_TOOL_RESULTS) return messages;
 
+  // ADR-0032 #63: 预建 tool_use_id → 工具名 映射（一次遍历，first-wins 语义），
+  // 把原 O(n²) 的"每个 tool_result 全量扫描 assistant 消息"降为 O(n) 构建 + O(1) 查表。
+  const toolNames = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    for (const block of msg.content) {
+      if (block.type === 'tool_use' && block.id && !toolNames.has(block.id)) toolNames.set(block.id, block.name);
+    }
+  }
+  const resolve = (toolUseId: string): string => (toolNames.has(toolUseId) ? (toolNames.get(toolUseId) as string) : '');
+
   const compactCount = resultSlots.length - KEEP_RECENT_TOOL_RESULTS;
 
   // 前 compactCount 个（更早的）如果属于 COMPACTABLE_TOOLS 则替换
   for (let i = 0; i < compactCount; i++) {
     const slot = resultSlots[i];
-    if (COMPACTABLE_TOOLS.has(slot.toolName)) {
+    const toolName = resolve(slot.toolUseId);
+    if (COMPACTABLE_TOOLS.has(toolName)) {
       const msg = messages[slot.msgIndex];
       const block = msg.content[slot.blockIndex];
       if (block.type === 'tool_result') {
@@ -138,19 +147,6 @@ export function microCompact(messages: NormalizedMessage[]): NormalizedMessage[]
   }
 
   return messages;
-}
-
-/** 根据 tool_use_id 反向查找对应的 tool_use block 拿到工具名 */
-function resolveToolName(toolUseId: string, messages: NormalizedMessage[]): string {
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue;
-    for (const block of msg.content) {
-      if (block.type === 'tool_use' && block.id === toolUseId) {
-        return block.name;
-      }
-    }
-  }
-  return ''; // 找不到对应的 tool_use——罕见但可能
 }
 
 // ════════════════════════════════════════════════════════════════

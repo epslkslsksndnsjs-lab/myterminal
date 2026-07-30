@@ -61,16 +61,16 @@ test('mergeActivity audit entry has correct kind and fields', () => {
 test('memoizedMergeActivity returns same reference for same revision', () => {
   const msgs = [{ id: 'm', from: 'a', to: 'b', body: 'x', createdAt: '2026-07-26T10:00:00.000Z' }];
   const audits = [{ at: '2026-07-26T10:30:00.000Z', action: 'read', source: 'actions', status: 'completed' }];
-  const r1 = memoizedMergeActivity('rev1', msgs, audits, 10);
-  const r2 = memoizedMergeActivity('rev1', msgs, audits, 10);
+  const r1 = memoizedMergeActivity('rev1', msgs, () => audits, 10);
+  const r2 = memoizedMergeActivity('rev1', msgs, () => audits, 10);
   assert.strictEqual(r1, r2, 'same revision should return the exact same array reference');
 });
 
 test('memoizedMergeActivity recomputes for different revision', () => {
   const msgs = [{ id: 'm', from: 'a', to: 'b', body: 'x', createdAt: '2026-07-26T10:00:00.000Z' }];
   const audits = [];
-  const r1 = memoizedMergeActivity('rev1', msgs, audits, 10);
-  const r2 = memoizedMergeActivity('rev2', msgs, audits, 10);
+  const r1 = memoizedMergeActivity('rev1', msgs, () => audits, 10);
+  const r2 = memoizedMergeActivity('rev2', msgs, () => audits, 10);
   // different revisions should NOT share the same reference
   assert.notStrictEqual(r1, r2, 'different revisions should recompute');
 });
@@ -82,17 +82,17 @@ test('memoizedMergeActivity does not share cache across different limits at same
     id: `m${i}`, from: 'a', to: 'b', body: 'x', createdAt: `2026-07-26T10:${String(i).padStart(2, '0')}:00.000Z`,
   }));
   const audits = [];
-  const full = memoizedMergeActivity('rev-same', msgs, audits, 0);
+  const full = memoizedMergeActivity('rev-same', msgs, () => audits, 0);
   assert.equal(full.length, 12, 'limit=0 should return all entries');
-  const top7 = memoizedMergeActivity('rev-same', msgs, audits, 7);
+  const top7 = memoizedMergeActivity('rev-same', msgs, () => audits, 7);
   assert.equal(top7.length, 7, 'same revision with limit=7 must NOT return the cached full result');
   assert.notStrictEqual(full, top7, 'different limits must not share the cached reference');
   // 切回 limit=0：缓存被 limit=7 覆盖后 miss 重算，结果仍然完整正确
-  const fullAgain = memoizedMergeActivity('rev-same', msgs, audits, 0);
+  const fullAgain = memoizedMergeActivity('rev-same', msgs, () => audits, 0);
   assert.equal(fullAgain.length, 12, 'switching back to limit=0 recomputes the full result');
   // 同 (revision, limit) 连续调用仍命中缓存（同引用）
-  const top7Again = memoizedMergeActivity('rev-same', msgs, audits, 7);
-  const top7Cached = memoizedMergeActivity('rev-same', msgs, audits, 7);
+  const top7Again = memoizedMergeActivity('rev-same', msgs, () => audits, 7);
+  const top7Cached = memoizedMergeActivity('rev-same', msgs, () => audits, 7);
   assert.strictEqual(top7Again, top7Cached, 'same revision+limit still hits the cache');
 });
 
