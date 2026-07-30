@@ -14,16 +14,16 @@
 
 import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
-import { LlmError, collectStream, createAdapter, normalizeMessages } from './llm-adapter.js';
+import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
 import type { NormalizedMessage, TokenUsage } from './token-counter.js';
 import { estimateMessageTokens, getAutoCompactThreshold, getModelContextWindow } from './token-counter.js';
 import { CostTracker } from './cost-tracker.js';
-import { getSubagent, updateSubagentStatus, updateSubagentCost, createSubagent, syncTasks, countRunning } from './store.js';
+import { getSubagent, updateSubagentStatus, updateSubagentCost, createSubagent, countRunning } from './store.js';
 import { clearFileState } from './file-state.js';
 import { cleanupAgentShellTasks } from './shell-tracker.js';
 import { executeToolCalls } from './tool-executor.js';
 import type { ToolCall } from './tool-executor.js';
-import { getToolNames, getAllToolSchemas, clearLocalTasks } from './tools.js';
+import { getToolNames, getAllToolSchemas } from './tools.js';
 import type { SubagentToolContext } from './tools.js';
 import { resetReplacementDecisions } from './result-budget.js';
 import { emitAgUi } from './tui-bridge.js';
@@ -182,11 +182,12 @@ function resolveToolName(toolUseId: string, messages: NormalizedMessage[]): stri
  * [摘要结束]
  * ```
  */
-async function autoCompact(
+export async function autoCompact(
   messages: NormalizedMessage[],
   adapter: LlmAdapter,
   model: string,
   onEvent: (event: AgUiEvent) => void,
+  idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
 ): Promise<NormalizedMessage[]> {
   const summaryPrompt = [
     'Summarize the conversation so far, preserving:',
@@ -198,8 +199,12 @@ async function autoCompact(
     'Be concise. This summary replaces the full conversation history.',
   ].join('\n');
 
-  // 非流式调 LLM 摘要
-  const result = await adapter.create(
+  // 用可靠性装饰器包裹——继承 watchdog + 失败降级（决策 27 提升，#48）
+  // provider 卡死时不再无限挂起主循环：watchdog 超时 → 抛 connection → 调用方降级
+  const reliable = withReliability(adapter, { idleTimeoutMs, label: 'Compaction call idle timeout' });
+
+  // 非流式调 LLM 摘要（走装饰后适配器）
+  const result = await reliable.create(
     {
       model,
       system: summaryPrompt,
@@ -207,7 +212,7 @@ async function autoCompact(
       tools: [], // 摘要不需要工具
       maxTokens: 4096,
     },
-    new AbortController().signal, // autocompact 不应被外部 abort 取消
+    new AbortController().signal, // autocompact 不应被外部 abort 取消（但 watchdog 仍可中断）
   );
 
   const summaryText = result.message.content
@@ -693,7 +698,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     cleanupAgentShellTasks(agentId);   // ① 杀 shell 进程组
     clearFileState(agentId);           // ② 清文件状态缓存
     resetReplacementDecisions();       // ADR-0022: ③ 清 replacement 决策缓存
-    clearLocalTasks(agentId);          // ADR-0022: ④ 清 localTasks
+    // ADR-0032 #47：④ localTasks 镜像已移除（record 自带 1h 兜底清理，无需 clearLocalTasks）
     messages.length = 0;               // ⑤ 释放 messages（决策 9）
     // ⑥ 终态事件与 store 更新在 finishXxx 里已做
   }

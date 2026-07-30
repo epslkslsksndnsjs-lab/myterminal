@@ -181,10 +181,14 @@ export type StoredState = {
   harnessContract?: { mode: ActionsContinuationMode; revision: string; updatedAt: string };
 };
 
+// ADR-0031（#61）：provider 运行时单源——联合类型由此数组派生，新增 provider 只改这一处
+export const SUBAGENT_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'] as const;
+export type SubagentProvider = (typeof SUBAGENT_PROVIDERS)[number];
+
 // ADR-0009 决策 11/12/14 + ADR-0007 决策 21
 export type SubagentSettings = {
   enabled: boolean;
-  provider: 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'qwen';
+  provider: SubagentProvider;
   model: string;
   maxTurns: number;       // agent loop 轮次上限，默认 50
   timeoutSec: number;     // 整体超时秒数，默认 300

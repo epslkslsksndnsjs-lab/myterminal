@@ -9,7 +9,6 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { readdir } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
 import type { JsonObject, JsonSchema } from '../types.js';
@@ -17,9 +16,10 @@ import { recordFileRead, validateEdit, applyEdit } from './file-state.js';
 import { trackShellTask } from './shell-tracker.js';
 import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
 import { truncateResult } from './result-budget.js';
-import { syncTasks, getSubagent } from './store.js';
+import { getSubagent, createSubagent } from './store.js';
 import { redact } from '../redact.js';
 import { createGrep } from './grep-utils.js';
+import { IGNORE_DIRECTORIES, walkFiles } from '../utils/fs.js';
 
 // ── 常量 ──
 
@@ -31,11 +31,7 @@ const BINARY_EXTENSIONS = new Set([
   '.o', '.a', '.class', '.jar', '.wasm',
 ]);
 
-// 决策 33：glob/grep 忽略目录——与 core-tools.ts IGNORED_DIRECTORIES 对齐 + build/ .cache/
-const IGNORE_DIRECTORIES = new Set([
-  '.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo',
-  'build', '.cache',
-]);
+// 决策 33：glob/grep 忽略目录——单一真相源见 ../utils/fs.ts 的 IGNORE_DIRECTORIES（含 build/.cache）
 
 // 决策 34：glob 最大返回条数
 const MAX_GLOB_RESULTS = 200;
@@ -169,30 +165,6 @@ function globToRegex(pattern: string): RegExp {
     }
   }
   return new RegExp(`^${regexStr}$`);
-}
-
-// 递归遍历目录：skip IGNORE_DIRECTORIES，返回所有文件路径（相对 searchDir）
-async function walkFiles(searchDir: string): Promise<string[]> {
-  const files: string[] = [];
-  const queue = [searchDir];
-  while (queue.length > 0) {
-    const current = queue.shift()!;
-    let entries;
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      continue; // 跳过不可读目录
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (IGNORE_DIRECTORIES.has(entry.name)) continue;
-        queue.push(resolve(current, entry.name));
-      } else if (entry.isFile()) {
-        files.push(relative(searchDir, resolve(current, entry.name)).replace(/\\/g, '/'));
-      }
-    }
-  }
-  return files;
 }
 
 // ── 工厂 + 注册表（决策 13）──
@@ -539,8 +511,8 @@ const globTool = buildTool({
     const pattern = input.pattern as string;
 
     try {
-      // 决策 33：递归遍历，跳过 IGNORE_DIRECTORIES
-      const allFiles = await walkFiles(searchDir);
+      // 决策 33：递归遍历，跳过 IGNORE_DIRECTORIES（共享单源 ../utils/fs.ts，返回绝对路径 → 转相对供 glob 匹配）
+      const allFiles = (await walkFiles(searchDir)).map((f) => relative(searchDir, f).replace(/\\/g, '/'));
       const regex = globToRegex(pattern);
       const matches = allFiles.filter((f) => regex.test(f)).sort();
       const total = matches.length;
@@ -628,8 +600,7 @@ const grepTool = buildTool({
 // 3.7 task_create（决策 4 + Bug 2 修复）
 // ════════════════════════════════════════════════════════════════
 
-// 本地任务存储（决策 13：独立于 session 系统，按 agentId 隔离）
-const localTasks = new Map<string, Array<{ id: string; subject: string; description: string; status: 'pending' | 'in_progress' | 'completed' }>>();
+// ADR-0032 #47：任务状态单源——删除 localTasks 镜像，统一走 store.record.tasks（见 task_create/task_update）
 
 const taskCreateTool = buildTool({
   name: 'task_create',
@@ -654,16 +625,15 @@ const taskCreateTool = buildTool({
       status: 'pending' as const,
     };
 
-    // 本地 Map 存储（主存储）
-    const tasks = localTasks.get(ctx.agentId) ?? [];
-    tasks.push(task);
-    localTasks.set(ctx.agentId, tasks);
-
-    // 如果 M2 store 有 SubagentRecord，同步一份（供父 AI 查询进度）
-    const record = getSubagent(ctx.agentId);
-    if (record) {
-      syncTasks(ctx.agentId, tasks);
+    // ADR-0032 #47：store 单源。record 缺失时 lazy createSubagent 兜底（与 executor.ts 同款），
+    // 清空注入的主目标任务，使 record.tasks 仅承载 task_create 子任务（保持 allDone 语义与旧 localTasks 一致）。
+    let record = getSubagent(ctx.agentId);
+    if (!record) {
+      record = createSubagent(ctx.agentId, { subject: String(input.subject ?? 'task session') });
+      record.tasks = [];
     }
+
+    record.tasks.push(task);
 
     return { task: { id: task.id, subject: task.subject } };
   },
@@ -692,10 +662,12 @@ const taskUpdateTool = buildTool({
     const taskId = input.taskId as string;
     const newStatus = input.status as 'pending' | 'in_progress' | 'completed';
 
-    const tasks = localTasks.get(ctx.agentId);
-    if (!tasks || tasks.length === 0) {
+    // ADR-0032 #47：store 单源——直接读写 record.tasks
+    const record = getSubagent(ctx.agentId);
+    if (!record || record.tasks.length === 0) {
       return { is_error: true, message: 'No tasks found. Use task_create first.' };
     }
+    const tasks = record.tasks;
 
     const taskIndex = tasks.findIndex((t) => t.id === taskId);
 
@@ -721,18 +693,11 @@ const taskUpdateTool = buildTool({
 
     tasks[taskIndex] = { ...task, status: newStatus };
 
-    // 教程 s27：allDone 自动清空
+    // 教程 s27：allDone 自动清空（单源：直接清空 record.tasks）
     if (tasks.every((t) => t.status === 'completed')) {
-      localTasks.delete(ctx.agentId);
-      // 同步到 M2 store
-      const record = getSubagent(ctx.agentId);
-      if (record) syncTasks(ctx.agentId, []);
+      record.tasks = [];
       return { task: { id: taskId, status: newStatus }, allDone: true, message: 'All tasks completed, list cleared' };
     }
-
-    // 同步到 M2 store
-    const record = getSubagent(ctx.agentId);
-    if (record) syncTasks(ctx.agentId, tasks);
 
     return { task: { id: taskId, status: newStatus } };
   },
@@ -749,7 +714,4 @@ toolRegistry.set('grep', grepTool);
 toolRegistry.set('task_create', taskCreateTool);
 toolRegistry.set('task_update', taskUpdateTool);
 
-// ADR-0022: per-agent localTasks 清理（防内存泄漏）
-export function clearLocalTasks(agentId: string): void {
-  localTasks.delete(agentId);
-}
+// ADR-0032 #47：localTasks 镜像已移除，任务状态统一在 store.record.tasks（自带 1h 兜底清理，无需独立清理）

@@ -2,6 +2,7 @@
 // 简单估算——不调 API，零成本；估算用于"预防"，精确值用于"校准"
 
 import type { JsonObject } from '../types.js';
+import { MODELS } from '../models/registry.js';
 
 // ── 共享消息类型（llm-adapter 与 M7 共用）──
 
@@ -53,28 +54,7 @@ export function estimateMessageTokens(messages: NormalizedMessage[]): number {
   return total;
 }
 
-// ── Provider 上下文窗口表（决策 29）──
-
-const MODEL_CONTEXT_WINDOWS: Record<string, { window: number; maxOutput: number }> = {
-  // OpenAI（决策 29 表）
-  'gpt-4o':           { window: 128_000, maxOutput: 16_384 },
-  'gpt-4o-mini':      { window: 128_000, maxOutput: 16_384 },
-  'gpt-4.1':          { window: 1_000_000, maxOutput: 32_768 },
-  'gpt-4.1-mini':     { window: 1_000_000, maxOutput: 32_768 },
-  // Anthropic（决策 29 表）
-  'claude-sonnet-4':  { window: 200_000, maxOutput: 16_384 },
-  'claude-haiku-4':   { window: 200_000, maxOutput: 8_192 },
-  'claude-opus-4':    { window: 200_000, maxOutput: 32_000 },
-  // DeepSeek（决策 29 表）
-  'deepseek-chat':    { window: 64_000, maxOutput: 8_192 },
-  'deepseek-reasoner':{ window: 64_000, maxOutput: 8_192 },
-  // GLM（智谱开放平台）
-  'glm-4-flash':      { window: 128_000, maxOutput: 4_096 },
-  'glm-4':            { window: 128_000, maxOutput: 4_096 },
-  // Qwen（阿里云 DashScope）——qwen3.7-max 旗舰：1M 上下文 / 64K 输出
-  'qwen3.7-max':      { window: 1_000_000, maxOutput: 65_536 },
-  'qwen-max':         { window: 128_000, maxOutput: 8_192 },
-};
+// ── Provider 上下文窗口表（决策 29；G9 ADR-0031 单一来源为 MODELS）──
 
 /**
  * 获取模型上下文窗口（决策 29）
@@ -82,12 +62,13 @@ const MODEL_CONTEXT_WINDOWS: Record<string, { window: number; maxOutput: number 
  */
 export function getModelContextWindow(model: string): { window: number; maxOutput: number } {
   // 精确匹配
-  if (MODEL_CONTEXT_WINDOWS[model]) return MODEL_CONTEXT_WINDOWS[model];
+  const exact = MODELS[model];
+  if (exact) return exact.contextWindow;
 
   // 前缀匹配（支持 gpt-4o-2024-08-06 等变体）
-  const knownModels = Object.keys(MODEL_CONTEXT_WINDOWS);
+  const knownModels = Object.keys(MODELS);
   const prefix = knownModels.find(k => model.startsWith(k));
-  if (prefix) return MODEL_CONTEXT_WINDOWS[prefix];
+  if (prefix) return MODELS[prefix].contextWindow;
 
   // 未知模型——保守默认 64K
   console.warn(`Unknown model "${model}", defaulting to 64K context window`);

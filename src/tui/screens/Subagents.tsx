@@ -6,17 +6,9 @@ import type { SubagentRecord } from '../../subagent/store.js';
 import type { Theme } from '../state.js';
 import type { Copy } from '../copy/index.js';
 import { Line } from './shared.js';
+import { statusToVisual } from '../status-color.js';
 
-/** status → theme 颜色映射（running=accent，completed=good，failed=bad，aborted=warning） */
-function statusColor(theme: Theme, status: string): string {
-  switch (status) {
-    case 'running': return theme.accent;
-    case 'completed': return theme.good;
-    case 'failed': return theme.bad;
-    case 'aborted': return theme.warn;
-    default: return theme.muted;
-  }
-}
+/** 状态→视觉颜色统一走 statusToVisual 单源（src/tui/status-color.ts）。 */
 
 /** status → 显示标签 */
 function statusLabel(status: string, zh: boolean): string {
@@ -48,7 +40,7 @@ export function Subagents({ subagents, selected, theme, zh, copy, onSelect }: {
         const active = index === selected;
         const summary = record.tasks[0]?.subject?.slice(0, 40) ?? (zh ? '无任务描述' : 'No task description');
         const completedTasks = record.tasks.filter((t) => t.status === 'completed').length;
-        const color = statusColor(theme, record.status);
+        const color = theme[statusToVisual(record.status)];
         return (
           <box
             key={record.id}

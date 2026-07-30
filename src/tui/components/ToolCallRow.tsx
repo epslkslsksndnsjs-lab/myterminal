@@ -5,6 +5,7 @@
  */
 import type { Theme } from '../theme/index.js';
 import type { ToolAuditEvent } from '../../types.js';
+import { statusToVisual } from '../status-color.js';
 
 function timeOf(at: string): string {
   const parsed = new Date(at);
@@ -37,10 +38,7 @@ export function ToolCallRow({
   onToggle: () => void;
   selected?: boolean;
 }) {
-  const statusColor = audit.status === 'running' ? theme.accent
-    : audit.status === 'completed' ? theme.good
-    : audit.status === 'policy_rejected' ? theme.warn
-    : theme.bad;
+  const statusColor = theme[statusToVisual(audit.status)];
 
   let statusText: string;
   if (audit.status === 'running') statusText = '● running';

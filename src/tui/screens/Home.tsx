@@ -6,6 +6,7 @@ import type { MyTerminalRuntime } from '../../server.js';
 import type { MyTerminalSession, StoredState } from '../../types.js';
 import type { TuiSnapshot, Theme } from '../state.js';
 import { phaseColor, presenceColor } from '../state.js';
+import { statusToVisual } from '../status-color.js';
 import { logicalSessionGroups } from '../../tui-model.js';
 import type { Copy } from '../copy/index.js';
 import { greetingFor } from '../copy/index.js';
@@ -157,17 +158,14 @@ function ActivityRow({ entry, theme, zh, fromToName }: {
     let statusColor: string;
     if (entry.status === 'running') {
       statusText = '● running';
-      statusColor = theme.accent;
     } else if (entry.status === 'completed') {
       statusText = `✓ ${entry.durationMs ?? ''}ms`;
-      statusColor = theme.good;
     } else if (entry.status === 'policy_rejected') {
       statusText = '⊙ policy';
-      statusColor = theme.warn;
     } else {
       statusText = `✗${entry.errorCode ? ` ${entry.errorCode}` : ''}`;
-      statusColor = theme.bad;
     }
+    statusColor = theme[statusToVisual(entry.status)];
     return (
       <box flexDirection="row" gap={1} width="100%">
         <text fg={markerColor} wrapMode="none">⏺</text>

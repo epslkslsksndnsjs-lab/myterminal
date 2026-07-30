@@ -10,8 +10,7 @@ import { disarmSessionResources } from './session-resources.js';
 import { continuationPolicy } from './continuation.js';
 import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
-
-const IGNORED_DIRECTORIES = new Set(['.git', '.myterminal', 'node_modules', 'dist', 'coverage', '.next', '.turbo']);
+import { IGNORE_DIRECTORIES, walkFiles } from './utils/fs.js';
 
 // Bounded wall-clock budget for search_text. The regex-safety gate (see
 // validateSafeRegex) blocks the catastrophic-backtracking class; this is a
@@ -182,24 +181,6 @@ function relative(config: MyTerminalConfig, absolute: string): string {
   return path.relative(config.workspaceDir, absolute) || '.';
 }
 
-async function walkFiles(config: MyTerminalConfig, start: string, limit: number): Promise<string[]> {
-  const root = resolveWorkspacePath(config.workspaceDir, config.stateDir, start);
-  const files: string[] = [];
-  const queue = [root];
-  while (queue.length && files.length < limit) {
-    const current = queue.shift()!;
-    const entries = await readdir(current, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
-      const absolute = path.join(current, entry.name);
-      if (entry.isDirectory()) queue.push(absolute);
-      else if (entry.isFile()) files.push(absolute);
-      if (files.length >= limit) break;
-    }
-  }
-  return files;
-}
-
 export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalStore): Map<string, ToolDefinition> {
   const tools = new Map<string, ToolDefinition>();
   const add = (definition: ToolDefinition) => tools.set(definition.name, definition);
@@ -222,7 +203,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input, context) => {
       const directory = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.');
       const entries = await readdir(directory, { withFileTypes: true });
-      return { path: relative(config, directory), entries: entries.filter((entry) => !IGNORED_DIRECTORIES.has(entry.name)).slice(0, 500).map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })), truncated: entries.length > 500 };
+      return { path: relative(config, directory), entries: entries.filter((entry) => !IGNORE_DIRECTORIES.has(entry.name)).slice(0, 500).map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })), truncated: entries.length > 500 };
     },
   });
   add({
@@ -232,7 +213,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input) => {
       const query = asString(input.query, 'query').toLowerCase();
       const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
-      const files = await walkFiles(config, asOptionalString(input.path) || '.', 10_000);
+      const files = await walkFiles(resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.'), { limit: 10_000 });
       const matches = files.map((file) => relative(config, file)).filter((file) => file.toLowerCase().includes(query)).slice(0, limit);
       return { matches, truncated: matches.length === limit };
     },
@@ -247,7 +228,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const matcher = input.regex ? new RegExp(query, 'i') : undefined;
       const searchDeadline = Date.now() + SEARCH_TEXT_BUDGET_MS;
       const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
-      const files = await walkFiles(config, asOptionalString(input.path) || '.', 2_000);
+      const files = await walkFiles(resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.'), { limit: 2_000 });
       const matches: Array<{ path: string; line: number; text: string }> = [];
       for (const file of files) {
         if (Date.now() > searchDeadline) break;

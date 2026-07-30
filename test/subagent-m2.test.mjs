@@ -23,7 +23,6 @@ import {
   updateSubagentStatus,
   collectSubagentResult,
   getSubagentResult,
-  syncTasks,
   addAuditLog,
   updateCost,
   updateSubagentCost,
@@ -303,8 +302,8 @@ test('subagent store countRunning filters correctly', () => {
   assert.equal(countRunning(), 1);
 });
 
-// 用例 16b：updateCost + syncTasks + updateSubagentCost
-test('subagent store updateCost and syncTasks work', () => {
+// 用例 16b：updateCost + updateSubagentCost
+test('subagent store updateCost and updateSubagentCost work', () => {
   clearAllSubagents();
   createSubagent('sub-cost', { subject: 'Cost test' });
 
@@ -312,14 +311,6 @@ test('subagent store updateCost and syncTasks work', () => {
   const r = getSubagent('sub-cost');
   assert.ok(r);
   assert.equal(r.cost.totalUSD, 0.0035);
-
-  // syncTasks
-  const tasks = [
-    { id: 't1', subject: 'Task 1', description: '', status: 'pending' },
-    { id: 't2', subject: 'Task 2', description: '', status: 'completed' },
-  ];
-  syncTasks('sub-cost', tasks);
-  assert.equal(r.tasks.length, 2);
 
   // updateSubagentCost（通过 UsageSummary 更新）
   updateSubagentCost('sub-cost', { inputTokens: 5000, outputTokens: 1000, cacheReadTokens: 0, totalUSD: 0.02 });
@@ -362,14 +353,7 @@ test('integration: full subagent lifecycle', () => {
   const record = createSubagent(agentId, { subject: 'Integration test', description: 'Complete cycle' });
   assert.equal(record.status, 'running');
 
-  // 2. sync tasks
-  syncTasks(agentId, [
-    { id: 't1', subject: 'Step 1', description: '', status: 'in_progress' },
-    { id: 't2', subject: 'Step 2', description: '', status: 'pending' },
-    { id: 't3', subject: 'Step 3', description: '', status: 'pending' },
-  ]);
-
-  // 3. add audit logs
+  // 2. add audit logs
   addAuditLog(agentId, {
     toolName: 'read_file',
     toolUseId: 'tool_1',
@@ -407,7 +391,7 @@ test('integration: full subagent lifecycle', () => {
   assert.ok(collected);
   assert.equal(collected.status, 'completed');
   assert.equal(collected.result, 'All tasks completed successfully');
-  assert.equal(collected.tasks.length, 3);
+  assert.ok(collected.tasks.length >= 1, 'record 应至少含主目标任务（store 单源，任务经 tools 写入）');
   assert.equal(collected.auditLogs.length, 2);
   assert.ok(collected.cost.totalUSD > 0);
   assert.ok(collected.completedAt > 0);

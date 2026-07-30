@@ -122,12 +122,6 @@ export function getSubagentResult(id: string): SubagentRecord | undefined {
   return subagents.get(id);
 }
 
-export function syncTasks(id: string, tasks: SubagentTask[]): void {
-  const record = subagents.get(id);
-  if (!record) return;
-  record.tasks = tasks;
-}
-
 export function addAuditLog(id: string, log: ToolAuditLog): void {
   const record = subagents.get(id);
   if (!record) return;
