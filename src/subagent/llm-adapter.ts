@@ -841,9 +841,103 @@ export class QwenAdapter extends OpenAIAdapter {
 
 export const STREAM_IDLE_TIMEOUT_MS = 60_000; // 决策 27：60s 无事件 → 超时
 
+// ═══════════════════════════════════════════════
+// 决策 27 提升（#48）：可靠性装饰器
+//   把 collectStream 的 watchdog + 失败降级提升为可复用的 LlmAdapter 装饰器，
+//    让所有 LLM 调用（主聊天流 + autoCompact 摘要）共享同一套可靠性契约。
+// ═══════════════════════════════════════════════
+
+export interface ReliabilityOptions {
+  /** 空闲/总超时毫秒。<=0 表示禁用 watchdog（直接透传）。默认 STREAM_IDLE_TIMEOUT_MS(60s) */
+  idleTimeoutMs?: number;
+  /** 超时错误文案前缀，用于区分流路径 / 压缩路径 */
+  label?: string;
+}
+
+/**
+ * ReliabilityAdapter——LlmAdapter 装饰器（决策 27 提升，#48）
+ * 给 stream / create 都套上 watchdog：
+ * - stream：空闲 watchdog——超过 idleTimeoutMs 无新 chunk → abort 并抛 connection 错误
+ * - create：总超时 watchdog——超过 idleTimeoutMs 未 resolve → abort 并抛 connection 错误
+ * 失败时透传：用户 abort 原样抛出；非 connection 的 LlmError 原样抛出。
+ */
+export class ReliabilityAdapter implements LlmAdapter {
+  readonly provider: string;
+  private inner: LlmAdapter;
+  private idleTimeoutMs: number;
+  private label: string;
+
+  constructor(adapter: LlmAdapter, opts: ReliabilityOptions = {}) {
+    this.inner = adapter;
+    this.provider = adapter.provider;
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
+    this.label = opts.label ?? 'LLM call';
+  }
+
+  async *stream(params: ChatParams, signal: AbortSignal): AsyncGenerator<StreamChunk> {
+    // 禁用 watchdog → 直接透传（保持 idleTimeoutMs:0 语义）
+    if (this.idleTimeoutMs <= 0) {
+      yield* this.inner.stream(params, signal);
+      return;
+    }
+
+    const watchdogController = new AbortController();
+    const combinedSignal = AbortSignal.any([signal, watchdogController.signal]);
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const resetWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => watchdogController.abort(), this.idleTimeoutMs) as unknown as ReturnType<typeof setTimeout>;
+    };
+
+    try {
+      resetWatchdog();
+      for await (const chunk of this.inner.stream(params, combinedSignal)) {
+        resetWatchdog();
+        yield chunk;
+      }
+    } catch (err) {
+      // 仅当 watchdog 触发（而非用户主动 abort）时，转为 connection 超时错误
+      if (watchdogController.signal.aborted && !signal.aborted) {
+        throw new LlmError('connection', `${this.label} idle timeout`);
+      }
+      throw err;
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+    }
+  }
+
+  async create(params: ChatParams, signal: AbortSignal): Promise<{ message: NormalizedMessage; usage: TokenUsage }> {
+    // 禁用 watchdog → 直接透传
+    if (this.idleTimeoutMs <= 0) {
+      return this.inner.create(params, signal);
+    }
+
+    const watchdogController = new AbortController();
+    const combinedSignal = AbortSignal.any([signal, watchdogController.signal]);
+    const watchdog = setTimeout(() => watchdogController.abort(), this.idleTimeoutMs) as unknown as ReturnType<typeof setTimeout>;
+
+    try {
+      return await this.inner.create(params, combinedSignal);
+    } catch (err) {
+      if (watchdogController.signal.aborted && !signal.aborted) {
+        throw new LlmError('connection', `${this.label} idle timeout`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+}
+
+/** 用可靠性装饰器包裹一个 LlmAdapter（#48） */
+export function withReliability(adapter: LlmAdapter, opts: ReliabilityOptions = {}): LlmAdapter {
+  return new ReliabilityAdapter(adapter, opts);
+}
+
 /**
  * collectStream——流式 LLM 调用的高阶函数（决策 27）
- * M7 executor 直接用它，而不是裸调 adapter.stream
+ * M7 executor 直接用它，而不是裸调 adapter.stream。
+ * 内部用 withReliability 包裹，继承 watchdog + 失败降级（决策 27 提升，#48）。
  */
 export async function collectStream(params: {
   adapter: LlmAdapter;
@@ -854,34 +948,17 @@ export async function collectStream(params: {
 }): Promise<{ message: NormalizedMessage; usage: TokenUsage; hadToolCalls: boolean }> {
   const { adapter, chatParams, signal, onChunk, idleTimeoutMs = STREAM_IDLE_TIMEOUT_MS } = params;
 
+  // 用可靠性装饰器包裹——继承 watchdog + 失败降级（决策 27 提升，#48）
+  const reliable = withReliability(adapter, { idleTimeoutMs, label: 'Stream idle timeout' });
+
   // 流式累积状态
   let textBuffer = '';
   const toolInputBuffers = new Map<number, { id: string; name: string; json: string }>();
   let finalUsage: TokenUsage = { input_tokens: 0, output_tokens: 0 };
   let hadAnyToolCallEnd = false; // 决策 27：防双重执行
 
-  // Watchdog——内部 AbortController，超时时 abort（决策 27）
-  const watchdogController = new AbortController();
-  // 组合信号：外层 abort 或 watchdog 超时都会触发
-  const combinedSignal = idleTimeoutMs > 0
-    ? AbortSignal.any([signal, watchdogController.signal])
-    : signal;
-
-  let watchdog: ReturnType<typeof setTimeout> | null = null;
-  const resetWatchdog = () => {
-    if (watchdog) clearTimeout(watchdog);
-    if (idleTimeoutMs > 0) {
-      watchdog = setTimeout(() => {
-        watchdogController.abort(); // 决策 27：60s 无事件 → 超时
-      }, idleTimeoutMs) as unknown as ReturnType<typeof setTimeout>;
-    }
-  };
-
   try {
-    resetWatchdog();
-
-    for await (const chunk of adapter.stream(chatParams, combinedSignal)) {
-      resetWatchdog();
+    for await (const chunk of reliable.stream(chatParams, signal)) {
       onChunk(chunk); // M7 注入，转 AG-UI 事件
 
       switch (chunk.type) {
@@ -935,42 +1012,21 @@ export async function collectStream(params: {
       hadToolCalls,
     };
   } catch (error) {
-    // Watchdog 超时 → connection 错误（决策 27）
-    if (watchdogController.signal.aborted && !signal.aborted) {
-      const watchdogError = new LlmError('connection', 'Stream idle timeout');
-
-      // 决策 27：流式中途失败，回退到非流式（仅当尚未产出任何完整 tool_call）
-      if (!hadAnyToolCallEnd) {
-        const result = await adapter.create(chatParams, signal);
-        const hadToolCalls = result.message.content.some(b => b.type === 'tool_use');
-        // 回退成功——通过 onChunk 通知 M7
-        if (result.message.content.some(b => b.type === 'text')) {
-          const textBlock = result.message.content.find(b => b.type === 'text');
-          if (textBlock && textBlock.type === 'text') {
-            onChunk({ type: 'text_delta', text: textBlock.text });
-          }
-        }
-        onChunk({ type: 'message_end', usage: result.usage });
-        return { ...result, hadToolCalls };
-      }
-
-      // 已产出完整 tool_call → 不回退（决策 27：防双重执行）
-      throw watchdogError;
-    }
-
     // 用户 abort 原样抛出（决策 21）
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error;
     }
-    // LlmError 且不是 connection → 直接抛出
+    // 非 connection 的 LlmError（auth/prompt_too_long/rate_limit/server_overload/system）→ 不回退
     if (error instanceof LlmError && error.kind !== 'connection') {
       throw error;
     }
 
+    // connection（watchdog 空闲超时/网络）或通用错误 → 尚未产出完整 tool_call 时回退到非流式
     // 决策 27：流式中途失败，回退到非流式（仅当尚未产出任何完整 tool_call）
     if (!hadAnyToolCallEnd) {
-      const result = await adapter.create(chatParams, signal);
+      const result = await reliable.create(chatParams, signal);
       const hadToolCalls = result.message.content.some(b => b.type === 'tool_use');
+      // 回退成功——通过 onChunk 通知 M7
       if (result.message.content.some(b => b.type === 'text')) {
         const textBlock = result.message.content.find(b => b.type === 'text');
         if (textBlock && textBlock.type === 'text') {
@@ -983,8 +1039,6 @@ export async function collectStream(params: {
 
     // 已产出完整 tool_call → 不回退（决策 27：防双重执行）
     throw error instanceof LlmError ? error : new LlmError('connection', `Stream error: ${error instanceof Error ? error.message : String(error)}`);
-  } finally {
-    if (watchdog) clearTimeout(watchdog);
   }
 }
 

@@ -14,7 +14,7 @@
 
 import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
-import { LlmError, collectStream, createAdapter, normalizeMessages } from './llm-adapter.js';
+import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
 import type { NormalizedMessage, TokenUsage } from './token-counter.js';
 import { estimateMessageTokens, getAutoCompactThreshold, getModelContextWindow } from './token-counter.js';
 import { CostTracker } from './cost-tracker.js';
@@ -182,11 +182,12 @@ function resolveToolName(toolUseId: string, messages: NormalizedMessage[]): stri
  * [摘要结束]
  * ```
  */
-async function autoCompact(
+export async function autoCompact(
   messages: NormalizedMessage[],
   adapter: LlmAdapter,
   model: string,
   onEvent: (event: AgUiEvent) => void,
+  idleTimeoutMs: number = STREAM_IDLE_TIMEOUT_MS,
 ): Promise<NormalizedMessage[]> {
   const summaryPrompt = [
     'Summarize the conversation so far, preserving:',
@@ -198,8 +199,12 @@ async function autoCompact(
     'Be concise. This summary replaces the full conversation history.',
   ].join('\n');
 
-  // 非流式调 LLM 摘要
-  const result = await adapter.create(
+  // 用可靠性装饰器包裹——继承 watchdog + 失败降级（决策 27 提升，#48）
+  // provider 卡死时不再无限挂起主循环：watchdog 超时 → 抛 connection → 调用方降级
+  const reliable = withReliability(adapter, { idleTimeoutMs, label: 'Compaction call idle timeout' });
+
+  // 非流式调 LLM 摘要（走装饰后适配器）
+  const result = await reliable.create(
     {
       model,
       system: summaryPrompt,
@@ -207,7 +212,7 @@ async function autoCompact(
       tools: [], // 摘要不需要工具
       maxTokens: 4096,
     },
-    new AbortController().signal, // autocompact 不应被外部 abort 取消
+    new AbortController().signal, // autocompact 不应被外部 abort 取消（但 watchdog 仍可中断）
   );
 
   const summaryText = result.message.content
