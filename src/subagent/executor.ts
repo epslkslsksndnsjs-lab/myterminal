@@ -16,7 +16,6 @@ import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
 import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
 import { ResiliencePolicy, MAX_SERVER_RETRIES } from './resilience-policy.js';
-import type { RetryDecision } from './resilience-policy.js';
 import type { NormalizedMessage, TokenUsage } from './token-counter.js';
 import { estimateMessageTokens, getAutoCompactThreshold, getModelContextWindow } from './token-counter.js';
 import { CostTracker } from './cost-tracker.js';
@@ -371,7 +370,6 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
           messages = await autoCompact(messages, adapter, currentModel, (e) => emit(e));
           clearFileState(agentId);  // 决策 26：compact 后清文件状态
           compactFailures = 0;
-          resilience.resetRetryCount('compact');
         } catch {
           compactFailures++;
           if (compactFailures >= MAX_COMPACT_FAILURES) {
