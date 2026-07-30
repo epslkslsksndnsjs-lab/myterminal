@@ -9,22 +9,22 @@ import type { Theme } from '../state.js';
 import type { Copy } from '../copy/index.js';
 import { Heading, Line } from './shared.js';
 import { MessageBubble } from '../components/MessageBubble.js';
+import { useI18n } from '../copy/context.js';
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…';
 }
 
-export function Messages({ state, selected, theme, zh, copy, onSelect }: {
+export function Messages({ state, selected, theme, onSelect }: {
   state: StoredState;
   selected: number;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
   onSelect: (index: number) => void;
 }) {
+  const { t, copy } = useI18n();
   const groups = conversationGroups(state.messages);
   const names = new Map(state.sessions.map((s) => [s.id, s.name]));
-  names.set('user', zh ? '你' : 'You');
+  names.set('user', t('You', '你'));
 
   if (!groups.length) {
     return <box padding={1}><Line color={theme.muted}>{copy.emptyStates.messages}</Line></box>;
@@ -52,7 +52,7 @@ export function Messages({ state, selected, theme, zh, copy, onSelect }: {
                 <b>{names.get(a) || a} ↔ {names.get(b) || b}</b>
               </text>
               <text fg={active ? theme.selectedText : theme.accent} wrapMode="none">
-                {group.messages.length} {zh ? '条消息' : 'msgs'}
+                {group.messages.length} {t('msgs', '条消息')}
               </text>
             </box>
             <Line color={active ? theme.selectedText : theme.muted}>{preview}</Line>
@@ -63,26 +63,25 @@ export function Messages({ state, selected, theme, zh, copy, onSelect }: {
   );
 }
 
-export function ConversationDetail({ state, id, theme, zh, copy }: {
+export function ConversationDetail({ state, id, theme }: {
   state: StoredState;
   id: string;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
 }) {
+  const { t, copy } = useI18n();
   const group = conversationGroups(state.messages).find((item) => item.id === id);
   if (!group) {
-    return <box padding={1}><Line color={theme.bad}>{zh ? '对话已不存在，按 Esc 返回。' : 'Conversation no longer exists. Press Esc.'}</Line></box>;
+    return <box padding={1}><Line color={theme.bad}>{t('Conversation no longer exists. Press Esc.', '对话已不存在，按 Esc 返回。')}</Line></box>;
   }
   const names = new Map(state.sessions.map((s) => [s.id, s.name]));
-  names.set('user', zh ? '你' : 'You');
+  names.set('user', t('You', '你'));
   const [a, b] = group.sessionIds;
 
   return (
     <box flexDirection="column" width="100%" padding={1} gap={1}>
       <Heading theme={theme}>{`${names.get(a) || a} ↔ ${names.get(b) || b}`}</Heading>
       <Line color={theme.muted}>
-        {`${zh ? '完整永久对话' : 'Complete durable conversation'} · ${group.messages.length} ${zh ? '条消息' : 'messages'}`}
+        {`${t('Complete durable conversation', '完整永久对话')} · ${group.messages.length} ${t('messages', '条消息')}`}
       </Line>
       {group.messages.map((message) => {
         const selfSide: 'user' | 'agent' = message.from === 'user' ? 'user' : 'agent';
@@ -96,7 +95,6 @@ export function ConversationDetail({ state, id, theme, zh, copy }: {
             readAt={message.readAt}
             selfSide={selfSide}
             theme={theme}
-            zh={zh}
           />
         );
       })}

@@ -11,6 +11,7 @@ import { hiddenAppsUrl } from '../state.js';
 import type { UpdateStatus } from '../../update.js';
 import { Heading, Line } from './shared.js';
 import { runtimeSettingsSnapshot } from '../../runtime-settings.js';
+import { useI18n } from '../copy/context.js';
 
 function SettingsCard({ title, theme, children }: { title: string; theme: Theme; children: ReactNode }) {
   return (
@@ -21,13 +22,13 @@ function SettingsCard({ title, theme, children }: { title: string; theme: Theme;
   );
 }
 
-export function Settings({ runtime, theme, zh, reveal, update }: {
+export function Settings({ runtime, theme, reveal, update }: {
   runtime: MyTerminalRuntime;
   theme: Theme;
-  zh: boolean;
   reveal: boolean;
   update: UpdateStatus;
 }) {
+  const { t } = useI18n();
   const config = runtimeSettingsSnapshot(runtime);
   const passiveStatus = runtime.passiveLockStatus();
   const passiveEnabled = config.passiveLockEnabled;
@@ -35,58 +36,56 @@ export function Settings({ runtime, theme, zh, reveal, update }: {
 
   return (
     <box flexDirection="column" width="100%" padding={1} gap={0}>
-      <Heading theme={theme}>{zh ? '运行设置' : 'Runtime settings'}</Heading>
+      <Heading theme={theme}>{t('Runtime settings', '运行设置')}</Heading>
 
       {/* 组 1：运行设置 */}
-      <SettingsCard title={zh ? '运行设置' : 'Runtime'} theme={theme}>
-        <Line color={theme.text}>{`${zh ? '界面语言' : 'Language'}: ${config.uiLanguage}`}</Line>
-        <Line color={theme.text}>{`${zh ? '界面主题' : 'Theme'}: ${config.uiTheme}`}</Line>
-        <Line color={theme.text}>{`${zh ? '配置文件' : 'Settings file'}: ${runtime.config.settingsPath}`}</Line>
-        <Line color={theme.text}>{`${zh ? '工作区' : 'Workspace'}: ${config.workspaceDir}`}</Line>
-        <Line color={theme.text}>{`${zh ? '监听地址' : 'Listen'}: ${config.host}:${config.port}`}</Line>
-        <Line color={theme.text}>{`${zh ? '公网 URL' : 'Public URL'}: ${config.publicBaseUrl}`}</Line>
-        <Line color={theme.text}>{`${zh ? '最大输出' : 'Max output'}: ${config.maxOutputChars}`}</Line>
-        <Line color={theme.text}>{`${zh ? '命令超时' : 'Timeout'}: ${config.commandTimeoutSec}s`}</Line>
-        <Line color={theme.text}>{`${zh ? '长任务 Harness' : 'Long-task harness'}: ${config.actionsContinuationMode}`}</Line>
-        <Line color={theme.text}>{`${zh ? '非阻塞任务' : 'Non-blocking tasks'}: ${config.nonBlockingTasksEnabled ? (zh ? '开启' : 'on') : (zh ? '关闭' : 'off')}`}</Line>
+      <SettingsCard title={t('Runtime', '运行设置')} theme={theme}>
+        <Line color={theme.text}>{`${t('Language', '界面语言')}: ${config.uiLanguage}`}</Line>
+        <Line color={theme.text}>{`${t('Theme', '界面主题')}: ${config.uiTheme}`}</Line>
+        <Line color={theme.text}>{`${t('Settings file', '配置文件')}: ${runtime.config.settingsPath}`}</Line>
+        <Line color={theme.text}>{`${t('Workspace', '工作区')}: ${config.workspaceDir}`}</Line>
+        <Line color={theme.text}>{`${t('Listen', '监听地址')}: ${config.host}:${config.port}`}</Line>
+        <Line color={theme.text}>{`${t('Public URL', '公网 URL')}: ${config.publicBaseUrl}`}</Line>
+        <Line color={theme.text}>{`${t('Max output', '最大输出')}: ${config.maxOutputChars}`}</Line>
+        <Line color={theme.text}>{`${t('Timeout', '命令超时')}: ${config.commandTimeoutSec}s`}</Line>
+        <Line color={theme.text}>{`${t('Long-task harness', '长任务 Harness')}: ${config.actionsContinuationMode}`}</Line>
+        <Line color={theme.text}>{`${t('Non-blocking tasks', '非阻塞任务')}: ${config.nonBlockingTasksEnabled ? (t('on', '开启')) : (t('off', '关闭'))}`}</Line>
       </SettingsCard>
 
       {/* 组 2：macOS 被动锁屏 */}
-      <SettingsCard title={zh ? 'macOS 被动锁屏' : 'macOS passive lock'} theme={theme}>
+      <SettingsCard title={t('macOS passive lock', 'macOS 被动锁屏')} theme={theme}>
         <Line color={process.platform === 'darwin' ? theme.text : theme.muted}>
           {process.platform === 'darwin'
-            ? (passiveEnabled ? passiveStatus.state : (zh ? '关闭' : 'off'))
-            : (zh ? '仅支持 macOS' : 'macOS only')}
+            ? (passiveEnabled ? passiveStatus.state : (t('off', '关闭')))
+            : (t('macOS only', '仅支持 macOS'))}
         </Line>
         {process.platform === 'darwin' && permissionMissing ? (
           <Line color={theme.warn}>
-            {zh
-              ? '缺少无障碍权限：请在 系统设置 → 隐私与安全性 → 无障碍 中，为启动 MyTerminal 的终端应用授予权限。'
-              : 'Accessibility permission is missing. Grant it to the terminal app that launched MyTerminal.'}
+            {t('Accessibility permission is missing. Grant it to the terminal app that launched MyTerminal.', '缺少无障碍权限：请在 系统设置 → 隐私与安全性 → 无障碍 中，为启动 MyTerminal 的终端应用授予权限。')}
           </Line>
         ) : null}
       </SettingsCard>
 
       {/* 组 3：连接凭据 + 更新 */}
-      <SettingsCard title={zh ? '连接凭据与更新' : 'Credentials & update'} theme={theme}>
+      <SettingsCard title={t('Credentials & update', '连接凭据与更新')} theme={theme}>
         <text fg={theme.text} wrapMode="none">{`Apps MCP URL: ${hiddenAppsUrl(runtime, reveal)}`}</text>
         <text fg={theme.text} wrapMode="none">{`Actions OpenAPI: ${runtime.openApiUrl}`}</text>
         <text fg={theme.text} wrapMode="none">{`Apps connector: ${reveal ? config.connectorKey : '••••••••'}`}</text>
         <text fg={theme.text} wrapMode="none">{`Actions token: ${reveal ? config.actionsToken : maskCredential(config.actionsToken)}`}</text>
-        <Line color={theme.warn}>{zh ? '轮换凭据会使现有 Apps 与 Actions 连接失效。' : 'Rotating credentials disconnects existing Apps and Actions clients.'}</Line>
+        <Line color={theme.warn}>{t('Rotating credentials disconnects existing Apps and Actions clients.', '轮换凭据会使现有 Apps 与 Actions 连接失效。')}</Line>
         <text> </text>
         <Line
           color={update.restartRequired || update.updateAvailable ? theme.warn : update.error ? theme.bad : theme.good}
         >
           {update.checking
-            ? (zh ? '更新：检查中…' : 'Update: checking…')
+            ? (t('Update: checking…', '更新：检查中…'))
             : update.restartRequired
-              ? `${zh ? '更新已安装，等待逐个重启' : 'Update installed; restart members one by one'}${update.runningClusterVersions?.length ? ` · ${zh ? '运行版本' : 'running'}: ${update.runningClusterVersions.join(', ')}` : ''}`
+              ? `${t('Update installed; restart members one by one', '更新已安装，等待逐个重启')}${update.runningClusterVersions?.length ? ` · ${t('running', '运行版本')}: ${update.runningClusterVersions.join(', ')}` : ''}`
               : update.updateAvailable
-                ? `${zh ? '可更新' : 'Update available'}: ${update.currentVersion} → ${update.latestVersion} · U ${zh ? '一键更新' : 'install'}`
+                ? `${t('Update available', '可更新')}: ${update.currentVersion} → ${update.latestVersion} · U ${t('install', '一键更新')}`
                 : update.error
-                  ? `${zh ? '更新检查失败' : 'Update check failed'}: ${update.error}`
-                  : `${zh ? '版本' : 'Version'}: ${update.currentVersion} · ${zh ? '已是最新' : 'up to date'}`}
+                  ? `${t('Update check failed', '更新检查失败')}: ${update.error}`
+                  : `${t('Version', '版本')}: ${update.currentVersion} · ${t('up to date', '已是最新')}`}
         </Line>
       </SettingsCard>
     </box>

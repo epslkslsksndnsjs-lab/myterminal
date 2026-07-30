@@ -8,7 +8,7 @@ import type { TuiSnapshot, Theme } from '../state.js';
 import { phaseColor, presenceColor } from '../state.js';
 import { statusToVisual } from '../status-color.js';
 import { logicalSessionGroups } from '../../tui-model.js';
-import type { Copy } from '../copy/index.js';
+import { useI18n } from '../copy/context.js';
 import { greetingFor } from '../copy/index.js';
 import { Mascot } from '../components/Mascot.js';
 import { BlinkingDot } from '../components/BlinkingDot.js';
@@ -26,14 +26,13 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…';
 }
 
-export function Home({ runtime, state, snapshot, theme, zh, copy }: {
+export function Home({ runtime, state, snapshot, theme }: {
   runtime: MyTerminalRuntime;
   state: StoredState;
   snapshot: TuiSnapshot;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
 }) {
+  const { t, copy } = useI18n();
   const mood = useMascotMood(snapshot);
   const sessions = state.sessions;
   const active = sessions.filter((s) => !['completed', 'cancelled'].includes(s.phase) && s.presence === 'claimed').length;
@@ -50,7 +49,7 @@ export function Home({ runtime, state, snapshot, theme, zh, copy }: {
   const sessionNames = new Map<string, string>();
   for (const s of sessions) sessionNames.set(s.id, s.name);
   const fromToName = (id: string): string => {
-    if (id === 'user') return zh ? '你' : 'You';
+    if (id === 'user') return t('You', '你');
     return sessionNames.get(id) || id;
   };
 
@@ -69,14 +68,14 @@ export function Home({ runtime, state, snapshot, theme, zh, copy }: {
 
       {/* 会话区 */}
       <box flexDirection="row" gap={2} marginBottom={1}>
-        <text fg={theme.accent}><b>{zh ? '会话' : 'Sessions'}</b></text>
-        <text fg={theme.muted}>{zh ? `${active} active · 按 2 看全部` : `${active} active · press 2 for all`}</text>
+        <text fg={theme.accent}><b>{t('Sessions', '会话')}</b></text>
+        <text fg={theme.muted}>{t(`${active} active · press 2 for all`, `${active} active · 按 2 看全部`)}</text>
       </box>
       {groups.length === 0 ? (
         <text fg={theme.muted}>{copy.emptyStates.sessions}</text>
       ) : (
         groups.slice(0, 3).map((group) => (
-          <SessionGroupRow key={group.id} group={group} theme={theme} zh={zh} now={new Date()} copy={copy} />
+          <SessionGroupRow key={group.id} group={group} theme={theme} now={new Date()} />
         ))
       )}
 
@@ -84,33 +83,32 @@ export function Home({ runtime, state, snapshot, theme, zh, copy }: {
 
       {/* 动态区 */}
       <box flexDirection="row" gap={2} marginBottom={1}>
-        <text fg={theme.accent}><b>{zh ? '动态' : 'Activity'}</b></text>
-        <text fg={theme.muted}>{zh ? '按 4 看时间线 · 按 8 看日志' : 'press 4 for timeline · press 8 for logs'}</text>
+        <text fg={theme.accent}><b>{t('Activity', '动态')}</b></text>
+        <text fg={theme.muted}>{t('press 4 for timeline · press 8 for logs', '按 4 看时间线 · 按 8 看日志')}</text>
       </box>
       {entries.length === 0 ? (
         <text fg={theme.muted}>{copy.emptyStates.timeline}</text>
       ) : (
         entries.map((entry, idx) => (
-          <ActivityRow key={`${entry.kind}-${entry.at}-${idx}`} entry={entry} theme={theme} zh={zh} fromToName={fromToName} />
+          <ActivityRow key={`${entry.kind}-${entry.at}-${idx}`} entry={entry} theme={theme} fromToName={fromToName} />
         ))
       )}
 
       <text> </text>
-      <text fg={theme.muted}>{zh ? 'i 输入消息或 / 命令' : 'i to type a message or / command'}</text>
+      <text fg={theme.muted}>{t('i to type a message or / command', 'i 输入消息或 / 命令')}</text>
     </box>
   );
 }
 
 /** 单个逻辑会话组行（含 children 树形缩进） */
-function SessionGroupRow({ group, theme, zh, now, copy }: {
+function SessionGroupRow({ group, theme, now }: {
   group: ReturnType<typeof logicalSessionGroups>[number];
   theme: Theme;
-  zh: boolean;
   now: Date;
-  copy: Copy;
 }) {
+  const { t } = useI18n();
   const current = group.current;
-  const summary = current.latestCheckpoint?.summary || current.finalSummary || (zh ? '暂无 checkpoint 摘要' : 'No checkpoint summary');
+  const summary = current.latestCheckpoint?.summary || current.finalSummary || (t('No checkpoint summary', '暂无 checkpoint 摘要'));
   const children = group.children;
   const groupName = group.title;
 
@@ -125,7 +123,7 @@ function SessionGroupRow({ group, theme, zh, now, copy }: {
       <box flexDirection="row" gap={1} paddingLeft={2} width="100%">
         <text fg={theme.muted} wrapMode="none">⎿</text>
         <text fg={theme.muted} flexGrow={1} wrapMode="word">{truncate(summary, 80)}</text>
-        <text fg={theme.muted} wrapMode="none">{relativeTime(current.updatedAt, now, zh)}</text>
+        <text fg={theme.muted} wrapMode="none">{relativeTime(current.updatedAt, now, t)}</text>
       </box>
       {children.map((child, idx) => {
         const isLast = idx === children.length - 1;
@@ -145,12 +143,12 @@ function SessionGroupRow({ group, theme, zh, now, copy }: {
 }
 
 /** 动态区单条条目（audit 或 message） */
-function ActivityRow({ entry, theme, zh, fromToName }: {
+function ActivityRow({ entry, theme, fromToName }: {
   entry: ActivityEntry;
   theme: Theme;
-  zh: boolean;
   fromToName: (id: string) => string;
 }) {
+  const { t } = useI18n();
   if (entry.kind === 'audit') {
     const markerColor = theme.tool;
     const source = entry.source.toUpperCase();
@@ -185,7 +183,7 @@ function ActivityRow({ entry, theme, zh, fromToName }: {
       <text fg={theme.user} wrapMode="none">⏺</text>
       <text fg={theme.muted} wrapMode="none">{timeOf(entry.at)}</text>
       <text fg={theme.text} flexGrow={1} wrapMode="word">{fromName} → {toName}：{body}</text>
-      <text fg={theme.muted} wrapMode="none">{zh ? '消息' : 'message'}</text>
+      <text fg={theme.muted} wrapMode="none">{t('message', '消息')}</text>
     </box>
   );
 }

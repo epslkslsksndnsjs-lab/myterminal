@@ -6,7 +6,7 @@ import type { MyTerminalRuntime } from '../../server.js';
 import { logicalSessionGroups } from '../../tui-model.js';
 import type { StoredState } from '../../types.js';
 import type { Theme } from '../state.js';
-import type { Copy } from '../copy/index.js';
+import { useI18n } from '../copy/context.js';
 import { Heading, Line, SessionStatus } from './shared.js';
 import { viewForHistoryEntry } from '../model/history-entry.js';
 import type { HistoryEntryView } from '../model/history-entry.js';
@@ -17,14 +17,13 @@ function toneColor(theme: Theme, tone: HistoryEntryView['tone']): string {
   return theme[tone];
 }
 
-export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
+export function Sessions({ state, selected, theme, onSelect }: {
   state: StoredState;
   selected: number;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
   onSelect: (index: number) => void;
 }) {
+  const { t, copy } = useI18n();
   const groups = logicalSessionGroups(state.sessions);
   if (!groups.length) {
     return <box padding={1}><Line color={theme.muted}>{copy.emptyStates.sessions}</Line></box>;
@@ -35,7 +34,7 @@ export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
       {groups.map((group, index) => {
         const current = group.current;
         const active = index === selected;
-        const summary = current.latestCheckpoint?.summary || current.finalSummary || (zh ? '暂无 checkpoint 摘要' : 'No checkpoint summary');
+        const summary = current.latestCheckpoint?.summary || current.finalSummary || (t('No checkpoint summary', '暂无 checkpoint 摘要'));
         return (
           <box
             key={group.id}
@@ -56,7 +55,7 @@ export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
               <SessionStatus session={current} theme={theme} />
             </box>
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${zh ? '工作记录' : 'records'}: ${group.sessions.length}`}
+              {`├─ ${t('records', '工作记录')}: ${group.sessions.length}`}
             </Line>
             {group.sessions.map((session, recordIndex) => (
               <box key={session.id} flexDirection="row" paddingLeft={2} gap={1} flexWrap="wrap">
@@ -68,7 +67,7 @@ export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
               </box>
             ))}
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${zh ? '子会话' : 'children'}: ${group.children.length}`}
+              {`├─ ${t('children', '子会话')}: ${group.children.length}`}
             </Line>
             {group.children.map((child, childIndex) => (
               <box key={child.id} flexDirection="column" paddingLeft={2}>
@@ -87,10 +86,10 @@ export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
               </box>
             ))}
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${zh ? '操作' : 'action'}: ${zh ? '按 u 后选择具体根/续作/子 session' : 'press u, then choose the exact root/continuation/child session'}`}
+              {`├─ ${t('action', '操作')}: ${t('press u, then choose the exact root/continuation/child session', '按 u 后选择具体根/续作/子 session')}`}
             </Line>
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`└─ ${zh ? '摘要' : 'summary'}: ${summary}`}
+              {`└─ ${t('summary', '摘要')}: ${summary}`}
             </Line>
           </box>
         );
@@ -99,16 +98,15 @@ export function Sessions({ state, selected, theme, zh, copy, onSelect }: {
   );
 }
 
-export function SessionDetail({ runtime, groupId, theme, zh, copy }: {
+export function SessionDetail({ runtime, groupId, theme }: {
   runtime: MyTerminalRuntime;
   groupId: string;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
 }) {
+  const { t } = useI18n();
   const group = logicalSessionGroups(runtime.store.listSessions()).find((item) => item.id === groupId);
   if (!group) {
-    return <box padding={1}><Line color={theme.bad}>{zh ? 'Session 已不存在，按 Esc 返回。' : 'Session no longer exists. Press Esc.'}</Line></box>;
+    return <box padding={1}><Line color={theme.bad}>{t('Session no longer exists. Press Esc.', 'Session 已不存在，按 Esc 返回。')}</Line></box>;
   }
   const ids = [...group.sessions, ...group.children].map((session) => session.id);
   const history = runtime.store.historiesForTui(ids);
@@ -120,7 +118,7 @@ export function SessionDetail({ runtime, groupId, theme, zh, copy }: {
       <Heading theme={theme}>{group.title}</Heading>
       <Line color={theme.muted}>{group.id}</Line>
       <Line color={theme.text}>
-        {`${zh ? '继承/续作记录' : 'Continuation records'}: ${group.sessions.length} · ${zh ? '子 Sessions' : 'Child sessions'}: ${group.children.length}`}
+        {`${t('Continuation records', '继承/续作记录')}: ${group.sessions.length} · ${t('Child sessions', '子 Sessions')}: ${group.children.length}`}
       </Line>
 
       {/* 会话卡片（精简） */}
@@ -132,7 +130,7 @@ export function SessionDetail({ runtime, groupId, theme, zh, copy }: {
           </box>
           <Line color={theme.muted}>{session.id}</Line>
           <Line color={theme.muted}>
-            {`${zh ? '创建' : 'Created'}: ${session.createdAt} · ${zh ? '更新' : 'Updated'}: ${session.updatedAt}`}
+            {`${t('Created', '创建')}: ${session.createdAt} · ${t('Updated', '更新')}: ${session.updatedAt}`}
           </Line>
           {session.task?.objective ? <Line color={theme.text}>{`Objective: ${session.task.objective}`}</Line> : null}
           {session.latestCheckpoint?.summary ? <Line color={theme.text}>{`Checkpoint: ${session.latestCheckpoint.summary}`}</Line> : null}
@@ -140,7 +138,7 @@ export function SessionDetail({ runtime, groupId, theme, zh, copy }: {
       ))}
 
       {/* 子会话卡片（精简） */}
-      {group.children.length > 0 ? <Heading theme={theme}>{zh ? '协作子会话' : 'Collaborating children'}</Heading> : null}
+      {group.children.length > 0 ? <Heading theme={theme}>{t('Collaborating children', '协作子会话')}</Heading> : null}
       {group.children.map((child) => (
         <box key={child.id} flexDirection="row" gap={1} flexWrap="wrap" paddingLeft={1} alignItems="center">
           <text fg={theme.text}>└─ 📁 {child.name}</text>
@@ -150,15 +148,15 @@ export function SessionDetail({ runtime, groupId, theme, zh, copy }: {
       ))}
 
       {/* 事件流历史区 */}
-      <Heading theme={theme}>{zh ? '永久结构化历史' : 'Permanent structured history'}</Heading>
+      <Heading theme={theme}>{t('Permanent structured history', '永久结构化历史')}</Heading>
       <Line color={theme.muted}>
         {historyTotal > history.length
-          ? (zh ? `显示最近 ${history.length} / ${historyTotal} 条；完整记录可通过 session_history 分页读取。` : `Showing latest ${history.length} of ${historyTotal}; use paginated session_history for the complete record.`)
-          : `${history.length} ${zh ? '条记录' : 'entries'}`}
+          ? (t(`Showing latest ${history.length} of ${historyTotal}; use paginated session_history for the complete record.`, `显示最近 ${history.length} / ${historyTotal} 条；完整记录可通过 session_history 分页读取。`))
+          : `${history.length} ${t('entries', '条记录')}`}
       </Line>
 
       {history.map((item, index) => {
-        const view = viewForHistoryEntry(item.entry, zh);
+        const view = viewForHistoryEntry(item.entry, t);
         const color = toneColor(theme, view.tone);
         return (
           <box key={`${item.sessionId}-${item.entry.at}-${index}`} flexDirection="column" border={['left']} borderColor={theme.border} paddingLeft={1}>

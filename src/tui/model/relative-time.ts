@@ -3,6 +3,8 @@
  * 纯函数，无副作用，可单测。
  */
 
+import type { Translate } from '../copy/i18n.js';
+
 const MS_MINUTE = 60_000;
 const MS_HOUR = 3_600_000;
 const MS_DAY = 86_400_000;
@@ -14,19 +16,19 @@ const MS_DAY = 86_400_000;
  * - <24h → N 小时前 / Nh ago
  * - 否则 → 日期字符串
  */
-export function relativeTime(iso: string, now: Date, zh: boolean): string {
+export function relativeTime(iso: string, now: Date, t: Translate): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) return iso;
   const diff = now.getTime() - at.getTime();
-  if (diff < 0) return zh ? '刚刚' : 'just now';
-  if (diff < MS_MINUTE) return zh ? '刚刚' : 'just now';
+  if (diff < 0) return t('just now', '刚刚');
+  if (diff < MS_MINUTE) return t('just now', '刚刚');
   if (diff < MS_HOUR) {
     const mins = Math.floor(diff / MS_MINUTE);
-    return zh ? `${mins} 分钟前` : `${mins}m ago`;
+    return t(`${mins}m ago`, `${mins} 分钟前`);
   }
   if (diff < MS_DAY) {
     const hours = Math.floor(diff / MS_HOUR);
-    return zh ? `${hours} 小时前` : `${hours}h ago`;
+    return t(`${hours}h ago`, `${hours} 小时前`);
   }
   const y = at.getFullYear();
   const m = String(at.getMonth() + 1).padStart(2, '0');

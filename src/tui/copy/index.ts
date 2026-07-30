@@ -3,7 +3,9 @@ import { zhCN } from './zh-CN.js';
 import { en } from './en.js';
 
 export type { Copy, EmptyStateKey } from './types.js';
+export { i18nFor, type I18n, type Lang, type Translate } from './i18n.js';
 
+/** 遗留入口：语言判定的单源是 `i18nFor`，此函数仅为既有调用点与测试保留。 */
 export function copyFor(zh: boolean): Copy {
   return zh ? zhCN : en;
 }

@@ -126,41 +126,41 @@ test('mergeActivity handles limit=0 as no truncation', () => {
 test('relativeTime returns just now for <60s', () => {
   const now = new Date('2026-07-26T12:00:30.000Z');
   const at = '2026-07-26T12:00:00.000Z';
-  assert.equal(relativeTime(at, now, true), '刚刚');
-  assert.equal(relativeTime(at, now, false), 'just now');
+  assert.equal(relativeTime(at, now, (en, zh) => zh), '刚刚');
+  assert.equal(relativeTime(at, now, (en, zh) => en), 'just now');
 });
 
 test('relativeTime returns minutes ago for <60m', () => {
   const now = new Date('2026-07-26T12:30:00.000Z');
   const at = '2026-07-26T12:00:00.000Z';
-  assert.equal(relativeTime(at, now, true), '30 分钟前');
-  assert.equal(relativeTime(at, now, false), '30m ago');
+  assert.equal(relativeTime(at, now, (en, zh) => zh), '30 分钟前');
+  assert.equal(relativeTime(at, now, (en, zh) => en), '30m ago');
 });
 
 test('relativeTime returns hours ago for <24h', () => {
   const now = new Date('2026-07-26T18:00:00.000Z');
   const at = '2026-07-26T12:00:00.000Z';
-  assert.equal(relativeTime(at, now, true), '6 小时前');
-  assert.equal(relativeTime(at, now, false), '6h ago');
+  assert.equal(relativeTime(at, now, (en, zh) => zh), '6 小时前');
+  assert.equal(relativeTime(at, now, (en, zh) => en), '6h ago');
 });
 
 test('relativeTime returns date string for >=24h', () => {
   const now = new Date('2026-07-27T12:00:00.000Z');
   const at = '2026-07-26T12:00:00.000Z';
-  assert.equal(relativeTime(at, now, true), '2026-07-26');
-  assert.equal(relativeTime(at, now, false), '2026-07-26');
+  assert.equal(relativeTime(at, now, (en, zh) => zh), '2026-07-26');
+  assert.equal(relativeTime(at, now, (en, zh) => en), '2026-07-26');
 });
 
 test('relativeTime returns original string for invalid dates', () => {
   const now = new Date();
-  assert.equal(relativeTime('not-a-date', now, true), 'not-a-date');
-  assert.equal(relativeTime('', now, false), '');
+  assert.equal(relativeTime('not-a-date', now, (en, zh) => zh), 'not-a-date');
+  assert.equal(relativeTime('', now, (en, zh) => en), '');
 });
 
 test('relativeTime handles future dates gracefully', () => {
   const now = new Date('2026-07-26T12:00:00.000Z');
   const at = '2026-07-26T13:00:00.000Z';
-  assert.equal(relativeTime(at, now, true), '刚刚');
+  assert.equal(relativeTime(at, now, (en, zh) => zh), '刚刚');
 });
 
 // ─── Copy homeSummary ───

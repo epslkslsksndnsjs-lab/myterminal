@@ -5,8 +5,10 @@ import type { MyTerminalSession, MyTerminalSettings, TaskPackage } from '../type
 import type { FormQuestion } from './contracts.js';
 import { isValidPublicBaseUrl } from '../config.js';
 import { isAddWorkspaceSelection, selectedWorkspace, type WorkspaceSelectionItem } from '../workspace-selection.js';
+import type { Translate } from './copy/i18n.js';
 
-export type TranslateText = (en: string, zh: string) => string;
+/** @deprecated #31 起单源为 copy/i18n.ts 的 `Translate`；此别名仅为既有导入保留。 */
+export type TranslateText = Translate;
 export type PassiveLockChoice = 'off' | 'arm' | 'standby';
 
 function integer(value: string, fallback: number): number {

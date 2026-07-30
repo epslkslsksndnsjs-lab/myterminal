@@ -4,41 +4,41 @@
  */
 import type { SubagentRecord } from '../../subagent/store.js';
 import type { Theme } from '../state.js';
-import type { Copy } from '../copy/index.js';
+import { useI18n } from '../copy/context.js';
+import type { Translate } from '../copy/i18n.js';
 import { Line } from './shared.js';
 import { statusToVisual } from '../status-color.js';
 
 /** 状态→视觉颜色统一走 statusToVisual 单源（src/tui/status-color.ts）。 */
 
 /** status → 显示标签 */
-function statusLabel(status: string, zh: boolean): string {
+function statusLabel(status: string, t: Translate): string {
   switch (status) {
-    case 'running': return zh ? '运行中' : 'Running';
-    case 'completed': return zh ? '已完成' : 'Completed';
-    case 'failed': return zh ? '失败' : 'Failed';
-    case 'aborted': return zh ? '已中止' : 'Aborted';
-    case 'aborting': return zh ? '中止中' : 'Aborting';
+    case 'running': return t('Running', '运行中');
+    case 'completed': return t('Completed', '已完成');
+    case 'failed': return t('Failed', '失败');
+    case 'aborted': return t('Aborted', '已中止');
+    case 'aborting': return t('Aborting', '中止中');
     default: return status;
   }
 }
 
-export function Subagents({ subagents, selected, theme, zh, copy, onSelect }: {
+export function Subagents({ subagents, selected, theme, onSelect }: {
   subagents: SubagentRecord[];
   selected: number;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
   onSelect: (index: number) => void;
 }) {
+  const { t } = useI18n();
   if (!subagents.length) {
-    return <box padding={1}><Line color={theme.muted}>{zh ? '暂无运行中的 Subagent。通过 subagent_start 创建。' : 'No subagents running. Create one with subagent_start.'}</Line></box>;
+    return <box padding={1}><Line color={theme.muted}>{t('No subagents running. Create one with subagent_start.', '暂无运行中的 Subagent。通过 subagent_start 创建。')}</Line></box>;
   }
 
   return (
     <box flexDirection="column" width="100%" padding={1} gap={1}>
       {subagents.map((record, index) => {
         const active = index === selected;
-        const summary = record.tasks[0]?.subject?.slice(0, 40) ?? (zh ? '无任务描述' : 'No task description');
+        const summary = record.tasks[0]?.subject?.slice(0, 40) ?? (t('No task description', '无任务描述'));
         const completedTasks = record.tasks.filter((t) => t.status === 'completed').length;
         const color = theme[statusToVisual(record.status)];
         return (
@@ -57,16 +57,16 @@ export function Subagents({ subagents, selected, theme, zh, copy, onSelect }: {
               <box flexDirection="row" gap={1} alignItems="center">
                 <text fg={active ? theme.selectedText : theme.text} wrapMode="none"><b>{record.id}</b></text>
               </box>
-              <text fg={color} wrapMode="none">{statusLabel(record.status, zh)}</text>
+              <text fg={color} wrapMode="none">{statusLabel(record.status, t)}</text>
             </box>
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${zh ? '任务' : 'Task'}: ${summary}`}
+              {`├─ ${t('Task', '任务')}: ${summary}`}
             </Line>
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${zh ? '进度' : 'Progress'}: ${completedTasks}/${record.tasks.length} ${zh ? '完成' : 'done'}`}
+              {`├─ ${t('Progress', '进度')}: ${completedTasks}/${record.tasks.length} ${t('done', '完成')}`}
             </Line>
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${zh ? '成本' : 'Cost'}: $${record.cost.totalUSD.toFixed(4)} (${record.cost.inputTokens}+${record.cost.outputTokens} tokens)`}
+              {`├─ ${t('Cost', '成本')}: $${record.cost.totalUSD.toFixed(4)} (${record.cost.inputTokens}+${record.cost.outputTokens} tokens)`}
             </Line>
             {record.sessionId ? (
               <Line color={active ? theme.selectedText : theme.muted}>
@@ -75,7 +75,7 @@ export function Subagents({ subagents, selected, theme, zh, copy, onSelect }: {
             ) : null}
             {record.error ? (
               <text fg={theme.bad} wrapMode="word">
-                {`   ${zh ? '错误' : 'Error'}: ${record.error.slice(0, 200)}`}
+                {`   ${t('Error', '错误')}: ${record.error.slice(0, 200)}`}
               </text>
             ) : null}
           </box>

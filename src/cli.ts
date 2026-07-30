@@ -70,7 +70,7 @@ async function chooseWorkspace(env: NodeJS.ProcessEnv): Promise<boolean> {
   const records = new WorkspaceCatalog(path.dirname(settingsPath(env))).snapshot();
   if (!records.length) return true;
   const { runWorkspaceChooserTui } = await import('./tui/index.js');
-  const selected = await runWorkspaceChooserTui(records, current.workspaceDir, current.uiLanguage === 'zh-CN');
+  const selected = await runWorkspaceChooserTui(records, current.workspaceDir, current.uiLanguage);
   if (!selected) return false;
   const active = records.find((record) => path.resolve(record.workspaceDir) === path.resolve(selected) && isWorkspaceRecordActive(record));
   if (active) throw new Error(`Workspace is already active in PID ${active.lastPid}: ${active.workspaceDir}`);
@@ -92,7 +92,7 @@ async function startRuntime(env: NodeJS.ProcessEnv, interactive = false): Promis
       const answer = (await runChoiceTui(
         { label: `Port ${detail.port} is occupied by ${owner}`, fallback: 'cancel', options: ['kill', 'next', 'cancel'] },
         ['Choose how MyTerminal should continue.'],
-        false,
+        'en',
       )).trim().toLowerCase();
       if (answer === 'k' || answer === 'kill') {
         await terminatePortOwner(detail.port);
