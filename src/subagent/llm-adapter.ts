@@ -208,61 +208,6 @@ function classifyNetworkError(err: unknown): LlmError {
 }
 
 // ═══════════════════════════════════════════════
-// 决策 24 + #66：NormalizedMessage 组装单源
-// ═══════════════════════════════════════════════
-
-/** 组装输入：已解析的工具调用中间态 */
-export type AssemblyToolPart = { id: string; name: string; input: JsonObject };
-
-/**
- * assembleMessage——NormalizedMessage 组装单源（#66）
- * 所有适配器 / collectStream 的最终组装统一走此函数，行为契约：
- * - 空 text 不入 content
- * - hadToolCalls = content 中存在 tool_use 块
- */
-export function assembleMessage(
-  textParts: string[],
-  toolParts: AssemblyToolPart[],
-  usage: TokenUsage,
-): { message: NormalizedMessage; usage: TokenUsage; hadToolCalls: boolean } {
-  const content: ContentBlock[] = [];
-
-  for (const text of textParts) {
-    if (text.length > 0) {
-      content.push({ type: 'text', text });
-    }
-  }
-
-  for (const tool of toolParts) {
-    content.push({ type: 'tool_use', id: tool.id, name: tool.name, input: tool.input });
-  }
-
-  const hadToolCalls = content.some(b => b.type === 'tool_use');
-
-  return {
-    message: { role: 'assistant', content },
-    usage,
-    hadToolCalls,
-  };
-}
-
-/**
- * emitAssembledMessage——回退路径 re-emit 单源（#66）
- * 已组装消息 → onChunk 事件序列：有 text → text_delta；始终 → message_end(usage)
- */
-export function emitAssembledMessage(
-  message: NormalizedMessage,
-  usage: TokenUsage,
-  onChunk: (chunk: StreamChunk) => void,
-): void {
-  const textBlock = message.content.find(b => b.type === 'text');
-  if (textBlock && textBlock.type === 'text') {
-    onChunk({ type: 'text_delta', text: textBlock.text });
-  }
-  onChunk({ type: 'message_end', usage });
-}
-
-// ═══════════════════════════════════════════════
 // OpenAI 适配器（决策 2 + 24 + 27）
 // ═══════════════════════════════════════════════
 
@@ -520,12 +465,11 @@ export class OpenAIAdapter implements LlmAdapter {
       throw new LlmError('system', 'Unexpected API response: no message in choices');
     }
 
-    // 组装 NormalizedMessage（#66：走 assembleMessage 单源）
-    const textParts: string[] = [];
-    const toolParts: AssemblyToolPart[] = [];
+    // 组装 NormalizedMessage
+    const content: ContentBlock[] = [];
 
     if (msg.content && typeof msg.content === 'string' && msg.content.length > 0) {
-      textParts.push(msg.content);
+      content.push({ type: 'text', text: msg.content });
     }
 
     const toolCalls = msg.tool_calls as Array<Record<string, unknown>> | undefined;
@@ -540,7 +484,8 @@ export class OpenAIAdapter implements LlmAdapter {
             input = { _parse_error: true, raw: func.arguments };
           }
         }
-        toolParts.push({
+        content.push({
+          type: 'tool_use',
           id: tc.id as string,
           name: func?.name as string ?? 'unknown',
           input,
@@ -553,8 +498,10 @@ export class OpenAIAdapter implements LlmAdapter {
       output_tokens: (data.usage as Record<string, number>)?.completion_tokens ?? 0,
     };
 
-    const { message, usage: assembledUsage } = assembleMessage(textParts, toolParts, usage);
-    return { message, usage: assembledUsage };
+    return {
+      message: { role: 'assistant', content },
+      usage,
+    };
     } catch (err) {
       throw classifyNetworkError(err);
     }
@@ -810,19 +757,19 @@ export class AnthropicAdapter implements LlmAdapter {
 
     const data = await response.json() as Record<string, unknown>;
     const rawContent = data.content as Array<Record<string, unknown>> | undefined;
-    const textParts: string[] = [];
-    const toolParts: AssemblyToolPart[] = [];
+    const content: ContentBlock[] = [];
 
     if (rawContent) {
       for (const block of rawContent) {
         switch (block.type) {
           case 'text':
             if (typeof block.text === 'string') {
-              textParts.push(block.text);
+              content.push({ type: 'text', text: block.text });
             }
             break;
           case 'tool_use':
-            toolParts.push({
+            content.push({
+              type: 'tool_use',
               id: block.id as string,
               name: block.name as string,
               input: (block.input as JsonObject) ?? {},
@@ -839,8 +786,10 @@ export class AnthropicAdapter implements LlmAdapter {
       cache_read_input_tokens: msgUsage?.cache_read_input_tokens,
     };
 
-    const { message, usage: assembledUsage } = assembleMessage(textParts, toolParts, usage);
-    return { message, usage: assembledUsage };
+    return {
+      message: { role: 'assistant', content },
+      usage,
+    };
     } catch (err) {
       throw classifyNetworkError(err);
     }
@@ -1037,8 +986,13 @@ export async function collectStream(params: {
       }
     }
 
-    // 流正常结束——组装 NormalizedMessage（#66：走 assembleMessage 单源）
-    const toolParts: AssemblyToolPart[] = [];
+    // 流正常结束——组装 NormalizedMessage（决策 24：content 检测）
+    const content: ContentBlock[] = [];
+
+    if (textBuffer.length > 0) {
+      content.push({ type: 'text', text: textBuffer });
+    }
+
     for (const [, buf] of toolInputBuffers) {
       let input: JsonObject;
       try {
@@ -1047,10 +1001,16 @@ export async function collectStream(params: {
         // 决策 27：JSON 解析失败 → 文本降级 + 注释说明
         input = { _parse_error: true, raw: buf.json };
       }
-      toolParts.push({ id: buf.id, name: buf.name, input });
+      content.push({ type: 'tool_use', id: buf.id, name: buf.name, input });
     }
 
-    return assembleMessage([textBuffer], toolParts, finalUsage);
+    const hadToolCalls = content.some(b => b.type === 'tool_use');
+
+    return {
+      message: { role: 'assistant', content },
+      usage: finalUsage,
+      hadToolCalls,
+    };
   } catch (error) {
     // 用户 abort 原样抛出（决策 21）
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -1066,8 +1026,14 @@ export async function collectStream(params: {
     if (!hadAnyToolCallEnd) {
       const result = await reliable.create(chatParams, signal);
       const hadToolCalls = result.message.content.some(b => b.type === 'tool_use');
-      // 回退成功——通过 emitAssembledMessage 通知 M7（#66 单源）
-      emitAssembledMessage(result.message, result.usage, onChunk);
+      // 回退成功——通过 onChunk 通知 M7
+      if (result.message.content.some(b => b.type === 'text')) {
+        const textBlock = result.message.content.find(b => b.type === 'text');
+        if (textBlock && textBlock.type === 'text') {
+          onChunk({ type: 'text_delta', text: textBlock.text });
+        }
+      }
+      onChunk({ type: 'message_end', usage: result.usage });
       return { ...result, hadToolCalls };
     }
 
