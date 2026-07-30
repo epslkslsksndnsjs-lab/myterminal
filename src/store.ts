@@ -322,6 +322,13 @@ export class MyTerminalStore {
     return this.mcpBindings.has(mcpSessionId);
   }
 
+  /** ADR-0029: drop every MCP binding tied to a session that is being released or reclaimed, so a later connection cannot inherit a stale identity. */
+  unbindMcpForSession(sessionId: string): void {
+    for (const [key, binding] of this.mcpBindings) {
+      if (binding.sessionId === sessionId) this.mcpBindings.delete(key);
+    }
+  }
+
   beforeOrdinaryCall(sessionId: string): void {
     this.refreshTemporalStates();
     const session = this.requireSession(sessionId);
@@ -839,6 +846,7 @@ export class MyTerminalStore {
     session.presence = 'claimed'; session.updatedAt = now;
     this.transientClaimCodes.delete(session.id);
     this.state.appBindings = this.state.appBindings.filter((item) => item.sessionId !== session.id);
+    this.unbindMcpForSession(session.id);
     return { sessionId: session.id, sessionToken };
   }
 
@@ -847,6 +855,7 @@ export class MyTerminalStore {
     session.presence = 'unclaimed';
     session.updatedAt = this.iso();
     this.state.appBindings = this.state.appBindings.filter((item) => item.sessionId !== session.id);
+    this.unbindMcpForSession(session.id);
     const code = issueCode ? this.issueClaimCode(session) : undefined;
     this.emitEvent(session.id, session.id, kind, { phase: session.phase, presence: session.presence });
     this.appendHistory(session.id, kind, { phase: session.phase, presence: session.presence });

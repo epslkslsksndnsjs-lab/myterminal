@@ -297,6 +297,11 @@ export class ExtensionService {
     }
   }
 
+  /** ADR-0029: drop the ephemeral MCP identity binding for a closed MCP session so no zombie binding survives. */
+  mcpSessionClosed(mcpSessionId: string): void {
+    this.store.unbindMcp(mcpSessionId);
+  }
+
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
     let sessionId: string | undefined;

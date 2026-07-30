@@ -43,6 +43,16 @@ export class ClusterExtensionRouter implements ExtensionFacade {
     return await this.routeBySession('register', input, context, sessionId);
   }
 
+  /** ADR-0029: a cluster MCP session closed — broadcast the unbind to every member; unbindMcp is idempotent so only the owning member removes a binding. */
+  mcpSessionClosed(mcpSessionId: string): void {
+    for (const member of this.members()) {
+      fetch(`http://127.0.0.1:${member.internalPort}/cluster/rpc/mcpSessionClosed`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-myterminal-cluster-secret': member.secret },
+        body: JSON.stringify({ input: { mcpSessionId }, context: {} }), signal: AbortSignal.timeout(1500),
+      }).catch(() => undefined);
+    }
+  }
+
   async call(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
     const tool = typeof input.tool === 'string' ? input.tool : '';
     const args = callInput(input);
