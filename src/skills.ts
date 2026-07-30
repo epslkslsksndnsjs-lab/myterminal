@@ -54,10 +54,6 @@ function projectSkillsDir(workspaceDir: string): string {
   return path.join(workspaceDir, '.myterminal', 'skills');
 }
 
-function projectSkillPath(workspaceDir: string, name: string): string {
-  return path.join(projectSkillsDir(workspaceDir), name, SKILL_FILE);
-}
-
 function ensureTrailingNewline(content: string): string {
   return content.endsWith('\n') ? content : content + '\n';
 }
@@ -260,21 +256,30 @@ function readSkillFile(filePath: string): { manifest: SkillManifest; content: st
 
 function scanDir(dir: string): Map<string, { manifest: SkillManifest; content: string }> {
   const result = new Map<string, { manifest: SkillManifest; content: string }>();
-  let names: string[];
+  let entries: import('node:fs').Dirent[];
   try {
-    names = readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return result;
   }
 
-  for (const name of names) {
-    const filePath = path.join(dir, name, SKILL_FILE);
-    if (!existsSync(filePath)) continue;
-
-    const parsed = readSkillFile(filePath);
-    if (parsed) result.set(parsed.manifest.name, parsed);
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      // 目录式布局：<name>/SKILL.md
+      const filePath = path.join(dir, entry.name, SKILL_FILE);
+      if (!existsSync(filePath)) {
+        console.warn(`[skills] Skill directory ${path.join(dir, entry.name)} has no ${SKILL_FILE}, skipping`);
+        continue;
+      }
+      const parsed = readSkillFile(filePath);
+      if (parsed) result.set(parsed.manifest.name, parsed);
+    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      // 平铺布局：<name>.md —— ADR-0031 #16：此前被 isDirectory() 过滤静默丢弃
+      const filePath = path.join(dir, entry.name);
+      const parsed = readSkillFile(filePath);
+      if (parsed) result.set(parsed.manifest.name, parsed);
+      else console.warn(`[skills] Skill file ${filePath} is invalid or missing frontmatter, skipping`);
+    }
   }
   return result;
 }
@@ -384,21 +389,32 @@ export function listSkills(configDir: string, workspaceDir: string): SkillManife
   return result;
 }
 
+/** ADR-0031 #16：按 name 在某一 skills 基目录下解析，同时支持目录式（<name>/SKILL.md）与平铺式（<name>.md）。 */
+function readSkillFromBase(baseDir: string, name: string): { manifest: SkillManifest; content: string } | null {
+  // 目录式优先
+  const dirPath = path.join(baseDir, name, SKILL_FILE);
+  if (existsSync(dirPath)) {
+    const parsed = readSkillFile(dirPath);
+    if (parsed) return parsed;
+  }
+  // 平铺式
+  const flatPath = path.join(baseDir, `${name}.md`);
+  if (existsSync(flatPath)) {
+    const parsed = readSkillFile(flatPath);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
 /** Load a skill's full content by name. Falls back to built-in skills if no user file is found. */
 export function loadSkill(configDir: string, workspaceDir: string, name: string): SkillRecord | null {
   // Global first (global takes priority)
-  const globalPath = path.join(configDir, 'skills', name, SKILL_FILE);
-  if (existsSync(globalPath)) {
-    const parsed = readSkillFile(globalPath);
-    if (parsed) return { ...parsed.manifest, content: parsed.content };
-  }
+  const global = readSkillFromBase(path.join(configDir, 'skills'), name);
+  if (global) return { ...global.manifest, content: global.content };
 
   // Fallback to project-level
-  const projectPath = projectSkillPath(workspaceDir, name);
-  if (existsSync(projectPath)) {
-    const parsed = readSkillFile(projectPath);
-    if (parsed) return { ...parsed.manifest, content: parsed.content };
-  }
+  const project = readSkillFromBase(projectSkillsDir(workspaceDir), name);
+  if (project) return { ...project.manifest, content: project.content };
 
   // Fallback to built-in skills
   const builtin = BUILTIN_SKILLS.get(name);
