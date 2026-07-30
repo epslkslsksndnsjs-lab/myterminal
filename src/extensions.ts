@@ -216,120 +216,85 @@ export class ExtensionService {
     if (this.closedActionIds.size > 2000) this.closedActionIds.delete(this.closedActionIds.values().next().value!);
   }
 
-  // ─── withAudit: shared audit scaffolding (ADR-0032 #30) ─────────────────────
-
-  private deriveAuditError(error: unknown): { code: string; message: string } {
-    return { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
-  }
-
-  private resultToAuditStatus(problem: ResultProblem | undefined): 'completed' | 'failed' | 'timeout' {
-    return problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed';
-  }
-
-  /**
-   * ADR-0032 #30: converge the try/beginAudit/finishAudit/catch/finally scaffold
-   * shared by discover, register, call, and callSubagent. Each caller supplies
-   * only its unique body logic; the audit lifecycle is handled here.
-   */
-  private async withAudit(
-    sessionId: string,
-    source: InvocationContext['transport'],
-    action: string,
-    args: JsonObject,
-    handlers: {
-      onSuccess: (meta: { actionId: string; started: number }) => Promise<ToolResponse> | ToolResponse;
-      onError: (meta: { actionId: string; started: number; auditError: { code: string; message: string } }, error: unknown) => Promise<ToolResponse> | ToolResponse;
-      errorStatus?: (auditError: { code: string; message: string }) => Exclude<ToolAuditEvent['status'], 'running'>;
-      begin?: boolean;
-    },
-  ): Promise<ToolResponse> {
-    const actionId = `act_${randomUUID()}`;
-    const started = Date.now();
-    try {
-      if (handlers.begin !== false) this.beginAudit(sessionId, actionId, source, action, args, started);
-      const response = await handlers.onSuccess({ actionId, started });
-      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', response);
-      return response;
-    } catch (error) {
-      const auditError = this.deriveAuditError(error);
-      const response = await handlers.onError({ actionId, started, auditError }, error);
-      const status = handlers.errorStatus?.(auditError) ?? 'failed';
-      this.finishAudit(sessionId, actionId, source, action, args, started, status, response, auditError);
-      return response;
-    } finally {
-      if (!this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
-    }
-  }
-
   async discover(input: JsonObject = {}, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
-    const authenticated = this.authenticate(input, context, true);
-    if (!authenticated) {
-      return { ok: true, data: {
-        agentMd: loadAgentMd(this.config.settingsPath),
-        identityRequired: true,
-        instructions: {
-          root: 'First call extension_discover with the identity key omitted. Never generate identity:null or identity:{}. If it lists multiple workspaces, ask the user to choose one and pass its workspaceId to session_register(mode=root), again with the identity key omitted. Never choose a workspace silently. Save the returned sessionId + sessionToken.',
-          inherit: 'Claim handed-off/released/revoked unfinished work with session_inherit(sessionId,claimCode), or reclaim the same stale session after interruption with session_inherit(sessionId,sessionToken=<previous token>). It does not continue a completed session.',
-          continue: 'Continue immutable completed work by creating session_register(mode=root,continuesSessionId), or a delegated same-level continuation.',
-          handoff: 'Handoff a live session with session_release; give its one-time claimCode to the next controller, which then calls session_inherit.',
-          next: 'After identity is established, pass identity={sessionId,sessionToken} on every Actions facade call. Apps may omit it only after a verified openai/session binding exists.',
-          actionsContinuation: harnessRequirement(this.config.actionsContinuationMode),
-          apps: 'Apps exposes both narrow direct tools and the full extension_call/extension_register facade. Use direct tools when their schema fits; use the facade for arbitrary commands, overwriting writes, patches, and custom extensions.',
-        },
-        bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
-        skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
-      } };
-    }
-    this.store.acknowledgeHarnessRequirements(authenticated.id);
-    this.store.touchControl(authenticated.id);
-    return this.withAudit(authenticated.id, context.transport, 'extension_discover', input, {
-      onSuccess: () => {
-        const query = typeof input.query === 'string' ? input.query.toLowerCase() : '';
-        const includeSchemas = input.includeSchemas !== false;
-        const builtins = [...this.builtins.values()].map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'builtin', annotations: tool.annotations, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
-        builtins.push({
-          name: 'task_poll', title: 'Poll background task', description: 'Poll a MyTerminal operation that exceeded the 200ms fast-return budget. Keep polling the returned taskId until status is completed, failed, or timeout.', kind: 'builtin',
-          annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
-          ...(includeSchemas ? { inputSchema: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false } } : {}),
-        });
-        const custom = this.store.listExtensions().map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'custom', annotations: tool.annotations, handlerKind: tool.handler.kind, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
-        const catalog = [...builtins, ...custom];
-        const matches = catalog.filter((tool) => !query || `${tool.name} ${tool.title} ${tool.description}`.toLowerCase().includes(query));
-        const tools = query && matches.length === 0 ? catalog : matches;
-        const response: ToolResponse = { ok: true, data: {
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
+    let auditStarted = false;
+    try {
+      const authenticated = this.authenticate(input, context, true);
+      if (!authenticated) {
+        return { ok: true, data: {
           agentMd: loadAgentMd(this.config.settingsPath),
-          skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
-          tools, total: tools.length,
+          identityRequired: true,
           instructions: {
-            identity: 'Every concrete call and registry change belongs to the authenticated MyTerminal session. Never use openai/session as MyTerminal identity.',
-            discover: 'Call extension_discover when you need the exact capability or input schema.',
-            register: 'Call extension_register with action=validate before action=upsert.',
-            call: `Actions calls extension_call with an exact concrete tool name, identity, and input. Facade operation names do not belong in nextCalls. ${harnessRequirement(this.config.actionsContinuationMode)}`,
-            collaboration: 'Delegate by domain and parallel workload rather than assigning an entire large objective to one child. Sessions must keep working until their acceptance criteria are complete, explicitly blocked, or waiting on external input. Collaboration is active, not one-way supervision: safely complete non-conflicting work and hand results to the responsible session. Before completion, coordinate via message_send and checkpoints; do not emit a completion-style user report.',
-            completion: 'A root cannot complete until every direct child is terminal and all child messages/events are reviewed. CHILD_REVIEW_REQUIRED returns current time, child status, recent operations, message timing, and mustContinue=true; continue work and do not end with a user-facing final summary.',
-            history: 'Continuation context is bounded by design. Use paginated session_history for permanent structured history. Message responses include sent/observed timestamps, age, audited operations since send, and possible delay notices.',
-            background: this.config.nonBlockingTasksEnabled
-              ? 'Non-blocking tasks are enabled. Calls that exceed 200ms return status=running and taskId; call task_poll until terminal, then follow the returned continuation nextCall.'
-              : 'Non-blocking tasks are disabled. Tool calls remain attached to the request until completion or timeout.',
+            root: 'First call extension_discover with the identity key omitted. Never generate identity:null or identity:{}. If it lists multiple workspaces, ask the user to choose one and pass its workspaceId to session_register(mode=root), again with the identity key omitted. Never choose a workspace silently. Save the returned sessionId + sessionToken.',
+            inherit: 'Claim handed-off/released/revoked unfinished work with session_inherit(sessionId,claimCode), or reclaim the same stale session after interruption with session_inherit(sessionId,sessionToken=<previous token>). It does not continue a completed session.',
+            continue: 'Continue immutable completed work by creating session_register(mode=root,continuesSessionId), or a delegated same-level continuation.',
+            handoff: 'Handoff a live session with session_release; give its one-time claimCode to the next controller, which then calls session_inherit.',
+            next: 'After identity is established, pass identity={sessionId,sessionToken} on every Actions facade call. Apps may omit it only after a verified openai/session binding exists.',
+            actionsContinuation: harnessRequirement(this.config.actionsContinuationMode),
+            apps: 'Apps exposes both narrow direct tools and the full extension_call/extension_register facade. Use direct tools when their schema fits; use the facade for arbitrary commands, overwriting writes, patches, and custom extensions.',
           },
-          harness: harnessContract(this.config.actionsContinuationMode) as unknown as JsonObject,
-          registrationSchema: {
-            name: 'lower_snake_case, 3-64 characters', title: 'human-readable title', description: 'when to use the tool and what it changes',
-            inputSchema: 'JSON Schema object with additionalProperties=false',
-            annotations: { readOnlyHint: 'boolean', destructiveHint: 'boolean', openWorldHint: 'boolean', idempotentHint: 'optional boolean' },
-            handlers: [{ kind: 'builtin', target: 'existing builtin name', defaults: 'optional object' }, { kind: 'command', executable: 'binary name', args: ['literal', '{{input.field}}'], cwd: 'optional workspace-relative directory', timeoutSec: '1-3600' }],
-          },
-          query: query ? { value: query, matched: matches.length, usedFullCatalogFallback: matches.length === 0 } : undefined,
+          bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
+          skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
         } };
-        const completed = this.attachEvents(response, authenticated.id);
-        return completed;
-      },
-      onError: (_meta, error) => {
-        const failed = failure(error);
-        return this.attachEvents(this.decorateContinuation(failed, authenticated.id, undefined, context.transport), authenticated.id);
-      },
-    });
+      }
+      sessionId = authenticated.id;
+      this.store.acknowledgeHarnessRequirements(authenticated.id);
+      this.store.touchControl(authenticated.id);
+      this.beginAudit(authenticated.id, actionId, context.transport, 'extension_discover', input, started);
+      auditStarted = true;
+      const query = typeof input.query === 'string' ? input.query.toLowerCase() : '';
+      const includeSchemas = input.includeSchemas !== false;
+      const builtins = [...this.builtins.values()].map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'builtin', annotations: tool.annotations, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
+      builtins.push({
+        name: 'task_poll', title: 'Poll background task', description: 'Poll a MyTerminal operation that exceeded the 200ms fast-return budget. Keep polling the returned taskId until status is completed, failed, or timeout.', kind: 'builtin',
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
+        ...(includeSchemas ? { inputSchema: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false } } : {}),
+      });
+      const custom = this.store.listExtensions().map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'custom', annotations: tool.annotations, handlerKind: tool.handler.kind, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
+      const catalog = [...builtins, ...custom];
+      const matches = catalog.filter((tool) => !query || `${tool.name} ${tool.title} ${tool.description}`.toLowerCase().includes(query));
+      const tools = query && matches.length === 0 ? catalog : matches;
+      const response: ToolResponse = { ok: true, data: {
+        agentMd: loadAgentMd(this.config.settingsPath),
+        skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
+        tools, total: tools.length,
+        instructions: {
+          identity: 'Every concrete call and registry change belongs to the authenticated MyTerminal session. Never use openai/session as MyTerminal identity.',
+          discover: 'Call extension_discover when you need the exact capability or input schema.',
+          register: 'Call extension_register with action=validate before action=upsert.',
+          call: `Actions calls extension_call with an exact concrete tool name, identity, and input. Facade operation names do not belong in nextCalls. ${harnessRequirement(this.config.actionsContinuationMode)}`,
+          collaboration: 'Delegate by domain and parallel workload rather than assigning an entire large objective to one child. Sessions must keep working until their acceptance criteria are complete, explicitly blocked, or waiting on external input. Collaboration is active, not one-way supervision: safely complete non-conflicting work and hand results to the responsible session. Before completion, coordinate via message_send and checkpoints; do not emit a completion-style user report.',
+          completion: 'A root cannot complete until every direct child is terminal and all child messages/events are reviewed. CHILD_REVIEW_REQUIRED returns current time, child status, recent operations, message timing, and mustContinue=true; continue work and do not end with a user-facing final summary.',
+          history: 'Continuation context is bounded by design. Use paginated session_history for permanent structured history. Message responses include sent/observed timestamps, age, audited operations since send, and possible delay notices.',
+          background: this.config.nonBlockingTasksEnabled
+            ? 'Non-blocking tasks are enabled. Calls that exceed 200ms return status=running and taskId; call task_poll until terminal, then follow the returned continuation nextCall.'
+            : 'Non-blocking tasks are disabled. Tool calls remain attached to the request until completion or timeout.',
+        },
+        harness: harnessContract(this.config.actionsContinuationMode) as unknown as JsonObject,
+        registrationSchema: {
+          name: 'lower_snake_case, 3-64 characters', title: 'human-readable title', description: 'when to use the tool and what it changes',
+          inputSchema: 'JSON Schema object with additionalProperties=false',
+          annotations: { readOnlyHint: 'boolean', destructiveHint: 'boolean', openWorldHint: 'boolean', idempotentHint: 'optional boolean' },
+          handlers: [{ kind: 'builtin', target: 'existing builtin name', defaults: 'optional object' }, { kind: 'command', executable: 'binary name', args: ['literal', '{{input.field}}'], cwd: 'optional workspace-relative directory', timeoutSec: '1-3600' }],
+        },
+        query: query ? { value: query, matched: matches.length, usedFullCatalogFallback: matches.length === 0 } : undefined,
+      } };
+      const completed = this.attachEvents(response, authenticated.id);
+      this.finishAudit(authenticated.id, actionId, context.transport, 'extension_discover', input, started, 'completed', completed);
+      return completed;
+    } catch (error) {
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const failed = failure(error);
+      const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, 'extension_discover', input, started, 'failed', response, auditError);
+      return response;
+    } finally {
+      this.activeActions.delete(actionId);
+    }
   }
 
   /** ADR-0029: drop the ephemeral MCP identity binding for a closed MCP session so no zombie binding survives. */
@@ -339,31 +304,38 @@ export class ExtensionService {
 
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
-    let authenticated: { id: string };
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
+    let auditStarted = false;
     try {
-      authenticated = this.authenticate(input, context, false)!;
+      const authenticated = this.authenticate(input, context, false)!; sessionId = authenticated.id;
+      this.store.beforeOrdinaryCall(sessionId);
+      this.beginAudit(sessionId, actionId, context.transport, 'extension_register', input, started);
+      auditStarted = true;
+      const action = typeof input.action === 'string' ? input.action : '';
+      let data: JsonObject;
+      if (action === 'remove') {
+        if (typeof input.name !== 'string') throw new MyTerminalError('INVALID_INPUT', 'name is required for remove.');
+        this.store.removeExtension(input.name); data = { action, name: input.name, removed: true };
+      } else {
+        if (action !== 'validate' && action !== 'upsert') throw new MyTerminalError('INVALID_INPUT', 'action must be validate, upsert, or remove.');
+        const rawSpec = input.spec ?? input.specJson;
+        const spec = validateSpec(typeof rawSpec === 'string' ? jsonObjectValue(rawSpec, 'specJson') : rawSpec, this.builtins);
+        if (action === 'upsert') this.store.upsertExtension(spec);
+        data = { action, valid: true, registered: action === 'upsert', spec };
+      }
+      const response = this.attachEvents({ ok: true, data }, sessionId);
+      this.finishAudit(sessionId, actionId, context.transport, 'extension_register', input, started, 'completed', response);
+      return response;
     } catch (error) {
-      return this.attachEvents(failure(error), undefined);
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const response = this.attachEvents(failure(error), sessionId);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, 'extension_register', input, started, 'failed', response, auditError);
+      return response;
+    } finally {
+      this.activeActions.delete(actionId);
     }
-    this.store.beforeOrdinaryCall(authenticated.id);
-    return this.withAudit(authenticated.id, context.transport, 'extension_register', input, {
-      onSuccess: () => {
-        const action = typeof input.action === 'string' ? input.action : '';
-        let data: JsonObject;
-        if (action === 'remove') {
-          if (typeof input.name !== 'string') throw new MyTerminalError('INVALID_INPUT', 'name is required for remove.');
-          this.store.removeExtension(input.name); data = { action, name: input.name, removed: true };
-        } else {
-          if (action !== 'validate' && action !== 'upsert') throw new MyTerminalError('INVALID_INPUT', 'action must be validate, upsert, or remove.');
-          const rawSpec = input.spec ?? input.specJson;
-          const spec = validateSpec(typeof rawSpec === 'string' ? jsonObjectValue(rawSpec, 'specJson') : rawSpec, this.builtins);
-          if (action === 'upsert') this.store.upsertExtension(spec);
-          data = { action, valid: true, registered: action === 'upsert', spec };
-        }
-        return this.attachEvents({ ok: true, data }, authenticated.id);
-      },
-      onError: (_meta, error) => this.attachEvents(failure(error), authenticated.id),
-    });
   }
 
   async registerFromTui(input: JsonObject): Promise<ToolResponse> {
@@ -440,7 +412,7 @@ export class ExtensionService {
         if (!problem) this.store.completeContinuationCall(authenticated.id, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
         const response = this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), response, problem);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed', response, problem);
         return response;
       }
       const result = await operation;
@@ -456,13 +428,14 @@ export class ExtensionService {
         if (!problem) this.store.completeContinuationCall(sessionId, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
         const response = this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId);
-        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), response, problem);
+        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed', response, problem);
         return response;
       }
       return this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId);
     } catch (error) {
-      const auditError = this.deriveAuditError(error);
-      const isPolicyRejection = auditError.code === 'NEXT_CALL_REQUIRED' || auditError.code === 'CONTINUATION_PLAN_REQUIRED';
+      const policyCode = error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR';
+      const isPolicyRejection = policyCode === 'NEXT_CALL_REQUIRED' || policyCode === 'CONTINUATION_PLAN_REQUIRED';
+      const auditError = { code: policyCode, message: error instanceof Error ? error.message : String(error) };
       const failed = failure(error);
       const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
       if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', response, auditError);
@@ -478,27 +451,39 @@ export class ExtensionService {
   async callSubagent(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
     this.trimBackgroundTasks();
+    let sessionId: string | undefined;
+    const started = Date.now();
+    const actionId = `act_${randomUUID()}`;
     const tool = typeof input.tool === 'string' ? input.tool : 'unknown';
     const args = callArguments(input);
-    const authenticated = this.authenticate(input, context, false)!;
-    // 按 CONTROL_TOOLS 判断走 beforeOrdinaryCall 还是 touchControl
-    if (!CONTROL_TOOLS.has(tool)) this.store.beforeOrdinaryCall(authenticated.id);
-    else this.store.touchControl(authenticated.id);
-    return this.withAudit(authenticated.id, 'subagent', tool, args, {
-      onSuccess: async () => {
-        // 同步 await，无 fast-return
-        const invocationContext: InvocationContext = {
-          ...context,
-          transport: 'subagent',
-          authenticatedSession: authenticated,
-          identity: explicitIdentity(input),
-        };
-        const result = await this.invokeTool(tool, args, invocationContext);
-        return { ok: true, data: { tool, result } };
-      },
-      onError: (_meta, error) => failure(error),
-      errorStatus: (auditError) => auditError.code === 'ACTION_TIMEOUT' ? 'timeout' : 'failed',
-    });
+    let auditStarted = false;
+    try {
+      const authenticated = this.authenticate(input, context, false)!;
+      sessionId = authenticated.id;
+      this.beginAudit(authenticated.id, actionId, 'subagent', tool, args, started);
+      auditStarted = true;
+      // 按 CONTROL_TOOLS 判断走 beforeOrdinaryCall 还是 touchControl
+      if (!CONTROL_TOOLS.has(tool)) this.store.beforeOrdinaryCall(authenticated.id);
+      else this.store.touchControl(authenticated.id);
+      // 同步 await，无 fast-return
+      const invocationContext: InvocationContext = {
+        ...context,
+        transport: 'subagent',
+        authenticatedSession: authenticated,
+        identity: explicitIdentity(input),
+      };
+      const result = await this.invokeTool(tool, args, invocationContext);
+      const response: ToolResponse = { ok: true, data: { tool, result } };
+      this.finishAudit(authenticated.id, actionId, 'subagent', tool, args, started, 'completed', response);
+      return response;
+    } catch (error) {
+      const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
+      const failed = failure(error);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, 'subagent', tool, args, started, auditError.code === 'ACTION_TIMEOUT' ? 'timeout' : 'failed', failed, auditError);
+      return failed;
+    } finally {
+      if (!this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
+    }
   }
 
   private assertContinuation(sessionId: string, tool: string, input: JsonObject, transport: InvocationContext['transport']): void {
@@ -548,7 +533,7 @@ export class ExtensionService {
     if (task.status !== 'running') return;
     const problem = resultProblem(result);
     if (!problem) this.store.completeContinuationCall(task.sessionId, task.tool, task.input);
-    task.status = this.resultToAuditStatus(problem);
+    task.status = problem?.code === 'ACTION_TIMEOUT' ? 'timeout' : problem ? 'failed' : 'completed';
     task.completedAt = new Date().toISOString();
     const base: ToolResponse = problem ? { ok: false, data: { tool: task.tool, result }, error: problem } : { ok: true, data: { tool: task.tool, result } };
     task.response = this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source);
@@ -558,7 +543,7 @@ export class ExtensionService {
 
   private failBackgroundTask(task: BackgroundTask, error: unknown): void {
     if (task.status !== 'running') return;
-    const auditError = this.deriveAuditError(error);
+    const auditError = { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
     task.status = 'failed';
     task.completedAt = new Date().toISOString();
     task.response = this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source);
