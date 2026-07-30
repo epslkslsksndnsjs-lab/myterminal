@@ -6,6 +6,7 @@ import { MyTerminalError, type MyTerminalStore } from './store.js';
 import { renderTemplate, resolveWorkspacePath, validateJsonSchema } from './security.js';
 import { listSkills } from './skills.js';
 import { runCommand } from './core-tools.js';
+import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
 
@@ -288,10 +289,11 @@ export class ExtensionService {
         const query = typeof input.query === 'string' ? input.query.toLowerCase() : '';
         const includeSchemas = input.includeSchemas !== false;
         const builtins = [...this.builtins.values()].map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'builtin', annotations: tool.annotations, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
+        // ADR-0032（#41）：task_poll 条目改引用 TASK_POLL_TOOL 单源，不再手抄第三份
         builtins.push({
-          name: 'task_poll', title: 'Poll background task', description: 'Poll a MyTerminal operation that exceeded the 200ms fast-return budget. Keep polling the returned taskId until status is completed, failed, or timeout.', kind: 'builtin',
-          annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true },
-          ...(includeSchemas ? { inputSchema: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false } } : {}),
+          name: TASK_POLL_TOOL.name, title: TASK_POLL_TOOL.title, description: TASK_POLL_TOOL.description, kind: 'builtin',
+          annotations: TASK_POLL_TOOL.annotations,
+          ...(includeSchemas ? { inputSchema: TASK_POLL_TOOL.inputSchema } : {}),
         });
         const custom = this.store.listExtensions().map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, kind: 'custom', annotations: tool.annotations, handlerKind: tool.handler.kind, ...(includeSchemas ? { inputSchema: tool.inputSchema } : {}) }));
         const catalog = [...builtins, ...custom];
