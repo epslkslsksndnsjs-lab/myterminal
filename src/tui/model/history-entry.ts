@@ -11,6 +11,8 @@
  * title — 一行语义摘要（从 data 提取关键字段）
  * detail — 次要信息（可选，截断 120 字符）
  */
+import { statusToVisual } from '../status-color.js';
+
 export type HistoryEntryView = {
   type: string;
   icon: string;
@@ -72,11 +74,7 @@ export function viewForHistoryEntry(
       : 0;
     const tool = str(data, 'tool') || action;
 
-    let tone: HistoryEntryView['tone'] = 'muted';
-    if (status === 'completed') tone = 'good';
-    else if (status === 'running') tone = 'accent';
-    else if (status === 'failed' || status === 'timeout') tone = 'bad';
-    else if (status === 'policy_rejected') tone = 'warn';
+    const tone = statusToVisual(status);
 
     const title = tool || (zh ? '工具调用' : 'Tool call');
     const detailParts: string[] = [];

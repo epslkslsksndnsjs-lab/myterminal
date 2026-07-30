@@ -11,6 +11,7 @@ import type { AgUiEvent } from '../../subagent/tui-bridge.js';
 import type { Theme } from '../state.js';
 import type { Copy } from '../copy/index.js';
 import { Heading, Line } from './shared.js';
+import { statusToVisual } from '../status-color.js';
 
 /** 事件渲染条目 */
 type EventEntry = {
@@ -185,10 +186,7 @@ export function SubagentDetail({ subagentId, theme, zh, copy }: {
     : live.status === 'failed' ? (zh ? '失败' : 'Failed')
     : (zh ? '已中止' : 'Aborted');
 
-  const statusColor = live.status === 'running' ? theme.accent
-    : live.status === 'completed' ? theme.good
-    : live.status === 'failed' ? theme.bad
-    : theme.warn;
+  const statusColor = theme[statusToVisual(live.status)];
 
   return (
     <box flexDirection="column" width="100%" padding={1} gap={1}>
