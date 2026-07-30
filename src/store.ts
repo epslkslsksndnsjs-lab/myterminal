@@ -7,7 +7,8 @@ import type {
   SessionEvent, SessionEventKind, SessionIdentity, SessionPhase, StoredState, TaskPackage,
   SessionHistoryEntry, ToolAuditEvent, PlannedToolCall,
 } from './types.js';
-import { redact } from './redact.js';
+import { AuditLog } from './audit-log.js';
+import type { AuditFact, AuditFactsPage } from './audit-log.js';
 
 const EMPTY_STATE: StoredState = {
   schemaVersion: 2, revision: 0, sessions: [], messages: [], events: [], subscriptions: [], appBindings: [], extensions: [],
@@ -90,15 +91,6 @@ export function publicSession(session: MyTerminalSession): JsonObject {
   };
 }
 
-type AuditFact = ToolAuditEvent & {
-  sessionId: string;
-  sessionName: string;
-  at: string;
-  tool: string;
-  ok: boolean;
-  errorCode?: string;
-};
-
 type HistoryIndex = { size: number; mtimeMs: number; total: number; offsets: number[] };
 const HISTORY_INDEX_STRIDE = 256;
 const HISTORY_TAIL_LIMIT = 5_000;
@@ -112,7 +104,8 @@ export class MyTerminalStore {
   private readonly journalPath: string;
   private readonly transientClaimCodes = new Map<string, string>();
   private readonly historyIndexes = new Map<string, HistoryIndex>();
-  private auditCache?: AuditFact[];
+  /** ADR-0032 #64: audit write/read seam. Store stays the state holder + IO adapter. */
+  private readonly audit: AuditLog;
   private journalEntries = 0;
   private journalBytes = 0;
 
@@ -122,6 +115,12 @@ export class MyTerminalStore {
     this.journalPath = path.join(stateDir, 'state.journal.jsonl');
     mkdirSync(this.historyDir, { recursive: true, mode: 0o700 });
     this.state = this.load();
+    this.audit = new AuditLog({
+      appendToolAudit: (sessionId, data) => this.appendHistory(sessionId, 'tool_audit', data),
+      readRecentHistory: (sessionId) => this.readRecentHistory(sessionId),
+      listSessions: () => this.state.sessions,
+      requireSession: (id) => this.requireSession(id),
+    }, this.now);
   }
 
   snapshot(): StoredState { return structuredClone(this.state); }
@@ -637,93 +636,17 @@ export class MyTerminalStore {
 
   historyCount(sessionId: string): number { return this.historyIndex(sessionId).total; }
 
-  auditFacts(limit = 500): AuditFact[] {
-    this.auditCache ||= this.state.sessions.flatMap((session) => this.auditFactsFromHistory(session))
-      .sort((a, b) => a.at.localeCompare(b.at));
-    return structuredClone(this.auditCache.slice(-Math.max(1, Math.min(5000, limit))));
-  }
+  auditFacts(limit = 500): AuditFact[] { return this.audit.facts(limit); }
+
+  /** Coherent pagination over the audit stream (ADR-0032 #64 seam, consumed by #62). */
+  auditFactsPage(offset = 0, limit = 100): AuditFactsPage { return this.audit.factsPage(offset, limit); }
 
   cumulativeContextChars(sessionId?: string): number {
     const facts = this.auditFacts(5000).filter((f) => !sessionId || f.sessionId === sessionId);
     return facts.reduce((sum, f) => sum + JSON.stringify(f.args || {}).length + JSON.stringify(f.result || {}).length, 0);
   }
 
-  auditEvent(sessionId: string, event: ToolAuditEvent): ToolAuditEvent {
-    const session = this.requireSession(sessionId);
-    const redacted = redact(event);
-    const args = redacted.args;
-    const result = redacted.result;
-    const error = event.error ? redacted.error : undefined;
-    const data = {
-      ...event,
-      error,
-      args,
-      result,
-      // Compatibility fields keep older history readers and continuation projections useful.
-      tool: event.action,
-      ok: event.status === 'completed',
-      startedAt: event.timestamp,
-      errorCode: event.error?.code,
-    } as unknown as JsonObject;
-    this.appendHistory(sessionId, 'tool_audit', data);
-    if (this.auditCache) {
-      const next = this.auditFact(session, { at: this.iso(), type: 'tool_audit', data });
-      const index = this.auditCache.findIndex((fact) => fact.sessionId === session.id && fact.id === event.id);
-      if (index >= 0) this.auditCache[index] = { ...this.auditCache[index], ...next, at: this.auditCache[index].at };
-      else this.auditCache.push(next);
-    }
-    return {
-      ...event,
-      args,
-      result,
-      error: error && typeof error === 'object' ? error as ToolAuditEvent['error'] : undefined,
-    };
-  }
-
-  private auditFactsFromHistory(session: MyTerminalSession): AuditFact[] {
-    const facts = new Map<string, AuditFact>();
-    for (const entry of this.readRecentHistory(session.id)) {
-      if (entry.type !== 'tool_audit') continue;
-      const next = this.auditFact(session, entry);
-      const previous = facts.get(next.id);
-      facts.set(next.id, previous ? { ...previous, ...next, at: previous.at, timestamp: previous.timestamp } : next);
-    }
-    return [...facts.values()];
-  }
-
-  private auditFact(session: MyTerminalSession, entry: SessionHistoryEntry): AuditFact {
-    const data = entry.data as JsonObject;
-    const action = String(data.action || data.tool || 'unknown');
-    const rawStatus = typeof data.status === 'string' ? data.status : data.ok === true ? 'completed' : 'failed';
-    const status: ToolAuditEvent['status'] = rawStatus === 'started' ? 'running' : rawStatus === 'succeeded' ? 'completed'
-      : ['running', 'completed', 'failed', 'timeout', 'policy_rejected'].includes(rawStatus) ? rawStatus as ToolAuditEvent['status'] : 'failed';
-    const rawErrorCode = typeof data.errorCode === 'string'
-      ? data.errorCode
-      : data.error && typeof data.error === 'object' && typeof (data.error as JsonObject).code === 'string'
-        ? String((data.error as JsonObject).code)
-        : undefined;
-    const errorCode = rawErrorCode || (status === 'failed' || status === 'timeout' ? 'UNKNOWN_ERROR' : undefined);
-    return {
-      id: String(data.id || `legacy-${session.id}-${entry.at}-${action}`),
-      timestamp: String(data.timestamp || data.startedAt || entry.at),
-      completedAt: typeof data.completedAt === 'string' ? data.completedAt : undefined,
-      source: ['apps', 'actions', 'tui', 'test', 'mcp'].includes(String(data.source)) ? data.source as ToolAuditEvent['source'] : 'test',
-      action,
-      status,
-      durationMs: Number(data.durationMs || 0),
-      error: errorCode ? { code: errorCode } : undefined,
-      workspace: String(data.workspace || ''),
-      session: String(data.session || session.id),
-      args: data.args,
-      result: data.result,
-      sessionId: session.id,
-      sessionName: session.name,
-      at: String(data.timestamp || data.startedAt || entry.at),
-      tool: action,
-      ok: status === 'completed',
-      errorCode,
-    };
-  }
+  auditEvent(sessionId: string, event: ToolAuditEvent): ToolAuditEvent { return this.audit.event(sessionId, event); }
 
   context(sessionId: string): JsonObject {
     const session = this.requireSession(sessionId);
@@ -798,7 +721,7 @@ export class MyTerminalStore {
     this.state.appBindings = this.state.appBindings.filter((item) => !deleted.has(item.sessionId));
     for (const item of this.state.sessions) if (item.continuesSessionId && deleted.has(item.continuesSessionId)) item.predecessorDeleted = true;
     for (const id of deleted) { rmSync(this.historyPath(id), { force: true }); this.transientClaimCodes.delete(id); this.historyIndexes.delete(id); }
-    if (this.auditCache) this.auditCache = this.auditCache.filter((item) => !deleted.has(item.sessionId));
+    this.audit.pruneDeleted(deleted);
     this.save();
     return { deleted: [...deleted] };
   }
