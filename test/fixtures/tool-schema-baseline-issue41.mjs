@@ -18,6 +18,7 @@ import { randomBytes } from 'node:crypto';
 import { createBuiltinTools } from '../../dist/core-tools.js';
 import { MyTerminalStore } from '../../dist/store.js';
 import { createMcpServer } from '../../dist/mcp.js';
+import { TASK_POLL_TOOL } from '../../dist/tool-schemas.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
@@ -44,6 +45,23 @@ export function collectBuiltinSchemas() {
     out[name] = { title: tool.title, description: tool.description, annotations: tool.annotations, aliases: tool.aliases, inputSchema: tool.inputSchema };
   }
   return out;
+}
+
+// task_poll 不在 createBuiltinTools() 内，而是经 TASK_POLL_TOOL 单源发布
+// （extensions.ts:303 的 extension_discover + mcp.ts:232 的 registerDirect）。
+// LOCK-74 的关系锁/语义值锁需要覆盖它（否则 #74 式漂移能原样复发的唯一缺口），
+// 但 builtin-schemas-issue41.json 基线只含 createBuiltinTools() 产出，不能污染它
+// （否则 LOCK-1 误红）。故单独提供「含 task_poll」的采集器供 LOCK-74 使用。
+export function collectBuiltinSchemasWithTaskPoll() {
+  const core = collectBuiltinSchemas();
+  core[TASK_POLL_TOOL.name] = {
+    title: TASK_POLL_TOOL.title,
+    description: TASK_POLL_TOOL.description,
+    annotations: TASK_POLL_TOOL.annotations,
+    aliases: undefined,
+    inputSchema: TASK_POLL_TOOL.inputSchema,
+  };
+  return core;
 }
 
 const inertFacade = {

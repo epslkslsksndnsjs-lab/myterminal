@@ -29,7 +29,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { collectBuiltinSchemas, collectMcpTools } from './fixtures/tool-schema-baseline-issue41.mjs';
+import { collectBuiltinSchemasWithTaskPoll, collectMcpTools } from './fixtures/tool-schema-baseline-issue41.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const HINTS = ['readOnlyHint', 'destructiveHint', 'openWorldHint', 'idempotentHint'];
@@ -80,6 +80,7 @@ const IDEMPOTENCY_LEDGER = {
   session_events_ack: [true, '按事件 ID 确认，重复确认无额外效果（与 mcp.ts:214 一致）'],
   session_tag: [true, 'store.ts:486 用 Set 去重，重复打同一标签结果不变'],
   session_subscribe: [true, 'store.ts:499 用 some() 查重后才 push，重复订阅不产生第二条'],
+  task_poll: [true, '轮询后台任务进度，重复轮询结果收敛（与 TASK_POLL_TOOL.annotations / mcp.ts:232 safeRead 默认一致）'],
 
   // ── 非幂等：每次调用都产生新的不可回收效果 ──
   session_register: [false, '每次调用产出新 session 与新 token；重放会留下孤儿 session'],
@@ -102,7 +103,7 @@ const IDEMPOTENCY_LEDGER = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('[LOCK-74-1] core 与 MCP 两侧共有工具的 annotations 逐字相等（例外须登记在 KNOWN_DRIFT）', async () => {
-  const core = collectBuiltinSchemas();
+  const core = collectBuiltinSchemasWithTaskPoll();
   const mcp = await collectMcpTools();
   const shared = Object.keys(core).filter((n) => n in mcp).sort();
 
@@ -144,7 +145,7 @@ test('[LOCK-74-1b] KNOWN_DRIFT allowlist 必须为空（ADR-0034 的收敛终态
 });
 
 test('[LOCK-74-1c] KNOWN_DRIFT 只登记 idempotentHint，其余三个 hint 两侧永不漂移', async () => {
-  const core = collectBuiltinSchemas();
+  const core = collectBuiltinSchemasWithTaskPoll();
   const mcp = await collectMcpTools();
   const shared = Object.keys(core).filter((n) => n in mcp);
 
@@ -164,7 +165,7 @@ test('[LOCK-74-1c] KNOWN_DRIFT 只登记 idempotentHint，其余三个 hint 两�
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('[LOCK-74-2] 每个 core 工具的 idempotentHint 与 IDEMPOTENCY_LEDGER 登记值一致', () => {
-  const core = collectBuiltinSchemas();
+  const core = collectBuiltinSchemasWithTaskPoll();
   const names = Object.keys(core).sort();
 
   const unregistered = names.filter((n) => !(n in IDEMPOTENCY_LEDGER));
@@ -191,7 +192,7 @@ test('[LOCK-74-2] 每个 core 工具的 idempotentHint 与 IDEMPOTENCY_LEDGER �
 });
 
 test('[LOCK-74-2b] 四个 hint 必须全部显式为布尔值（不得缺字段）', () => {
-  const core = collectBuiltinSchemas();
+  const core = collectBuiltinSchemasWithTaskPoll();
   const bad = [];
   for (const [name, tool] of Object.entries(core)) {
     const a = tool.annotations ?? {};
@@ -203,7 +204,7 @@ test('[LOCK-74-2b] 四个 hint 必须全部显式为布尔值（不得缺字段�
 });
 
 test('[LOCK-74-2c] readOnlyHint 为 true 的工具必须同时 idempotentHint 为 true', () => {
-  const core = collectBuiltinSchemas();
+  const core = collectBuiltinSchemasWithTaskPoll();
   const bad = [];
   for (const [name, tool] of Object.entries(core)) {
     const a = tool.annotations ?? {};
