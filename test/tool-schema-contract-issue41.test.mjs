@@ -153,7 +153,7 @@ function normalize(node, source) {
 /** MCP 侧只在传输层附加 identity；session_register 另有 cluster 路由字段 workspaceId。 */
 const TRANSPORT_ONLY_PROPERTIES = { '*': ['identity'], session_register: ['identity', 'workspaceId'] };
 
-test('[CONTRACT-1] 29 个 direct tool 的 MCP inputSchema 与源 JSON Schema 逐字段一致', async () => {
+test('[CONTRACT-1] 30 个 direct tool 的 MCP inputSchema 与源 JSON Schema 逐字段一致', async () => {
   const mcp = await collectMcpTools();
   const builtins = collectBuiltinSchemas();
   const { BUILTIN_INPUT_SCHEMAS } = await import('../dist/tool-schemas.js');
@@ -182,7 +182,7 @@ test('[CONTRACT-1] 29 个 direct tool 的 MCP inputSchema 与源 JSON Schema 逐
     assert.notEqual(tool.inputSchema.additionalProperties, false, `${name} 顶层不应 strict 收口——strip 以匹配 main 基线`);
     checked += 1;
   }
-  assert.equal(checked, 29, `direct tool 数量应为 29，实际 ${checked}`);
+  assert.equal(checked, 30, `direct tool 数量应为 30（#82 新增 skill direct 入口），实际 ${checked}`);
 });
 
 test('[CONTRACT-2] 派生器对源 schema 的往返：jsonSchemaToZod → toJSONSchema 等价于源', async () => {
