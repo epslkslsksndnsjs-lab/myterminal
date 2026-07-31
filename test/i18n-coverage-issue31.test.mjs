@@ -36,12 +36,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { ROOT, FIXTURE, scopeFiles, stripComments, snapshotScope } from './fixtures/i18n-harvest.mjs';
+import * as harvest from './fixtures/i18n-harvest.mjs';
 
-/** i18n 机制本体所在文件，允许出现语言判定（含 context.tsx 里 I18n 类型的 `zh: boolean`）。 */
+/** i18n 机制本体所在文件，允许出现语言判定（含 context.tsx 里 I18n 类型的 `zh: boolean`）。
+ *  键一律 POSIX 分隔符，与 scopeFiles() 的产出口径一致（见 PLATFORM-LOCK-1）。 */
 const MECHANISM_FILES = new Set([
-  path.join('src', 'tui', 'copy', 'index.ts'),
-  path.join('src', 'tui', 'copy', 'i18n.ts'),
-  path.join('src', 'tui', 'copy', 'context.tsx'),
+  'src/tui/copy/index.ts',
+  'src/tui/copy/i18n.ts',
+  'src/tui/copy/context.tsx',
 ]);
 
 function readScope(file) {
@@ -170,5 +172,47 @@ describe('#31 i18n seam', () => {
   test('unknown language falls back to en, matching config validation', async () => {
     const { i18nFor } = await import('../dist/tui/copy/i18n.js');
     assert.equal(i18nFor('fr'), i18nFor('en'));
+  });
+
+  // ─── 跨平台护栏（Windows CI 回归，2026-07-31）───
+  // 症状：Windows CI 上行为锁报 55 个文件全部「文件消失」，macOS/Ubuntu 全绿。
+  // 根因：作用域键用 path.relative/path.join 生成，Windows 上是 `src\tui\App.tsx`，
+  //       而基线 JSON 在 POSIX 平台生成、键是 `src/tui/App.tsx` —— 键全体对不上。
+  // 这两条锁把「键口径」与「换行口径」固定成平台无关，避免同类平台差异再次咬人。
+
+  test('PLATFORM-LOCK-1: 作用域键一律 POSIX 分隔符（平台无关，Windows CI 防线）', () => {
+    assert.equal(
+      typeof harvest.toPosixKey, 'function',
+      '收割器必须导出 toPosixKey()，作为作用域键的唯一归一化入口',
+    );
+    // 归一化语义：Windows 分隔符必须被折成 POSIX；POSIX 输入原样不动。
+    assert.equal(harvest.toPosixKey('src\\tui\\App.tsx'), 'src/tui/App.tsx');
+    assert.equal(harvest.toPosixKey('src\\workspace-selection.ts'), 'src/workspace-selection.ts');
+    assert.equal(harvest.toPosixKey('src/tui/App.tsx'), 'src/tui/App.tsx');
+
+    // 实际产出的键不得含反斜杠，且必须与基线键集合完全一致。
+    const keys = scopeFiles();
+    const backslashed = keys.filter((k) => k.includes('\\'));
+    assert.equal(backslashed.length, 0, `作用域键含平台分隔符: ${JSON.stringify(backslashed)}`);
+
+    const baselineKeys = Object.keys(JSON.parse(fs.readFileSync(FIXTURE, 'utf8'))).sort();
+    assert.deepEqual(keys.slice().sort(), baselineKeys, '作用域键与基线键不一致（平台差异或作用域漂移）');
+
+    // 机制文件豁免名单必须与作用域键同口径，否则 Windows 上豁免会静默失效。
+    for (const mech of MECHANISM_FILES) {
+      assert.ok(!mech.includes('\\'), `机制文件名单含平台分隔符: ${mech}`);
+      assert.ok(keys.includes(mech), `机制文件不在作用域内（口径不一致）: ${mech}`);
+    }
+  });
+
+  test('PLATFORM-LOCK-2: 字面量收割对 CRLF 与 LF 源产出一致（换行口径平台无关）', () => {
+    // 无 .gitattributes 时 Windows checkout 可能落 CRLF；跨行模板字面量会把 \r 收进多重集。
+    const lf = "const a = 'x';\nconst b = `line1\nline2`;\n";
+    const crlf = lf.replace(/\n/g, '\r\n');
+    assert.deepEqual(
+      harvest.harvestLiterals(crlf),
+      harvest.harvestLiterals(lf),
+      'CRLF 源与 LF 源的字面量多重集必须相同，否则行为锁在 Windows 上假红',
+    );
   });
 });
