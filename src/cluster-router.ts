@@ -9,9 +9,27 @@ function identitySessionId(input: JsonObject): string | undefined {
     : undefined;
 }
 
-function callInput(input: JsonObject): JsonObject {
-  const value = input.input ?? input.arguments;
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
+function objectFrom(value: unknown): JsonObject | undefined {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value as JsonObject;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as JsonObject;
+    } catch {
+      /* 非法 JSON：lenient 回退为空，与旧 callInput 的 {} 行为一致 */
+    }
+  }
+  return undefined;
+}
+
+/** ADR-0036 #83：与 facade callArguments 同口径合并三源（arguments / inputJson / input），
+ *  input 优先。此前仅取 input ?? arguments，静默丢弃 inputJson，导致跨进程路由基于残缺入参。
+ *  保持 lenient：非对象 / 非法 JSON 不抛，等同空。 */
+export function callInput(input: JsonObject): JsonObject {
+  const legacy = objectFrom(input.arguments) ?? {};
+  const fallback = objectFrom(input.inputJson) ?? {};
+  const preferred = objectFrom(input.input) ?? {};
+  return { ...legacy, ...fallback, ...preferred };
 }
 
 export class ClusterExtensionRouter implements ExtensionFacade {
