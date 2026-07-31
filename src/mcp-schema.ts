@@ -24,9 +24,10 @@ import type { JsonSchema } from './types.js';
  *     zod 的 `.default()` 会在 parse 时填值，改变转发给 `ExtensionService.call`
  *     的参数 = 行为变更，绝对不可。实测 `.meta({ default })` 只影响
  *     `z.toJSONSchema` 输出，`safeParse({})` 仍返回 `{}`。
- *   · `additionalProperties: false` → `z.strictObject`（未知字段拒绝，
- *     与运行期一致；旧的 raw-shape 注册是 strip 模式，未知字段被静默吞掉，
- *     恰是 #41 要消灭的展示层/运行期分歧之一）。
+ *   · `additionalProperties: false` → `z.object`（**strip 模式**，未知字段静默丢弃）——
+ *     1:1 复刻 main 基线 raw-shape 注册语义（#70 门禁裁定）。刻意不用 `z.strictObject`：
+ *     strict 会拒绝未知字段，属行为变更；「展示层 strip / 运行期拒绝」的分歧
+ *     若要消灭，须单独开票作为显式行为变更走流程。
  *   · `additionalProperties: true` 且无 properties（开放 record，如
  *     planned call 的 input）→ `z.record(z.string(), z.unknown())`。
  */

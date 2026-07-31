@@ -823,10 +823,11 @@ export class MyTerminalStore {
     if (!existsSync(file)) return [];
     const stat = statSync(file);
     const cached = this.historyTailCache.get(sessionId);
-    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.entries;
+    // 返回拷贝而非缓存数组本身：调用方原地 push/splice 不得污染缓存（#70 门禁收尾，别名风险）。
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.entries.slice();
     const entries = this.readHistoryTail(sessionId, HISTORY_TAIL_LIMIT);
     this.historyTailCache.set(sessionId, { size: stat.size, mtimeMs: stat.mtimeMs, entries });
-    return entries;
+    return entries.slice();
   }
 
   private readHistoryTail(sessionId: string, limit: number): SessionHistoryEntry[] {
