@@ -203,3 +203,28 @@ test('backward-compat: 不传 ctx 走 defaultContext（生产路径不变）', (
   clearAllSubagents();
   assert.equal(getSubagent('compat-1'), undefined, 'clearAll should work on defaultContext');
 });
+
+// ── #34 第 7 项收敛：runner 单例按 context 隔离（#70 门禁补收） ──
+test('ISO-RUNNER: SubagentRunner 单例随 context 隔离，reset 互不影响', async () => {
+  const { initSubagentRunner, getSubagentRunner, resetSubagentRunner } = await import('../dist/subagent/runner.js');
+  const fakeDeps = () => ({
+    runSubagentImpl: async () => ({}),
+    settings: {},
+    workspaceDir: '/tmp',
+    notify: async () => {},
+    checkpoint: async () => {},
+    registerAndClaimChild: () => ({ session: {}, identity: { sessionId: 's', sessionToken: 't' } }),
+  });
+  const ctxA = createSubagentContext();
+  const ctxB = createSubagentContext();
+
+  initSubagentRunner(fakeDeps(), ctxA);
+  assert.throws(() => getSubagentRunner(ctxB), /not initialized/i, 'B 未初始化必须抛（不得看见 A 的 runner）');
+
+  initSubagentRunner(fakeDeps(), ctxB);
+  assert.notEqual(getSubagentRunner(ctxA), getSubagentRunner(ctxB), '两 context 的 runner 必须是不同实例');
+
+  resetSubagentRunner(ctxA);
+  assert.throws(() => getSubagentRunner(ctxA), /not initialized/i, 'A reset 后必须抛');
+  assert.ok(getSubagentRunner(ctxB), 'A reset 不得影响 B');
+});

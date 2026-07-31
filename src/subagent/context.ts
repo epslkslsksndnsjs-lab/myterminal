@@ -9,6 +9,7 @@
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import type { SubagentRecord } from './store.js';
+import type { SubagentRunner } from './runner.js';
 
 // ── FileState（file-state.ts 内部类型，此处公开供 context 持有）──
 
@@ -21,7 +22,8 @@ export interface FileState {
 
 /**
  * 可注入的 subagent 运行时上下文。
- * 持有原 6 个模块级全局单例的全部可变状态。
+ * 收敛账目（#34 七项清单）：localTasks 已于批4 #47 删除，故实收 6 个
+ * = 下方 5 个状态容器 + runner 装配单例。
  * 生产用 defaultContext；测试用 createSubagentContext() 创建隔离实例。
  */
 export interface SubagentContext {
@@ -39,6 +41,9 @@ export interface SubagentContext {
 
   /** tui-bridge.ts — AG-UI 事件总线（原模块级 subagentEvents EventEmitter） */
   readonly events: EventEmitter;
+
+  /** runner.ts — SubagentRunner 装配实例（原模块级 let singleton），init 前为 null */
+  runner: SubagentRunner | null;
 }
 
 // ── 工厂函数 ──
@@ -56,6 +61,7 @@ export function createSubagentContext(): SubagentContext {
     agentShellTasks: new Map(),
     replacementDecisions: new Map(),
     events,
+    runner: null,
   };
 }
 
