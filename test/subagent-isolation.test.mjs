@@ -123,31 +123,30 @@ test('isolation: shell-tracker — ctxA trackShellTask 不影响 ctxB getTracked
 });
 
 // ════════════════════════════════════════════════════════════════
-// 4. result-budget.ts — replacementDecisions Map 隔离
+// 4. result-budget.ts — replacementDecisions 按 agentId 分桶隔离（#77）
 // ════════════════════════════════════════════════════════════════
 
-test('isolation: result-budget — ctxA 冻结决策不影响 ctxB', () => {
-  const ctxA = createSubagentContext();
-  const ctxB = createSubagentContext();
+test('isolation: result-budget — agentA 冻结决策不影响 agentB（#77 分桶）', () => {
+  const agentA = 'iso-agent-A';
+  const agentB = 'iso-agent-B';
 
   // 构造超预算结果（>200K），触发冻结
   const bigContent = 'x'.repeat(250_000);
   const resultsA = [{ tool_use_id: 'tool-1', content: bigContent, is_error: false }];
 
-  enforceMessageBudget(resultsA, ctxA);
+  enforceMessageBudget(resultsA, agentA);
 
-  // ctxA 已冻结 tool-1 → preview
-  assert.ok(ctxA.replacementDecisions.has('tool-1'), 'ctxA should have frozen tool-1');
-
-  // ctxB 未冻结
-  assert.ok(!ctxB.replacementDecisions.has('tool-1'), 'ctxB should NOT have frozen tool-1');
-
-  // ctxB 处理同 id 的小结果不被压缩
+  // agentA 自己的冻结决策仍生效：小内容 round2 仍被压
   const smallContent = 'y'.repeat(100);
-  const resultsB = [{ tool_use_id: 'tool-1', content: smallContent, is_error: false }];
-  enforceMessageBudget(resultsB, ctxB);
+  const resultsA2 = [{ tool_use_id: 'tool-1', content: smallContent, is_error: false }];
+  enforceMessageBudget(resultsA2, agentA);
+  assert.ok(resultsA2[0].content.includes('budget-compressed'), 'agentA 自己的冻结决策应仍生效');
 
-  assert.equal(resultsB[0].content, smallContent, 'ctxB should NOT compress tool-1');
+  // agentB 处理同 id 的小结果——agentA 的冻结不得泄漏到 agentB，故不被压缩
+  const resultsB = [{ tool_use_id: 'tool-1', content: smallContent, is_error: false }];
+  enforceMessageBudget(resultsB, agentB);
+
+  assert.equal(resultsB[0].content, smallContent, 'agentB should NOT compress tool-1 (no leak from agentA)');
 });
 
 // ════════════════════════════════════════════════════════════════

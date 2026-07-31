@@ -1,10 +1,7 @@
 // ADR-0007 决策 19：工具结果预算——大小限制 + 截断 + 消息组预算
 // ADR-0007 决策 30 Bug 1：replacementDecisions 跨 turn 冻结必须“先 get 再 set”
 // ADR-0007 决策 18：ToolResult 类型在此定义并导出，M5 直接 import
-// ADR-0032 #34：replacementDecisions 收敛到 SubagentContext，函数追加可选末参 ctx（缺省 defaultContext）
-
-import { defaultContext } from './context.js';
-import type { SubagentContext } from './context.js';
+// ADR-0032 #34：replacementDecisions 曾收敛到 SubagentContext；#77 改为模块级按 agentId 分桶（见下方），不再依赖单例 ctx。
 
 // ── 常量（决策 19）──
 
@@ -21,14 +18,27 @@ export type ToolResult = {
   is_error: boolean;
 };
 
-// ── 跨 turn 冻结 Map（ADR-0032 #34：移入 SubagentContext）──
+// ── 跨 turn 冻结 Map（ADR-0032 #34 收敛意图 + ADR-0035 #77 按 agentId 分桶止血）──
+// 模块级按 agentId 分桶：每个 agent 独立一份 replacementDecisions，
+// resetReplacementDecisions(agentId) 只清该 agent 的桶，互不串扰。
+// （SubagentContext.replacementDecisions 字段由 #85 决定是否复用，本刀不动它。）
+const agentReplacementDecisions = new Map<string, Map<string, 'full' | 'preview'>>();
+
+function bucketFor(agentId: string): Map<string, 'full' | 'preview'> {
+  let bucket = agentReplacementDecisions.get(agentId);
+  if (!bucket) {
+    bucket = new Map();
+    agentReplacementDecisions.set(agentId, bucket);
+  }
+  return bucket;
+}
 
 /**
- * 重置冻结决策——compact 后或测试用。
- * 注释标注用途，避免误用。
+ * 重置某 agent 的冻结决策——compact 后或测试用。
+ * 只清该 agent 的桶，不影响其他并发/相继运行的 agent（#77 修复）。
  */
-export function resetReplacementDecisions(ctx: SubagentContext = defaultContext): void {
-  ctx.replacementDecisions.clear();
+export function resetReplacementDecisions(agentId: string = '__default__'): void {
+  agentReplacementDecisions.delete(agentId);
 }
 
 // ── 单结果截断（决策 19）──
@@ -57,17 +67,20 @@ function truncateToPreview(content: string): string {
  * 对一批 ToolResult 应用消息组预算。
  *
  * **Bug 1 修复版**（决策 30）：顺序必须如此——
- * ① 先遍历 results，凡 replacementDecisions.get(id) === 'preview' 的强制压成预览
+ * ① 先遍历 results，凡本 agent 冻结决策 get(id) === 'preview' 的强制压成预览
  * ② 再算总字符，≤ 200K 直接返回
  * ③ 超预算：按 content 长度降序，逐个把"还不够小"的结果压成预览并冻结
  *
  * @param results 本消息组的所有工具结果
+ * @param agentId 调用方 subagent 的 id——冻结决策按 agentId 分桶隔离（#77 修复）
  * @returns 应用预算后的结果数组（原地修改）
  */
-export function enforceMessageBudget(results: ToolResult[], ctx: SubagentContext = defaultContext): ToolResult[] {
+export function enforceMessageBudget(results: ToolResult[], agentId: string = '__default__'): ToolResult[] {
+  const decisions = bucketFor(agentId);
+
   // ① 先应用已冻结的截断决策（Bug 1 修复：之前只 set 不 get）
   for (const r of results) {
-    if (ctx.replacementDecisions.get(r.tool_use_id) === 'preview') {
+    if (decisions.get(r.tool_use_id) === 'preview') {
       r.content = truncateToPreview(r.content);
     }
   }
@@ -93,7 +106,7 @@ export function enforceMessageBudget(results: ToolResult[], ctx: SubagentContext
     currentTotal -= originalSize - r.content.length;
 
     // 冻结决策——后续 turn 也用截断版
-    ctx.replacementDecisions.set(r.tool_use_id, 'preview');
+    decisions.set(r.tool_use_id, 'preview');
   }
 
   return results;
