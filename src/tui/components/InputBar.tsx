@@ -2,7 +2,7 @@ import type { InputRenderable } from '@opentui/core';
 import { useBindings } from '@opentui/keymap/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Theme } from '../state.js';
-import type { Copy } from '../copy/types.js';
+import { useI18n } from '../copy/context.js';
 import { useInputHistory } from '../hooks/useInputHistory.js';
 
 /**
@@ -11,14 +11,14 @@ import { useInputHistory } from '../hooks/useInputHistory.js';
  * Normal：❯ muted + placeholder + hint；点击 → Editing。
  * Editing：accent 边框 + ❯ accent + OpenTUI input + hint。
  */
-export function InputBar({ theme, copy, editing, onEditingChange, onSubmitText, completions }: {
+export function InputBar({ theme, editing, onEditingChange, onSubmitText, completions }: {
   theme: Theme;
-  copy: Copy;
   editing: boolean;
   onEditingChange: (editing: boolean) => void;
   onSubmitText: (text: string) => void;
   completions: (prefix: string) => string[];
 }) {
+  const { copy } = useI18n();
   const [value, setValue] = useState('');
   const [completionIndex, setCompletionIndex] = useState(-1);
   const inputRef = useRef<InputRenderable>(null);

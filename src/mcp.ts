@@ -5,6 +5,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { ExtensionService } from './extensions.js';
+import { jsonSchemaToZod } from './mcp-schema.js';
+import { BUILTIN_INPUT_SCHEMAS, type BuiltinToolName } from './tool-schemas.js';
 import type { InvocationContext, JsonObject, ToolResponse } from './types.js';
 import { CURRENT_VERSION } from './version.js';
 
@@ -22,7 +24,18 @@ const responseSchema = {
 const identitySchema = z.object({ sessionId: z.string().min(1), sessionToken: z.string().min(1) });
 const optionalIdentitySchema = identitySchema.nullish();
 
-const extensionToolInput = z.object({
+/**
+ * extension_call/extension_register 入参的协议层 schema —— **main 09f2246 基线逐字还原**。
+ *
+ * 语义（#70 门禁探针实证，见 scripts/probe-41-baseline-vs-seams.mjs）：
+ *   · 44 个**已声明**字段的类型校验在协议层生效（`limit:"abc"`、`mode:"wildcard"` 等即拒）；
+ *   · `.catchall(z.unknown())` 只放行**未声明**的额外键（面向任意 custom extension 的开放性）。
+ * #41 曾把它退化为 `z.record`（全通），使 6 类类型错误从「协议层即拒」变「放行」——
+ * 那是真实行为放宽，违反批5「纯重构行为不变」铁律，已还原。
+ * 「防第三份副本腐烂」的诉求由锁测试 PROTO-LOCK-3（基线字段快照）承担；
+ * 若要改为从单源派生/收紧约束，属显式行为变更，须单独开票走流程。
+ */
+export const extensionToolInput = z.object({
   name: z.string().optional(),
   role: z.string().optional(),
   session: z.string().optional(),
@@ -166,68 +179,62 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
 
   const safeRead = { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true };
   const safeLocalMutation = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
-  const registerDirect = (name: string, title: string, description: string, inputSchema: Record<string, z.ZodType>, annotations = safeRead) => {
+  /**
+   * ADR-0032（#41）：direct tool 的输入形状不再手抄 zod——统一从
+   * `BUILTIN_INPUT_SCHEMAS`（`invokeTool` 运行期校验的同一份 JSON Schema）派生，
+   * 展示层与运行期从此不可能漂移。派生器遇到不支持的关键字会在 server 构造时
+   * 直接抛错（UnsupportedSchemaError），绝不静默回退成全通 schema。
+   *
+   * `extraShape` 只用于**传输层专属**字段：所有工具都有的 `identity`，以及
+   * session_register 的 `workspaceId`（cluster-router 消费后剥离，见
+   * cluster-router.ts 的 call()——它不属于工具本身的形状，只属于 MCP 路由）。
+   *
+   * title/description/annotations 仍是这里的字面量：那套措辞面向 Apps/MCP 审核
+   * 刻意撰写（强调"只动本地会话元数据、不联网"），与 core-tools 面向内部的
+   * 描述是两个受众，不合并（详见 tool-schemas.ts 顶部说明）。
+   */
+  const registerDirect = (name: BuiltinToolName, title: string, description: string, annotations = safeRead, extraShape: Record<string, z.ZodType> = {}) => {
+    const derived = jsonSchemaToZod(BUILTIN_INPUT_SCHEMAS[name], name) as z.ZodObject<z.ZodRawShape>;
     server.registerTool(name, {
-      title, description, inputSchema: { ...inputSchema, identity: optionalIdentitySchema }, outputSchema: responseSchema, annotations,
+      title, description, inputSchema: derived.extend({ ...extraShape, identity: optionalIdentitySchema }), outputSchema: responseSchema, annotations,
       _meta: { 'openai/toolInvocation/invoking': `Running ${title}…`, 'openai/toolInvocation/invoked': `${title} ready` },
     }, async (input, callContext) => {
       const { identity, ...rest } = input as JsonObject & { identity?: unknown };
       return toToolResult(await service.call({ tool: name, input: rest, ...(identity ? { identity } : {}) }, contextFromCall(callContext)), `${title} completed.`);
     });
   };
-  const stringList = z.array(z.string()).max(100);
-  const plannedCall = z.object({ tool: z.string().min(3).max(64), input: z.record(z.string(), z.unknown()), purpose: z.string().min(1).max(500).optional() });
-  const taskPackage = z.object({
-    objective: z.string().min(1).max(4000), background: z.string().min(1).max(4000),
-    deliverables: stringList.min(1), acceptanceCriteria: stringList.min(1), constraints: stringList.min(1),
-  });
 
-  registerDirect('session_register', 'Start local session', 'Create a local audit session or delegate a local child session. This only changes MyTerminal session metadata and does not contact external services or modify workspace files.', {
-    mode: z.enum(['root', 'delegate']), name: z.string().min(1).max(80), role: z.string().max(80).optional(), continuesSessionId: z.string().optional(), task: taskPackage.optional(), workspaceId: z.string().optional(),
-  }, safeLocalMutation);
-  registerDirect('session_inherit', 'Claim local session', 'Claim an existing MyTerminal session. This only changes local controller metadata.', { sessionId: z.string().min(1), claimCode: z.string().optional(), sessionToken: z.string().optional() }, safeLocalMutation);
-  registerDirect('session_checkpoint', 'Update local session', 'Record local session progress. A working checkpoint is not a stopping point; follow any returned continuation instruction immediately.', {
-    phase: z.enum(['pending', 'working', 'waiting', 'blocked', 'completed', 'cancelled']), summary: z.string().min(1).max(4000), nextSteps: stringList.optional(), blockers: stringList.optional(), artifacts: stringList.optional(), milestone: z.string().max(1000).optional(), tags: stringList.optional(), nextCalls: z.array(plannedCall).min(1).max(3).optional(), replanReason: z.string().max(1000).optional(),
-  }, safeLocalMutation);
-  registerDirect('session_list', 'List local sessions', 'Read local session metadata without changing files or contacting external services.', {}, safeRead);
-  registerDirect('session_context', 'Read local session context', 'Read bounded local continuation context without changing files.', {}, safeRead);
-  registerDirect('session_history', 'Read local session history', 'Read paginated local audit history without changing files.', { offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(500).optional(), includeAncestors: z.boolean().optional() }, safeRead);
-  registerDirect('session_release', 'Release local session', 'Release a local session controller for handoff. This does not delete session history or workspace data.', {}, safeLocalMutation);
-  registerDirect('session_events_ack', 'Acknowledge local events', 'Mark delivered local session events acknowledged while retaining permanent history.', { eventIds: stringList.min(1) }, { ...safeLocalMutation, idempotentHint: true });
-  registerDirect('message_send', 'Send local session message', 'Send a message between MyTerminal sessions in the same local workspace. It does not contact people or services outside MyTerminal.', { to: z.string().min(1), body: z.string().min(1).max(20_000) }, safeLocalMutation);
-  registerDirect('message_inbox', 'Read local session inbox', 'Read a bounded page of MyTerminal session messages and optionally mark that page read.', { markRead: z.boolean().optional(), offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(200).optional() }, { ...safeRead, readOnlyHint: false });
-  registerDirect('message_list', 'List local session messages', 'Read recent local collaboration messages.', { limit: z.number().int().min(1).max(1000).optional() }, safeRead);
-  registerDirect('message_conversation', 'Read local session conversation', 'Read a two-way MyTerminal session conversation.', { with: z.string().min(1), limit: z.number().int().min(1).max(5000).optional() }, safeRead);
-  registerDirect('workspace_info', 'Inspect local workspace', 'Read basic metadata for the user-authorized local workspace.', {}, safeRead);
-  registerDirect('list_dir', 'List local directory', 'List one directory inside the user-authorized local workspace without modifying it.', { path: z.string().optional() }, safeRead);
-  registerDirect('find_files', 'Find local files', 'Find file paths inside the user-authorized local workspace without modifying them.', { query: z.string().min(1), path: z.string().optional(), limit: z.number().int().min(1).max(500).optional() }, safeRead);
-  registerDirect('search_text', 'Search local text', 'Search bounded text files inside the user-authorized local workspace without modifying them.', { query: z.string().min(1), path: z.string().optional(), regex: z.boolean().optional(), limit: z.number().int().min(1).max(500).optional() }, safeRead);
-  registerDirect('read_file', 'Read local file', 'Read one bounded file inside the user-authorized local workspace without modifying it.', { path: z.string().min(1), maxBytes: z.number().int().min(1).max(1_000_000).optional() }, safeRead);
-  registerDirect('read_file_range', 'Read local file lines', 'Read a bounded line range inside the user-authorized local workspace without modifying it.', { path: z.string().min(1), startLine: z.number().int().min(1), endLine: z.number().int().min(1) }, safeRead);
-  registerDirect('git_status', 'Read Git status', 'Read Git status in the local workspace without changing the repository.', { cwd: z.string().optional() }, safeRead);
-  registerDirect('git_diff', 'Read Git diff', 'Read the local Git diff without changing the repository.', { cwd: z.string().optional() }, safeRead);
-  registerDirect('git_log', 'Read Git log', 'Read recent local Git history without changing the repository.', { cwd: z.string().optional() }, safeRead);
-  registerDirect('git_show', 'Read Git object', 'Read one bounded Git object without changing the repository.', { revision: z.string().min(1), cwd: z.string().optional() }, safeRead);
-  registerDirect('blob_create', 'Stage local blob', 'Stage content in MyTerminal content-addressed storage without modifying workspace files or contacting external services.', { content: z.string().max(1_400_000), encoding: z.enum(['utf-8', 'base64']).optional() }, { ...safeLocalMutation, idempotentHint: true });
-  registerDirect('blob_read', 'Read local blob', 'Read a bounded staged MyTerminal blob without modifying workspace files.', { sha256: z.string().length(64), encoding: z.enum(['utf-8', 'base64']).optional(), maxBytes: z.number().int().min(1).max(1_000_000).optional() }, safeRead);
-  registerDirect('blob_write_file', 'Create local file from blob', 'Create a workspace file from a staged blob. Repeating identical content succeeds; different existing content is not overwritten.', { sha256: z.string().length(64), path: z.string().min(1), createParents: z.boolean().optional() }, { ...safeLocalMutation, idempotentHint: true });
-  registerDirect('task_poll', 'Poll local task', 'Read progress for a MyTerminal task that continued in the background after the 200ms fast-return budget.', { taskId: z.string().min(1) }, safeRead);
+  registerDirect('session_register', 'Start local session', 'Create a local audit session or delegate a local child session. This only changes MyTerminal session metadata and does not contact external services or modify workspace files.', safeLocalMutation, { workspaceId: z.string().optional() });
+  registerDirect('session_inherit', 'Claim local session', 'Claim an existing MyTerminal session. This only changes local controller metadata.', safeLocalMutation);
+  registerDirect('session_checkpoint', 'Update local session', 'Record local session progress. A working checkpoint is not a stopping point; follow any returned continuation instruction immediately.', safeLocalMutation);
+  registerDirect('session_list', 'List local sessions', 'Read local session metadata without changing files or contacting external services.');
+  registerDirect('session_context', 'Read local session context', 'Read bounded local continuation context without changing files.');
+  registerDirect('session_history', 'Read local session history', 'Read paginated local audit history without changing files.');
+  registerDirect('session_release', 'Release local session', 'Release a local session controller for handoff. This does not delete session history or workspace data.', safeLocalMutation);
+  registerDirect('session_events_ack', 'Acknowledge local events', 'Mark delivered local session events acknowledged while retaining permanent history.', { ...safeLocalMutation, idempotentHint: true });
+  registerDirect('message_send', 'Send local session message', 'Send a message between MyTerminal sessions in the same local workspace. It does not contact people or services outside MyTerminal.', safeLocalMutation);
+  registerDirect('message_inbox', 'Read local session inbox', 'Read a bounded page of MyTerminal session messages and optionally mark that page read.', { ...safeRead, readOnlyHint: false });
+  registerDirect('message_list', 'List local session messages', 'Read recent local collaboration messages.');
+  registerDirect('message_conversation', 'Read local session conversation', 'Read a two-way MyTerminal session conversation.');
+  registerDirect('workspace_info', 'Inspect local workspace', 'Read basic metadata for the user-authorized local workspace.');
+  registerDirect('list_dir', 'List local directory', 'List one directory inside the user-authorized local workspace without modifying it.');
+  registerDirect('find_files', 'Find local files', 'Find file paths inside the user-authorized local workspace without modifying them.');
+  registerDirect('search_text', 'Search local text', 'Search bounded text files inside the user-authorized local workspace without modifying them.');
+  registerDirect('read_file', 'Read local file', 'Read one bounded file inside the user-authorized local workspace without modifying it.');
+  registerDirect('read_file_range', 'Read local file lines', 'Read a bounded line range inside the user-authorized local workspace without modifying it.');
+  registerDirect('git_status', 'Read Git status', 'Read Git status in the local workspace without changing the repository.');
+  registerDirect('git_diff', 'Read Git diff', 'Read the local Git diff without changing the repository.');
+  registerDirect('git_log', 'Read Git log', 'Read recent local Git history without changing the repository.');
+  registerDirect('git_show', 'Read Git object', 'Read one bounded Git object without changing the repository.');
+  registerDirect('blob_create', 'Stage local blob', 'Stage content in MyTerminal content-addressed storage without modifying workspace files or contacting external services.', { ...safeLocalMutation, idempotentHint: true });
+  registerDirect('blob_read', 'Read local blob', 'Read a bounded staged MyTerminal blob without modifying workspace files.');
+  registerDirect('blob_write_file', 'Create local file from blob', 'Create a workspace file from a staged blob. Repeating identical content succeeds; different existing content is not overwritten.', { ...safeLocalMutation, idempotentHint: true });
+  registerDirect('task_poll', 'Poll local task', 'Read progress for a MyTerminal task that continued in the background after the 200ms fast-return budget.');
 
   // ── Subagent tools（ADR-0009 决策 1）──
-  registerDirect('subagent_start', 'Start Subagent', 'Start a subagent for a sub-task. Asynchronous: returns taskId immediately; poll with subagent_status; completion arrives via message.', {
-    objective: z.string().min(1),
-    background: z.string().optional(),
-    deliverables: z.array(z.string()).optional(),
-    acceptanceCriteria: z.array(z.string()).optional(),
-    constraints: z.array(z.string()).optional(),
-    provider: z.enum(['openai', 'anthropic', 'deepseek', 'glm', 'qwen']).optional(),
-    model: z.string().optional(),
-    maxTurns: z.number().int().min(1).max(200).optional(),
-    timeoutSec: z.number().int().min(30).max(3600).optional(),
-    readOnly: z.boolean().optional(),
-  }, safeLocalMutation);
-  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up.', { taskId: z.string().min(1) }, safeRead);
-  registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', { taskId: z.string().min(1) }, safeLocalMutation);
+  registerDirect('subagent_start', 'Start Subagent', 'Start a subagent for a sub-task. Asynchronous: returns taskId immediately; poll with subagent_status; completion arrives via message.', safeLocalMutation);
+  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up.');
+  registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
 
   return server;
 }

@@ -15,18 +15,18 @@
 import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
 import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
+import { ResiliencePolicy, MAX_SERVER_RETRIES } from './resilience-policy.js';
 import type { NormalizedMessage, TokenUsage } from './token-counter.js';
 import { estimateMessageTokens, getAutoCompactThreshold, getModelContextWindow } from './token-counter.js';
 import { CostTracker } from './cost-tracker.js';
 import { getSubagent, updateSubagentStatus, updateSubagentCost, createSubagent, countRunning } from './store.js';
 import { clearFileState } from './file-state.js';
-import { cleanupAgentShellTasks } from './shell-tracker.js';
 import { executeToolCalls } from './tool-executor.js';
 import type { ToolCall } from './tool-executor.js';
 import { getToolNames, getAllToolSchemas } from './tools.js';
 import type { SubagentToolContext } from './tools.js';
-import { resetReplacementDecisions } from './result-budget.js';
 import { emitAgUi } from './tui-bridge.js';
+import { sessionResourceManager } from '../session-resource-manager.js';
 import type { AgUiEvent } from './tui-bridge.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -42,20 +42,6 @@ const COMPACTABLE_TOOLS = new Set(['execute_cli', 'read_file', 'grep', 'glob']);
 /** 决策 20：compact 熔断器——连续 3 次 compact 失败后停止 */
 export const MAX_COMPACT_FAILURES = 3;
 
-/** 决策 21：Circuit Breaker——连续 5 次 LLM API 失败 → 熔断 */
-const CB_FAILURE_THRESHOLD = 5;
-
-/** 决策 21：Circuit Breaker——熔断 30 秒后允许半开探测 */
-const CB_COOLDOWN_MS = 30_000;
-
-/** 决策 21：指数退避基础延迟 500ms */
-const BASE_RETRY_DELAY_MS = 500;
-
-/** 决策 21：指数退避上限 32s */
-const MAX_RETRY_DELAY_MS = 32_000;
-
-/** 决策 21：server_overload / connection 最大重试次数 */
-const MAX_SERVER_RETRIES = 3;
 
 // ════════════════════════════════════════════════════════════════
 // 导出类型
@@ -112,12 +98,12 @@ function getSubagentSystemPrompt(task: string, toolNames: string[], cwd: string)
  * write_file/edit_file/task_create/task_update 的结果**不压缩**（小且重要）。
  * 决策 20：从后往前计数，保证最近 5 个保留。
  */
-function microCompact(messages: NormalizedMessage[]): NormalizedMessage[] {
+export function microCompact(messages: NormalizedMessage[]): NormalizedMessage[] {
   // 展平所有 tool_result block，标记它们的位置
   interface ResultSlot {
     msgIndex: number;
     blockIndex: number;
-    toolName: string;
+    toolUseId: string;
   }
   const resultSlots: ResultSlot[] = [];
 
@@ -127,22 +113,31 @@ function microCompact(messages: NormalizedMessage[]): NormalizedMessage[] {
     for (let bi = 0; bi < msg.content.length; bi++) {
       const block = msg.content[bi];
       if (block.type === 'tool_result') {
-        // 从 tool_use_id 近似提取工具名——格式通常是 tool_use 的 id 中有名称前缀
-        // 实际上 tool_result 本身不存工具名。我们遍历所有 assistant 消息中的 tool_use，
-        // 通过 tool_use_id 匹配来确定工具名。
-        resultSlots.push({ msgIndex: mi, blockIndex: bi, toolName: resolveToolName(block.tool_use_id, messages) });
+        resultSlots.push({ msgIndex: mi, blockIndex: bi, toolUseId: block.tool_use_id });
       }
     }
   }
 
   if (resultSlots.length <= KEEP_RECENT_TOOL_RESULTS) return messages;
 
+  // ADR-0032 #63: 预建 tool_use_id → 工具名 映射（一次遍历，first-wins 语义），
+  // 把原 O(n²) 的"每个 tool_result 全量扫描 assistant 消息"降为 O(n) 构建 + O(1) 查表。
+  const toolNames = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    for (const block of msg.content) {
+      if (block.type === 'tool_use' && block.id && !toolNames.has(block.id)) toolNames.set(block.id, block.name);
+    }
+  }
+  const resolve = (toolUseId: string): string => (toolNames.has(toolUseId) ? (toolNames.get(toolUseId) as string) : '');
+
   const compactCount = resultSlots.length - KEEP_RECENT_TOOL_RESULTS;
 
   // 前 compactCount 个（更早的）如果属于 COMPACTABLE_TOOLS 则替换
   for (let i = 0; i < compactCount; i++) {
     const slot = resultSlots[i];
-    if (COMPACTABLE_TOOLS.has(slot.toolName)) {
+    const toolName = resolve(slot.toolUseId);
+    if (COMPACTABLE_TOOLS.has(toolName)) {
       const msg = messages[slot.msgIndex];
       const block = msg.content[slot.blockIndex];
       if (block.type === 'tool_result') {
@@ -152,19 +147,6 @@ function microCompact(messages: NormalizedMessage[]): NormalizedMessage[] {
   }
 
   return messages;
-}
-
-/** 根据 tool_use_id 反向查找对应的 tool_use block 拿到工具名 */
-function resolveToolName(toolUseId: string, messages: NormalizedMessage[]): string {
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue;
-    for (const block of msg.content) {
-      if (block.type === 'tool_use' && block.id === toolUseId) {
-        return block.name;
-      }
-    }
-  }
-  return ''; // 找不到对应的 tool_use——罕见但可能
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -242,121 +224,6 @@ export async function autoCompact(
   return [summaryMessage, ...recentRounds];
 }
 
-// ════════════════════════════════════════════════════════════════
-// Step 4：错误恢复——分类与重试策略（决策 21）
-// ════════════════════════════════════════════════════════════════
-
-type RetryDecision = {
-  retry: boolean;
-  delayMs: number;
-  action?: 'compact' | 'fallbackModel';
-};
-
-/**
- * 6 种错误分类 + 分类策略（决策 21 表）。
- * 返回是否可重试、重试延迟、推荐动作。
- */
-function classifyAndShouldRetry(err: LlmError, retryCount: number): RetryDecision {
-  switch (err.kind) {
-    case 'rate_limit': {
-      // 指数退避：500ms × 2^n + jitter(0-100ms)，上限 32s
-      // err.retryAfterMs 优先（Retry-After 头）
-      const base = err.retryAfterMs ?? BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
-      const jitter = Math.floor(Math.random() * 100);
-      const delayMs = Math.min(base + jitter, MAX_RETRY_DELAY_MS);
-      return { retry: true, delayMs };
-    }
-
-    case 'server_overload': {
-      if (retryCount < MAX_SERVER_RETRIES) {
-        const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
-        return { retry: true, delayMs };
-      }
-      // 3 次重试后降级到 fallbackModel
-      return { retry: true, delayMs: BASE_RETRY_DELAY_MS, action: 'fallbackModel' };
-    }
-
-    case 'auth':
-      // 不重试——直接失败
-      return { retry: false, delayMs: 0 };
-
-    case 'prompt_too_long':
-      // 不重试——触发响应式压缩（决策 20 第 3 层）
-      return { retry: false, delayMs: 0, action: 'compact' };
-
-    case 'connection': {
-      if (retryCount < MAX_SERVER_RETRIES) {
-        const delayMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
-        return { retry: true, delayMs };
-      }
-      return { retry: false, delayMs: 0 };
-    }
-
-    case 'system':
-    default:
-      // 直接失败
-      return { retry: false, delayMs: 0 };
-  }
-}
-
-// ════════════════════════════════════════════════════════════════
-// Step 5：Circuit Breaker（决策 21）
-// ════════════════════════════════════════════════════════════════
-
-/**
- * Circuit Breaker——防 subagent 在 API 不稳定时无限重试。
- * - 连续 5 次 LLM API 失败 → 熔断 30s
- * - 熔断期间直接拒绝，不调 API
- * - 30s 后允许一次半开探测
- * - 探测成功 → 关闭（恢复）
- * - 探测失败 → 重新熔断
- */
-class CircuitBreaker {
-  private failureCount = 0;
-  private trippedAt: number = 0;
-  private state: 'closed' | 'open' | 'half-open' = 'closed';
-
-  recordSuccess(): void {
-    if (this.state === 'half-open') {
-      this.state = 'closed';
-      this.failureCount = 0;
-    } else if (this.state === 'closed') {
-      this.failureCount = 0;
-    }
-  }
-
-  recordFailure(): void {
-    if (this.state === 'half-open') {
-      // 半开探测失败 → 重新熔断
-      this.state = 'open';
-      this.trippedAt = Date.now();
-      return;
-    }
-
-    this.failureCount++;
-    if (this.failureCount >= CB_FAILURE_THRESHOLD) {
-      this.state = 'open';
-      this.trippedAt = Date.now();
-    }
-  }
-
-  /** 如果熔断则抛错，否则正常返回 */
-  assertClosed(): void {
-    if (this.state === 'closed') return;
-
-    if (this.state === 'open') {
-      // 检查是否过了冷却期
-      if (Date.now() - this.trippedAt >= CB_COOLDOWN_MS) {
-        this.state = 'half-open';
-        // 半开——允许一次探测
-        return;
-      }
-      throw new Error(`Circuit breaker is open. Cooldown: ${Math.ceil((CB_COOLDOWN_MS - (Date.now() - this.trippedAt)) / 1000)}s remaining.`);
-    }
-
-    // half-open——允许通过（探测）
-  }
-}
 
 // ════════════════════════════════════════════════════════════════
 // Step 6：主循环 runSubagent（决策 5 + 8 + 20 + 21 + 24 + 29 + 37）
@@ -401,8 +268,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   // 成本追踪（决策 22：只记账不限制——ADR-0009 决策 14）
   const costTracker = new CostTracker(settings.model);
 
-  // Circuit Breaker（决策 21）
-  const breaker = new CircuitBreaker();
+  // 弹性策略（决策 21，issue #65 抽离）
+  const resilience = new ResiliencePolicy();
 
   // 工具集（决策 17 第 1 层：readOnly 过滤）
   const toolNames = getToolNames({ readOnly: options.readOnly ?? false });
@@ -418,17 +285,6 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   let compactFailures = 0;
   let reactiveCompactUsed = false;
 
-  // 决策 21：每类错误的重试计数
-  const errorRetryCount = new Map<string, number>();
-  function getRetryCount(kind: string): number {
-    return errorRetryCount.get(kind) ?? 0;
-  }
-  function incRetryCount(kind: string): void {
-    errorRetryCount.set(kind, getRetryCount(kind) + 1);
-  }
-  function resetRetryCount(kind: string): void {
-    errorRetryCount.delete(kind);
-  }
 
   // 发射 RUN_STARTED
   emit({
@@ -509,7 +365,6 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
           messages = await autoCompact(messages, adapter, currentModel, (e) => emit(e));
           clearFileState(agentId);  // 决策 26：compact 后清文件状态
           compactFailures = 0;
-          resetRetryCount('compact');
         } catch {
           compactFailures++;
           if (compactFailures >= MAX_COMPACT_FAILURES) {
@@ -526,7 +381,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
       let llmError: LlmError | undefined;
 
       try {
-        breaker.assertClosed();
+        resilience.assertBreakerClosed();
 
         streamResult = await collectStream({
           adapter,
@@ -553,10 +408,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         });
 
         // 成功——重置相关计数
-        breaker.recordSuccess();
-        resetRetryCount('rate_limit');
-        resetRetryCount('server_overload');
-        resetRetryCount('connection');
+        resilience.recordSuccess();
 
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') {
@@ -569,13 +421,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
         llmError = err;
 
-        // Circuit Breaker 记录失败
-        breaker.recordFailure();
-
-        const kind = llmError.kind;
-        incRetryCount(kind);
-        const retryCount = getRetryCount(kind);
-        const decision = classifyAndShouldRetry(llmError, retryCount - 1); // 已计数过，传当前次数-1
+        const decision = resilience.decideOnFailure(llmError);
 
         if (!decision.retry) {
           // 不可重试
@@ -596,10 +442,10 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
           }
 
           // auth / system / connection 耗尽 → 直接失败
-          if (kind === 'auth') {
+          if (llmError.kind === 'auth') {
             return finishFailed(`API key is invalid or expired (${settings.provider})`);
           }
-          if (kind === 'connection') {
+          if (llmError.kind === 'connection') {
             return finishFailed(`Network error after ${MAX_SERVER_RETRIES} retries: ${llmError.message}`);
           }
           return finishFailed(llmError.message);
@@ -694,11 +540,9 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     return finishFailed((err as Error).message);
 
   } finally {
-    // 决策 8：清理顺序固定
-    cleanupAgentShellTasks(agentId);   // ① 杀 shell 进程组
-    clearFileState(agentId);           // ② 清文件状态缓存
-    resetReplacementDecisions();       // ADR-0022: ③ 清 replacement 决策缓存
-    // ADR-0032 #47：④ localTasks 镜像已移除（record 自带 1h 兜底清理，无需 clearLocalTasks）
+    // 决策 8：清理顺序固定——统一收口到 SessionResourceManager（ADR-0032 #38）
+    // 注册顺序即现状 ①②③：agent-shell-tasks / file-state / replacement-decisions
+    sessionResourceManager.disposeAgent(agentId);
     messages.length = 0;               // ⑤ 释放 messages（决策 9）
     // ⑥ 终态事件与 store 更新在 finishXxx 里已做
   }

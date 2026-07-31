@@ -4,9 +4,10 @@
  * 时间格式用 relativeTime，自动换行 body。
  */
 import type { Theme } from '../theme/index.js';
+import { useI18n } from '../copy/context.js';
 import { relativeTime } from '../model/relative-time.js';
 
-export function MessageBubble({ fromName, fromId, body, createdAt, readAt, selfSide, theme, zh }: {
+export function MessageBubble({ fromName, fromId, body, createdAt, readAt, selfSide, theme }: {
   fromName: string;
   fromId: string;
   body: string;
@@ -14,19 +15,19 @@ export function MessageBubble({ fromName, fromId, body, createdAt, readAt, selfS
   readAt?: string;
   selfSide: 'user' | 'agent';
   theme: Theme;
-  zh: boolean;
 }) {
+  const { t } = useI18n();
   const sideColor = selfSide === 'user' ? theme.user : theme.agent;
-  const displayName = selfSide === 'user' ? (zh ? '你' : 'You') : fromName;
+  const displayName = selfSide === 'user' ? (t('You', '你')) : fromName;
   const now = new Date();
-  const time = relativeTime(createdAt, now, zh);
+  const time = relativeTime(createdAt, now, t);
 
   return (
     <box flexDirection="column" border={['left']} borderColor={sideColor} backgroundColor={theme.panel} padding={1} marginBottom={0}>
       <box flexDirection="row" gap={1} flexWrap="wrap" width="100%">
         <text fg={sideColor} wrapMode="none"><b>{displayName}</b></text>
         <text fg={theme.muted} wrapMode="none">{time}</text>
-        {readAt ? <text fg={theme.muted} wrapMode="none">{zh ? '已读' : 'read'}</text> : null}
+        {readAt ? <text fg={theme.muted} wrapMode="none">{t('read', '已读')}</text> : null}
       </box>
       <text fg={theme.text} wrapMode="word">{body}</text>
     </box>

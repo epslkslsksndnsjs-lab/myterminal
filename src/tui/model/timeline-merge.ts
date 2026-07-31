@@ -53,11 +53,11 @@ let slot: MemoSlot;
 export function memoizedMergeActivity(
   revision: string,
   messages: MyTerminalMessage[],
-  audits: MergeAuditInput[],
+  audits: () => MergeAuditInput[],
   limit: number,
 ): ActivityEntry[] {
   if (slot?.revision === revision && slot.limit === limit) return slot.result;
-  const result = mergeActivity(messages, audits, limit);
+  const result = mergeActivity(messages, audits(), limit);
   slot = { revision, limit, result };
   return result;
 }

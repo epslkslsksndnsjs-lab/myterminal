@@ -5,8 +5,9 @@ import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, publicSession, type MyTerminalStore } from './store.js';
 import { resolveWorkspacePath, validateSafeRegex } from './security.js';
-import type { JsonObject, JsonSchema, TaskPackage, ToolDefinition } from './types.js';
-import { disarmSessionResources } from './session-resources.js';
+import type { JsonObject, TaskPackage, ToolDefinition } from './types.js';
+import { BUILTIN_INPUT_SCHEMAS } from './tool-schemas.js';
+import { sessionResourceManager } from './session-resource-manager.js';
 import { continuationPolicy } from './continuation.js';
 import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
@@ -194,12 +195,12 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   add({
     name: 'workspace_info', title: 'Workspace info', description: 'Inspect the single authorized workspace and MyTerminal runtime.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.workspace_info, annotations: readOnly,
     invoke: async () => ({ workspaceDir: config.workspaceDir, platform: process.platform, node: process.version, stateRevision: store.revision() }),
   });
   add({
     name: 'list_dir', title: 'List directory', description: 'List one directory inside the authorized workspace.',
-    inputSchema: { type: 'object', properties: { path: { type: 'string', default: '.' } }, additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.list_dir, annotations: readOnly,
     invoke: async (input, context) => {
       const directory = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.');
       const entries = await readdir(directory, { withFileTypes: true });
@@ -208,7 +209,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'find_files', title: 'Find files', description: 'Find files by case-insensitive path substring.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.find_files, annotations: readOnly,
     aliases: { pattern: 'query' },
     invoke: async (input) => {
       const query = asString(input.query, 'query').toLowerCase();
@@ -220,7 +221,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'search_text', title: 'Search text', description: 'Search bounded UTF-8 files for text or a regular expression.',
-    inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, regex: { type: 'boolean', default: false }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.search_text, annotations: readOnly,
     aliases: { pattern: 'query' },
     invoke: async (input) => {
       const query = asString(input.query, 'query');
@@ -248,7 +249,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'read_file', title: 'Read file', description: 'Read a bounded UTF-8 file.',
-    inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, maxBytes: { type: 'integer', minimum: 1, maximum: 1_000_000 } }, required: ['path'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.read_file, annotations: readOnly,
     invoke: async (input) => {
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
       const maxBytes = typeof input.maxBytes === 'number' ? Math.min(1_000_000, input.maxBytes) : 256_000;
@@ -259,7 +260,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'read_file_range', title: 'Read file lines', description: 'Read a line range with a content hash.',
-    inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 } }, required: ['path', 'startLine', 'endLine'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.read_file_range, annotations: readOnly,
     invoke: async (input) => {
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
       const content = await readFile(file, 'utf8');
@@ -271,7 +272,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'write_file', title: 'Write file', description: 'Create or replace one UTF-8 file inside the workspace.',
-    inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, content: { type: 'string' }, expectedSha256: { type: 'string' }, createParents: { type: 'boolean' } }, required: ['path', 'content'], additionalProperties: false }, annotations: mutating,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.write_file, annotations: mutating,
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
@@ -287,7 +288,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'apply_patch', title: 'Apply exact patch', description: 'Apply exact text replacements with optional SHA protection.',
-    inputSchema: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, expectedSha256: { type: 'string' }, replacements: { type: 'array', minItems: 1, items: { type: 'object', properties: { oldText: { type: 'string' }, newText: { type: 'string' }, replaceAll: { type: 'boolean' } }, required: ['oldText', 'newText'], additionalProperties: false } } }, required: ['path', 'replacements'], additionalProperties: false }, annotations: mutating,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.apply_patch, annotations: mutating,
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
@@ -308,7 +309,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'blob_create', title: 'Create local blob', description: 'Store UTF-8 or base64 content in a local content-addressed staging blob without changing workspace files or contacting external services.',
-    inputSchema: { type: 'object', properties: { content: { type: 'string', maxLength: 1_400_000 }, encoding: { type: 'string', enum: ['utf-8', 'base64'], default: 'utf-8' } }, required: ['content'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_create, annotations: localCreate,
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
       const buffer = decodeBlob(asString(input.content, 'content'), asOptionalString(input.encoding) || 'utf-8');
@@ -324,7 +325,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'blob_read', title: 'Read local blob', description: 'Read bounded content from a previously staged local blob without changing files.',
-    inputSchema: { type: 'object', properties: { sha256: { type: 'string', minLength: 64, maxLength: 64 }, encoding: { type: 'string', enum: ['utf-8', 'base64'], default: 'utf-8' }, maxBytes: { type: 'integer', minimum: 1, maximum: 1_000_000 } }, required: ['sha256'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_read, annotations: readOnly,
     invoke: async (input) => {
       const sha256 = asString(input.sha256, 'sha256');
       if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error('sha256 must contain 64 lowercase hexadecimal characters.');
@@ -336,7 +337,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'blob_write_file', title: 'Create file from blob', description: 'Create a workspace file from a staged blob. Repeating the same content succeeds; different existing content is never overwritten.',
-    inputSchema: { type: 'object', properties: { sha256: { type: 'string', minLength: 64, maxLength: 64 }, path: { type: 'string', minLength: 1 }, createParents: { type: 'boolean', default: false } }, required: ['sha256', 'path'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_write_file, annotations: localCreate,
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
       const sha256 = asString(input.sha256, 'sha256');
@@ -358,7 +359,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'execute_cli', title: 'Execute command', description: 'Execute one bounded shell command in the workspace.',
-    inputSchema: { type: 'object', properties: { command: { type: 'string', minLength: 1, maxLength: 20_000 }, cwd: { type: 'string' }, timeoutSec: { type: 'integer', minimum: 1, maximum: 3600 } }, required: ['command'], additionalProperties: false },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.execute_cli,
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true, idempotentHint: false },
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
@@ -374,13 +375,13 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   ] as const) {
     add({
       name: gitTool[0], title: gitTool[0].replace('_', ' '), description: `Run bounded ${gitTool[0]} in the workspace.`,
-      inputSchema: { type: 'object', properties: { cwd: { type: 'string' } }, additionalProperties: false }, annotations: readOnly,
+      inputSchema: BUILTIN_INPUT_SCHEMAS[gitTool[0]], annotations: readOnly,
       invoke: async (input, context) => await runCommand({ executable: 'git', argv: [...gitTool[1]], cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject,
     });
   }
   add({
     name: 'git_show', title: 'Git show', description: 'Show one bounded Git revision or object.',
-    inputSchema: { type: 'object', properties: { revision: { type: 'string', minLength: 1 }, cwd: { type: 'string' } }, required: ['revision'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.git_show, annotations: readOnly,
     invoke: async (input, context) => {
       const revision = asString(input.revision, 'revision');
       if (!/^[A-Za-z0-9_./~^{}:@+-]+$/.test(revision)) throw new Error('Unsafe Git revision syntax.');
@@ -389,7 +390,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'run_checks', title: 'Run project checks', description: 'Run declared typecheck, build, and test package scripts in order.',
-    inputSchema: { type: 'object', properties: { includeTest: { type: 'boolean', default: true }, cwd: { type: 'string' } }, additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: false },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.run_checks, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true, idempotentHint: false },
     invoke: async (input, context) => {
       const cwd = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.');
       const pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
@@ -404,19 +405,9 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     },
   });
 
-  const stringList = { type: 'array', items: { type: 'string' }, maxItems: 100 } as const;
-  const taskProperties = {
-    objective: { type: 'string', minLength: 1, maxLength: 4000 }, background: { type: 'string', minLength: 1, maxLength: 4000 },
-    deliverables: { ...stringList, minItems: 1 }, acceptanceCriteria: { ...stringList, minItems: 1 }, constraints: { ...stringList, minItems: 1 },
-  };
   add({
     name: 'session_register', title: 'Register session', description: 'Create and claim a root session, or delegate one direct child from an authenticated root. Delegate by domain and parallel workload with a complete role/task package; do not offload one large objective wholesale to a single child.',
-    inputSchema: {
-      type: 'object', properties: {
-        mode: { type: 'string', enum: ['root', 'delegate'], default: 'root' }, name: { type: 'string', minLength: 1, maxLength: 80 }, role: { type: 'string', maxLength: 80 },
-        continuesSessionId: { type: 'string' }, task: { type: 'object', properties: taskProperties, required: ['objective', 'background', 'deliverables', 'acceptanceCriteria', 'constraints'], additionalProperties: false },
-      }, required: ['mode', 'name'], additionalProperties: false,
-    }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_register, annotations: localCreate,
     invoke: async (input, context) => {
       const mode = input.mode === 'delegate' ? 'delegate' : 'root';
       if (mode === 'root') {
@@ -431,7 +422,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'session_inherit', title: 'Inherit session', description: 'Claim unfinished work. Use claimCode for handoff/released/revoked sessions, or the previous sessionToken to reclaim the same stale session after an interrupted ChatGPT run.',
-    inputSchema: { type: 'object', properties: { sessionId: { type: 'string', minLength: 1 }, claimCode: { type: 'string', minLength: 1 }, sessionToken: { type: 'string', minLength: 1 } }, required: ['sessionId'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_inherit, annotations: localCreate,
     invoke: async (input) => {
       const claimCode = asOptionalString(input.claimCode);
       const sessionToken = asOptionalString(input.sessionToken);
@@ -442,13 +433,12 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'session_list', title: 'List sessions', description: 'List the audited session hierarchy, phases, presence, and continuation links.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_list, annotations: readOnly,
     invoke: async (_input, context) => { actor(context); return { sessions: store.listSessions().map(publicSession) }; },
   });
-  const plannedCall: JsonSchema = { type: 'object', properties: { tool: { type: 'string', minLength: 3, maxLength: 64 }, input: { type: 'object', additionalProperties: true }, purpose: { type: 'string', minLength: 1, maxLength: 500 } }, required: ['tool', 'input'], additionalProperties: false };
   add({
     name: 'session_checkpoint', title: 'Checkpoint session', description: 'Record durable session state. When the optional enhanced Actions long-task harness is enabled, a working checkpoint requires 1-3 exact concrete nextCalls and the returned nextCall must run immediately.',
-    inputSchema: { type: 'object', properties: { phase: { type: 'string', enum: ['pending', 'working', 'waiting', 'blocked', 'completed', 'cancelled'] }, summary: { type: 'string', minLength: 1, maxLength: 4000 }, nextSteps: stringList, blockers: stringList, artifacts: stringList, milestone: { type: 'string', maxLength: 1000 }, tags: stringList, nextCalls: { type: 'array', minItems: 1, maxItems: 3, items: plannedCall }, replanReason: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['phase', 'summary'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_checkpoint, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
     invoke: async (input, context) => {
       const current = actor(context);
       if (context.transport === 'actions' && input.phase === 'working') {
@@ -464,48 +454,48 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
         }
       }
       const session = store.checkpoint(current.id, input);
-      if (session.phase === 'completed' || session.phase === 'cancelled') disarmSessionResources(config, current.id);
+      if (session.phase === 'completed' || session.phase === 'cancelled') sessionResourceManager.disposeSession(config, current.id);
       return { session: publicSession(session) };
     },
   });
   add({
     name: 'session_context', title: 'Read session context', description: 'Return the bounded 16K context projection for the authenticated session.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_context, annotations: readOnly,
     invoke: async (_input, context) => ({ context: store.context(actor(context).id) }),
   });
   add({
     name: 'session_history', title: 'Read paginated session history', description: 'Read permanent structured history for the authenticated session and its continuation ancestors without overloading context.',
-    inputSchema: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 500 }, includeAncestors: { type: 'boolean', default: true } }, additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_history, annotations: readOnly,
     invoke: async (input, context) => ({ history: store.historyPage(actor(context).id, typeof input.offset === 'number' ? input.offset : 0, typeof input.limit === 'number' ? input.limit : 100, input.includeAncestors !== false) }),
   });
   add({
     name: 'session_release', title: 'Release session', description: 'Release the current controller and issue a new one-time handoff code.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_release, annotations: localCreate,
     invoke: async (_input, context) => { const result = store.release(actor(context).id); return { session: publicSession(result.session), claimCode: result.claimCode, handoffPrompt: result.handoffPrompt }; },
   });
   add({
     name: 'session_unregister', title: 'Release session (deprecated)', description: 'Compatibility alias for session_release. It never deletes history.',
-    inputSchema: { type: 'object', properties: { session: { type: 'string' } }, additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_unregister, annotations: localCreate,
     invoke: async (_input, context) => { const result = store.release(actor(context).id); return { deprecated: true, replacement: 'session_release', removed: false, session: publicSession(result.session), claimCode: result.claimCode, handoffPrompt: result.handoffPrompt }; },
   });
   add({
     name: 'session_tag', title: 'Tag session', description: 'Append audit-friendly tags to the authenticated session.',
-    inputSchema: { type: 'object', properties: { tags: { ...stringList, minItems: 1 } }, required: ['tags'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_tag, annotations: localCreate,
     invoke: async (input, context) => ({ session: publicSession(store.tag(actor(context).id, input.tags as string[])) }),
   });
   add({
     name: 'session_subscribe', title: 'Subscribe to session', description: 'Subscribe the authenticated session to another session’s key progress.',
-    inputSchema: { type: 'object', properties: { targetSessionId: { type: 'string', minLength: 1 } }, required: ['targetSessionId'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_subscribe, annotations: localCreate,
     invoke: async (input, context) => { const current = actor(context); store.subscribe(current.id, asString(input.targetSessionId, 'targetSessionId')); return { subscribed: true, subscriberSessionId: current.id, targetSessionId: input.targetSessionId }; },
   });
   add({
     name: 'session_events_ack', title: 'Acknowledge events', description: 'Acknowledge delivered event IDs; history remains permanent.',
-    inputSchema: { type: 'object', properties: { eventIds: { ...stringList, minItems: 1, maxItems: 100 } }, required: ['eventIds'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_events_ack, annotations: localCreate,
     invoke: async (input, context) => ({ acknowledged: store.acknowledgeEvents(actor(context).id, input.eventIds as string[]) }),
   });
   add({
     name: 'message_send', title: 'Send session message', description: 'Send a durable message as the authenticated session to a recipient session name or ID; sender cannot be overridden. The response includes send/return timestamps and call latency.',
-    inputSchema: { type: 'object', properties: { to: { type: 'string', minLength: 1 }, body: { type: 'string', minLength: 1, maxLength: 20_000 } }, required: ['to', 'body'], additionalProperties: false }, annotations: localCreate,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.message_send, annotations: localCreate,
     invoke: async (input, context) => {
       const startedAt = new Date().toISOString();
       const message = store.sendMessage(actor(context).id, asString(input.to, 'to'), asString(input.body, 'body'));
@@ -515,23 +505,23 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'message_inbox', title: 'Read session inbox', description: 'Read only the authenticated session’s durable inbox.',
-    inputSchema: { type: 'object', properties: { markRead: { type: 'boolean', default: false }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } }, additionalProperties: false }, annotations: { ...readOnly, readOnlyHint: false },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.message_inbox, annotations: { ...readOnly, readOnlyHint: false },
     invoke: async (input, context) => { const current = actor(context); const page = store.inboxPage(current.id, input.markRead === true, typeof input.offset === 'number' ? input.offset : undefined, typeof input.limit === 'number' ? input.limit : 50); return { session: publicSession(current), ...page, observations: store.observeMessages(page.messages) }; },
   });
   add({
     name: 'message_list', title: 'List own collaboration messages', description: 'List recent inbound and outbound messages involving the authenticated session.',
-    inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 1000 } }, additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.message_list, annotations: readOnly,
     invoke: async (input, context) => { const current = actor(context); const messages = store.messagesForSession(current.id, typeof input.limit === 'number' ? input.limit : 100); return { messages, observations: store.observeMessages(messages) }; },
   });
   add({
     name: 'message_conversation', title: 'Read two-way conversation', description: 'Read the complete recent two-way conversation between the authenticated session and another session selected by name or ID.',
-    inputSchema: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false }, annotations: readOnly,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.message_conversation, annotations: readOnly,
     invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
   });
   add({
     name: 'skill', title: 'Run skill',
     description: 'List installed skills when called without arguments, or run one by name. Inline skills return their instructions; fork skills start a subagent and return a taskId to poll with subagent_status.',
-    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.skill,
     // ADR-0010 决策 8：fork 会启动 subagent（有副作用），整体标非 readOnly
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false },
     invoke: async (input, context) => {
@@ -571,29 +561,14 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
 
   // ── Subagent 工具（ADR-0009 决策 1/8/9/12）──
+  // ADR-0031/0032：provider 枚举经 BUILTIN_INPUT_SCHEMAS.subagent_start 引用
+  // SUBAGENT_PROVIDERS 单源，这里不再手抄。
   const SUBAGENT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
-  const PROVIDER_ENUM = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'];
 
   add({
     name: 'subagent_start', title: 'Start subagent',
     description: 'Start a subagent to work on a sub-task asynchronously. Returns taskId immediately; poll with subagent_status for progress. Completion arrives as a message notification.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        objective: { type: 'string', minLength: 1, maxLength: 4000 },
-        background: { type: 'string', maxLength: 4000 },
-        deliverables: { type: 'array', items: { type: 'string' }, maxItems: 20 },
-        acceptanceCriteria: { type: 'array', items: { type: 'string' }, maxItems: 20 },
-        constraints: { type: 'array', items: { type: 'string' }, maxItems: 20 },
-        provider: { type: 'string', enum: PROVIDER_ENUM },
-        model: { type: 'string' },
-        maxTurns: { type: 'integer', minimum: 1, maximum: 200 },
-        timeoutSec: { type: 'integer', minimum: 30, maximum: 3600 },
-        readOnly: { type: 'boolean' },
-      },
-      required: ['objective'],
-      additionalProperties: false,
-    },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.subagent_start,
     annotations: SUBAGENT_ANNOTATIONS,
     invoke: async (input, context) => {
       // 决策 8 防线 A：递归防护——subagent 不能启动 sub-subagent
@@ -620,12 +595,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'subagent_status', title: 'Subagent status',
     description: 'Query subagent progress, tasks, cost, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string', minLength: 1 } },
-      required: ['taskId'],
-      additionalProperties: false,
-    },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.subagent_status,
     annotations: readOnly,
     invoke: async (input) => {
       const runner = getSubagentRunner();
@@ -641,12 +611,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'subagent_abort', title: 'Abort subagent',
     description: 'Abort a running subagent. Idempotent — calling on an already-terminal subagent returns its current status.',
-    inputSchema: {
-      type: 'object',
-      properties: { taskId: { type: 'string', minLength: 1 } },
-      required: ['taskId'],
-      additionalProperties: false,
-    },
+    inputSchema: BUILTIN_INPUT_SCHEMAS.subagent_abort,
     annotations: SUBAGENT_ANNOTATIONS,
     invoke: async (input) => {
       const runner = getSubagentRunner();

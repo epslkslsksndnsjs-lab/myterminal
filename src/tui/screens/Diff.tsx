@@ -8,6 +8,7 @@ import { groupDiffLines } from '../model/diff-groups.js';
 import type { Copy } from '../copy/index.js';
 import { verbLabel } from '../copy/index.js';
 import { Heading, Line } from './shared.js';
+import { useI18n } from '../copy/context.js';
 
 function colorFor(line: string, theme: Theme): string {
   if (line.startsWith('+') && !line.startsWith('+++')) return theme.good;
@@ -17,17 +18,18 @@ function colorFor(line: string, theme: Theme): string {
   return theme.text;
 }
 
-export function DiffScreen({ snapshot, theme, zh, copy }: { snapshot: DiffSnapshot; theme: Theme; zh: boolean; copy: Copy }) {
+export function DiffScreen({ snapshot, theme }: { snapshot: DiffSnapshot; theme: Theme }) {
+  const { t, copy } = useI18n();
   const groups = groupDiffLines(snapshot.lines);
   const hasContent = groups.length > 0;
 
   return (
     <box flexDirection="column" width="100%" padding={1}>
-      <Heading theme={theme}>{zh ? '工作区未提交 Diff' : 'Uncommitted workspace diff'}</Heading>
+      <Heading theme={theme}>{t('Uncommitted workspace diff', '工作区未提交 Diff')}</Heading>
       <Line color={theme.muted}>{`${snapshot.updatedAt || ''}${snapshot.loading ? ` · ${verbLabel(copy, 'diff-refresh')}` : ''}`}</Line>
       {snapshot.error ? <Line color={theme.bad}>{snapshot.error}</Line> : null}
-      {snapshot.unavailableReason === 'not-git-repository' ? <Line color={theme.muted}>{zh ? '当前工作区不是 Git 仓库；Diff 视图已安全禁用。' : 'This workspace is not a Git repository; the Diff view is safely disabled.'}</Line> : null}
-      {snapshot.unavailableReason === 'git-unavailable' ? <Line color={theme.warn}>{zh ? '系统未安装或无法执行 Git；Diff 视图已安全禁用。' : 'Git is unavailable; the Diff view is safely disabled.'}</Line> : null}
+      {snapshot.unavailableReason === 'not-git-repository' ? <Line color={theme.muted}>{t('This workspace is not a Git repository; the Diff view is safely disabled.', '当前工作区不是 Git 仓库；Diff 视图已安全禁用。')}</Line> : null}
+      {snapshot.unavailableReason === 'git-unavailable' ? <Line color={theme.warn}>{t('Git is unavailable; the Diff view is safely disabled.', '系统未安装或无法执行 Git；Diff 视图已安全禁用。')}</Line> : null}
       {!snapshot.error && !snapshot.unavailableReason && !hasContent ? <Line color={theme.muted}>{copy.emptyStates.diffClean}</Line> : null}
 
       {groups.map((group, gIdx) => (
@@ -53,7 +55,7 @@ export function DiffScreen({ snapshot, theme, zh, copy }: { snapshot: DiffSnapsh
         </box>
       ))}
 
-      {snapshot.truncated ? <Line color={theme.warn}>{zh ? 'Diff 已在源进程、文件采样或渲染预算处停止；Git 子进程已终止，不会继续在后台遍历。' : 'Diff stopped at a source, sampling, or render budget; the Git subprocess was terminated instead of continuing in the background.'}</Line> : null}
+      {snapshot.truncated ? <Line color={theme.warn}>{t('Diff stopped at a source, sampling, or render budget; the Git subprocess was terminated instead of continuing in the background.', 'Diff 已在源进程、文件采样或渲染预算处停止；Git 子进程已终止，不会继续在后台遍历。')}</Line> : null}
       {snapshot.truncationReasons?.map((reason) => <Line key={reason} color={theme.warn}>{`- ${reason}`}</Line>)}
     </box>
   );

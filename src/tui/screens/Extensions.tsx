@@ -7,20 +7,20 @@ import type { Theme } from '../state.js';
 import type { Copy } from '../copy/index.js';
 import { Mascot } from '../components/Mascot.js';
 import { Heading, Line } from './shared.js';
+import { useI18n } from '../copy/context.js';
 
-export function Extensions({ state, selected, theme, zh, copy, onSelect }: {
+export function Extensions({ state, selected, theme, onSelect }: {
   state: StoredState;
   selected: number;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
   onSelect: (index: number) => void;
 }) {
+  const { t, copy } = useI18n();
   if (!state.extensions.length) {
     return (
       <box flexDirection="column" padding={1} gap={1} alignItems="center">
         <Mascot mood="happy" theme={theme} />
-        <Heading theme={theme}>{zh ? '自定义扩展' : 'Custom extensions'}</Heading>
+        <Heading theme={theme}>{t('Custom extensions', '自定义扩展')}</Heading>
         <Line color={theme.muted}>{copy.emptyStates.extensions}</Line>
       </box>
     );

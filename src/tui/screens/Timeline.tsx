@@ -9,7 +9,7 @@ import { useBindings } from '@opentui/keymap/react';
 import type { MyTerminalRuntime } from '../../server.js';
 import type { StoredState } from '../../types.js';
 import type { TuiSnapshot, Theme } from '../state.js';
-import type { Copy } from '../copy/index.js';
+import { useI18n } from '../copy/context.js';
 import { useTimelineModel } from '../hooks/useTimelineModel.js';
 import type { ActivityEntry } from '../model/timeline-merge.js';
 import { ToolCallRow } from '../components/ToolCallRow.js';
@@ -31,8 +31,6 @@ export function Timeline({
   state,
   snapshot,
   theme,
-  zh,
-  copy,
   page,
   onPageChange,
   onExpandToggle,
@@ -42,13 +40,12 @@ export function Timeline({
   state: StoredState;
   snapshot: TuiSnapshot;
   theme: Theme;
-  zh: boolean;
-  copy: Copy;
   page: number;
   onPageChange: (page: number) => void;
   onExpandToggle: () => void;
   keyboardEnabled: boolean;
 }) {
+  const { t, copy } = useI18n();
   const entries = useTimelineModel(snapshot, 0); // limit=0 = 全量不截断
   const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
   const clampedPage = Math.max(0, Math.min(page, totalPages - 1));
@@ -62,7 +59,7 @@ export function Timeline({
   const sessionNames = new Map<string, string>();
   for (const s of state.sessions) sessionNames.set(s.id, s.name);
   const fromToName = (id: string): string => {
-    if (id === 'user') return zh ? '你' : 'You';
+    if (id === 'user') return t('You', '你');
     return sessionNames.get(id) || id;
   };
 
@@ -122,11 +119,9 @@ export function Timeline({
     <box flexDirection="column" width="100%" padding={1} gap={0}>
       {/* 头部行 */}
       <box flexDirection="row" gap={2} flexWrap="wrap" marginBottom={1}>
-        <text fg={theme.accent}><b>{zh ? '活动时间线' : 'Activity Timeline'}</b></text>
+        <text fg={theme.accent}><b>{t('Activity Timeline', '活动时间线')}</b></text>
         <text fg={theme.muted}>
-          {zh
-            ? `第 ${clampedPage + 1}/${totalPages} 页 · PgUp/PgDn 翻页 · j/k 选择 · Enter 展开`
-            : `Page ${clampedPage + 1}/${totalPages} · PgUp/PgDn · j/k select · Enter expand`}
+          {t(`Page ${clampedPage + 1}/${totalPages} · PgUp/PgDn · j/k select · Enter expand`, `第 ${clampedPage + 1}/${totalPages} 页 · PgUp/PgDn 翻页 · j/k 选择 · Enter 展开`)}
         </text>
       </box>
 
@@ -159,7 +154,6 @@ export function Timeline({
                   sessionName: entry.sessionName,
                 }}
                 theme={theme}
-                zh={zh}
                 expanded={isExpanded}
                 onToggle={() => toggleExpand(key)}
                 selected={isSelected}
@@ -176,7 +170,7 @@ export function Timeline({
               <text fg={theme.user} wrapMode="none">⏺</text>
               <text fg={theme.muted} wrapMode="none">{timeOf(entry.at)}</text>
               <text fg={theme.text} flexGrow={1} wrapMode="word">{fromName} → {toName}：{body}</text>
-              <text fg={theme.muted} wrapMode="none">{zh ? '消息' : 'message'}</text>
+              <text fg={theme.muted} wrapMode="none">{t('message', '消息')}</text>
             </box>
           );
         })

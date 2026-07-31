@@ -562,8 +562,8 @@ test('workspace runtime leases follow repeated switches and never leak to previo
       assert.equal(readWorkspaceRegistry(configDir).filter((record) => record.lastPid === process.pid).length, 0);
     }
     const records = readWorkspaceRegistry(configDir);
-    const startup = buildWorkspaceSelectorModel({ label: '选择工作区', records, currentWorkspaceDir: dirs[0].workspaceDir, zh: true });
-    const settings = buildWorkspaceSelectorModel({ label: '工作区', records, currentWorkspaceDir: dirs[0].workspaceDir, currentRuntime: { workspaceDir: dirs[0].workspaceDir, host: '127.0.0.1', port: 3101, pid: process.pid }, zh: true });
+    const startup = buildWorkspaceSelectorModel({ label: '选择工作区', records, currentWorkspaceDir: dirs[0].workspaceDir, t: (en, zh) => zh });
+    const settings = buildWorkspaceSelectorModel({ label: '工作区', records, currentWorkspaceDir: dirs[0].workspaceDir, currentRuntime: { workspaceDir: dirs[0].workspaceDir, host: '127.0.0.1', port: 3101, pid: process.pid }, t: (en, zh) => zh });
     assert.deepEqual(startup.question.optionLabels, settings.question.optionLabels);
     assert.deepEqual(startup.question.optionDescriptions, settings.question.optionDescriptions);
     assert.equal(new Set(startup.question.optionLabels).size, 4);
@@ -615,7 +615,7 @@ test('workspace selection uses one runtime-aware model across startup and settin
       { id: workspaceId(workspaceDir), workspaceDir, stateDir: path.join(workspaceDir, '.state'), lastPid: 999999, lastPort: 1111, lastHost: 'stale-host', lastSeenAt: new Date().toISOString() },
       { id: workspaceId(otherDir), workspaceDir: otherDir, stateDir: path.join(otherDir, '.state'), lastPid: child.pid, lastPort: 4242, lastHost: '127.0.0.1', lastSeenAt: new Date().toISOString() },
     ];
-    const items = workspaceSelectionItems(records, { workspaceDir, host: '127.0.0.1', port: 3131, pid: process.pid }, true);
+    const items = workspaceSelectionItems(records, { workspaceDir, host: '127.0.0.1', port: 3131, pid: process.pid }, (en, zh) => zh);
     assert.equal(items.length, 2);
     assert.equal(items[0].activity, 'current');
     assert.equal(items[0].disabled, false);
@@ -652,7 +652,7 @@ test('workspace selection uses one runtime-aware model across startup and settin
 
 test('workspace selector always exposes an explicit add-new action', () => {
   const records = [{ id: 'one', workspaceDir: '/tmp/one', stateDir: '/tmp/state-one', lastSeenAt: new Date().toISOString() }];
-  const items = workspaceSelectionItems(records, undefined, true, true);
+  const items = workspaceSelectionItems(records, undefined, (en, zh) => zh, true);
   assert.equal(items.length, 2);
   assert.equal(items[1].id, ADD_WORKSPACE_ID);
   assert.equal(isAddWorkspaceSelection(items[1]), true);

@@ -1,10 +1,13 @@
-import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
+import { copyToHostClipboard, notifySystem, playAttentionSound } from './host-io.js';
+import { buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
+export { copyToHostClipboard } from './host-io.js';
+import { i18nFor, type I18n } from './copy/i18n.js';
 import { logicalSessionGroups } from '../tui-model.js';
 import type { MyTerminalRuntime, RuntimeLog } from '../server.js';
 import type { CustomExtensionSpec, MyTerminalSession, MyTerminalSettings, SessionPhase, StoredState, TaskPackage } from '../types.js';
-import { isDirectory, isValidPublicBaseUrl, readMyTerminalSettings, rotateMyTerminalCredentials, validateSettingsFeasibility } from '../config.js';
+import { isDirectory, readMyTerminalSettings, rotateMyTerminalCredentials, validateSettingsFeasibility } from '../config.js';
 import { describePortOwner, findAvailablePort, terminatePortOwner } from '../instances.js';
 import { isAddWorkspaceSelection, selectedWorkspace } from '../workspace-selection.js';
 import { buildWorkspaceSelectorModel } from './workspace-selector.js';
@@ -16,7 +19,7 @@ import { runtimeSettingsSnapshot } from '../runtime-settings.js';
 export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents'] as const;
 export type Tab = (typeof TABS)[number];
 export type { Ask, Detail, FormQuestion, RuntimeReconfigure, RuntimeReconfigureResult } from './contracts.js';
-import type { Ask, Detail, FormQuestion, RuntimeReconfigure } from './contracts.js';
+import type { Ask, Detail, RuntimeReconfigure } from './contracts.js';
 
 export type { Theme } from './theme/index.js';
 export { themeFor } from './theme/index.js';
@@ -33,49 +36,6 @@ export function presenceColor(theme: Theme, session: MyTerminalSession): string 
   if (session.presence === 'claimed') return theme.good;
   if (session.presence === 'stale') return theme.bad;
   return theme.warn;
-}
-
-function integer(value: string, fallback: number): number {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-async function runWithInput(command: string, args: string[], input: string): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'ignore', 'ignore'], shell: false });
-    child.once('error', () => resolve(false));
-    child.once('close', (code) => resolve(code === 0));
-    child.stdin.end(input);
-  });
-}
-
-export async function copyToHostClipboard(text: string): Promise<boolean> {
-  const commands = process.platform === 'darwin'
-    ? [['pbcopy', []] as const]
-    : process.platform === 'win32'
-      ? [['clip', []] as const]
-      : [['wl-copy', []] as const, ['xclip', ['-selection', 'clipboard']] as const];
-  for (const [command, args] of commands) if (await runWithInput(command, [...args], text)) return true;
-  return false;
-}
-
-function bestEffortSpawn(command: string, args: string[]): void {
-  const child = spawn(command, args, { stdio: 'ignore', shell: false });
-  child.on('error', () => undefined);
-}
-
-function playAttentionSound(): void {
-  // 暂时关闭提醒声音 —— 恢复时取消注释下方三行
-  // if (process.platform === 'darwin') bestEffortSpawn('afplay', ['/System/Library/Sounds/Ping.aiff']);
-  // else if (process.platform === 'win32') bestEffortSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[console]::beep(880,180)']);
-  // else bestEffortSpawn('canberra-gtk-play', ['--id=dialog-warning']);
-}
-
-function notifySystem(title: string, message: string): void {
-  // 暂时关闭系统通知 —— 恢复时取消注释下方三行
-  // if (process.platform === 'darwin') bestEffortSpawn('osascript', ['-e', `display notification "${message.replace(/["\\]/g, '')}" with title "${title.replace(/["\\]/g, '')}"`]);
-  // else if (process.platform === 'linux') bestEffortSpawn('notify-send', [title, message]);
-  // else if (process.platform === 'win32') bestEffortSpawn('msg.exe', ['*', `${title}: ${message}`]);
 }
 
 export type TuiSnapshot = {
@@ -99,8 +59,10 @@ export class TuiController {
   }
 
   get runtime(): MyTerminalRuntime { return this.currentRuntime; }
-  get zh(): boolean { return this.currentRuntime.config.uiLanguage === 'zh-CN'; }
-  text(en: string, zh: string): string { return this.zh ? zh : en; }
+  /** 语言判定收敛到 copy/i18n.ts 单源（#31）；以下三个成员只是它的转发面，语义不变。 */
+  get i18n(): I18n { return i18nFor(this.currentRuntime.config.uiLanguage); }
+  get zh(): boolean { return this.i18n.zh; }
+  text(en: string, zh: string): string { return this.i18n.t(en, zh); }
 
   start(): void { this.diff.start(); void this.refreshUpdateStatus(); }
 
@@ -201,8 +163,7 @@ export class TuiController {
       { label: this.text('Constraints (semicolon separated)', '约束（分号分隔）'), fallback: this.text('Stay within scope', '保持在任务范围内'), multiline: true },
     ]);
     if (!answers?.[0] || !answers[1]) return;
-    const split = (value: string) => value.split(';').map((item) => item.trim()).filter(Boolean);
-    const task: TaskPackage = { objective: answers[3], background: answers[4], deliverables: split(answers[5]), acceptanceCriteria: split(answers[6]), constraints: split(answers[7]) };
+    const task: TaskPackage = buildChildTaskPackage(answers);
     const result = this.currentRuntime.store.createTuiDelegate(answers[0], { name: answers[1], role: answers[2], task });
     await this.rememberAndCopy(result.session.id, result.handoffPrompt);
     this.currentRuntime.log(`Created child ${answers[1]}; handoff copied.`);
@@ -228,8 +189,7 @@ export class TuiController {
       if (!selected) return;
       session = selected;
     }
-    const terminal = ['completed', 'cancelled'].includes(session.phase);
-    const actions = terminal ? ['context', 'delete', 'continue'] : ['copy', 'revoke', 'cancel', 'context', 'delete'];
+    const { terminal, actions } = sessionActionOptions(session);
     const targetType = session.parentSessionId ? this.text('Child session', '子 session') : session.continuesSessionId ? this.text('Continuation record', '续作记录') : this.text('Root session', '根 session');
     const answers = await ask([{ label: this.text('Action for selected session', '对所选 session 执行操作'), fallback: 'context', options: actions }], [
       `${this.text('Target', '操作对象')}: ${targetType} · ${session.name}`,
@@ -323,15 +283,11 @@ export class TuiController {
         port: this.currentRuntime.port,
         pid: process.pid,
       },
-      zh: config.uiLanguage === 'zh-CN',
+      t: this.i18n.t,
     });
     const workspaceItems = workspaceSelector.items;
     const passiveStatus = process.platform === 'darwin' ? passiveLockStatus(config) : { state: 'unsupported' };
-    const passiveFallback = !current.passiveLockEnabled
-      ? 'off'
-      : /armed|arming|visible_waiting_for_arm/.test(passiveStatus.state)
-        ? 'arm'
-        : 'standby';
+    const passiveFallback = passiveLockFallback(current.passiveLockEnabled, passiveStatus.state);
     const settingFields = ['language', 'theme', 'workspace', 'host', 'port', 'public-url', 'max-output', 'timeout', 'actions-continuation', 'non-blocking-tasks', 'passive-lock'];
     const selection = await ask([{ label: this.text('Choose settings to edit', '选择要修改的设置'), options: settingFields, multiSelect: true }], [
       this.text('Edit only the settings you choose.', '只修改你选择的设置；未选择的项目保持不变。'),
@@ -339,28 +295,18 @@ export class TuiController {
       'language, theme, workspace, host, port, public-url, max-output, timeout, actions-continuation, non-blocking-tasks, passive-lock',
     ]);
     if (!selection?.[0]) return;
-    const fields = [...new Set(selection[0].split(',').map((item) => item.trim().toLowerCase()).filter(Boolean))];
-    const questions: FormQuestion[] = [];
-    for (const field of fields) {
-      if (field === 'language') questions.push({ label: 'UI language', fallback: current.uiLanguage, options: ['zh-CN', 'en'] });
-      else if (field === 'theme') questions.push({ label: 'UI theme', fallback: current.uiTheme, options: ['dark', 'light'] });
-      else if (field === 'workspace') {
-        if (!workspaceItems.length) {
-          this.currentRuntime.log(this.text('Workspace catalog is unavailable; workspace selection cannot continue.', '工作区目录不可用，无法继续选择工作区。'), 'error');
-          return;
-        }
-        questions.push(workspaceSelector.question);
-      }
-      else if (field === 'host') questions.push({ label: this.text('Listen host', '监听地址'), fallback: current.host, validate: (value) => value.trim() ? undefined : this.text('Host cannot be empty.', '监听地址不能为空。') });
-      else if (field === 'port') questions.push({ label: this.text('Listen port', '监听端口'), fallback: String(current.port), validate: (value) => { const port = Number(value); return Number.isInteger(port) && port >= 0 && port <= 65535 ? undefined : this.text('Port must be an integer from 0 to 65535.', '端口必须是 0 到 65535 的整数。'); } });
-      else if (field === 'public-url') questions.push({ label: this.text('Public HTTPS URL (local clears)', '公网 HTTPS URL（local 清空）'), fallback: current.publicBaseUrl || 'local', validate: (value) => value.toLowerCase() === 'local' || isValidPublicBaseUrl(value.replace(/\/$/, '')) ? undefined : this.text('Use HTTPS; localhost may use HTTP.', '请使用 HTTPS；localhost 可使用 HTTP。') });
-      else if (field === 'max-output') questions.push({ label: this.text('Maximum output characters', '最大输出字符'), fallback: String(current.maxOutputChars), validate: (value) => { const number = Number(value); return Number.isInteger(number) && number >= 4000 && number <= 1000000 ? undefined : this.text('Use an integer from 4000 to 1000000.', '请输入 4000 到 1000000 的整数。'); } });
-      else if (field === 'timeout') questions.push({ label: this.text('Command timeout seconds', '命令超时秒数'), fallback: String(current.commandTimeoutSec), validate: (value) => { const number = Number(value); return Number.isInteger(number) && number >= 1 && number <= 3600 ? undefined : this.text('Use an integer from 1 to 3600.', '请输入 1 到 3600 的整数。'); } });
-      else if (field === 'actions-continuation') questions.push({ label: this.text('Long-task harness', '长任务 Harness'), fallback: current.actionsContinuationMode, options: ['off', 'adaptive', 'next-call', 'lookahead-3'] });
-      else if (field === 'non-blocking-tasks') questions.push({ label: this.text('Non-blocking tasks', '非阻塞任务'), fallback: current.nonBlockingTasksEnabled ? 'on' : 'off', options: ['off', 'on'] });
-      else if (field === 'passive-lock') questions.push({ label: this.text('macOS passive lock', 'macOS 被动锁屏'), fallback: passiveFallback, options: ['off', 'arm', 'standby'] });
+    const fields = parseSelectedFields(selection[0]);
+    const built = buildSettingsQuestions(fields, {
+      current,
+      workspaceQuestion: workspaceItems.length ? workspaceSelector.question : undefined,
+      passiveFallback,
+      text: this.i18n.t,
+    });
+    if (!built.ok) {
+      this.currentRuntime.log(this.text('Workspace catalog is unavailable; workspace selection cannot continue.', '工作区目录不可用，无法继续选择工作区。'), 'error');
+      return;
     }
-    const answers = await ask(questions, [this.text(`Editing: ${fields.join(', ')}`, `正在修改：${fields.join(', ')}`)]);
+    const answers = await ask(built.questions, [this.text(`Editing: ${fields.join(', ')}`, `正在修改：${fields.join(', ')}`)]);
     if (!answers) return;
     let addedWorkspaceDir: string | undefined;
     const workspaceFieldIndex = fields.indexOf('workspace');
@@ -379,26 +325,7 @@ export class TuiController {
         addedWorkspaceDir = pathAnswer[0];
       }
     }
-    const next: MyTerminalSettings = { ...current };
-    let passiveAction: 'off' | 'arm' | 'standby' | undefined;
-    fields.forEach((field, index) => {
-      const value = answers[index];
-      if (field === 'language') next.uiLanguage = value as MyTerminalSettings['uiLanguage'];
-      else if (field === 'theme') next.uiTheme = value as MyTerminalSettings['uiTheme'];
-      else if (field === 'workspace') {
-        const selected = selectedWorkspace(workspaceItems, value);
-        if (!selected) throw new Error('Workspace selection did not resolve to a catalog entry.');
-        next.workspaceDir = isAddWorkspaceSelection(selected) ? addedWorkspaceDir! : selected.workspaceDir;
-      }
-      else if (field === 'host') next.host = value;
-      else if (field === 'port') next.port = integer(value, current.port);
-      else if (field === 'public-url') next.publicBaseUrl = value.toLowerCase() === 'local' ? '' : value.replace(/\/$/, '');
-      else if (field === 'max-output') next.maxOutputChars = integer(value, current.maxOutputChars);
-      else if (field === 'timeout') next.commandTimeoutSec = integer(value, current.commandTimeoutSec);
-      else if (field === 'actions-continuation') next.actionsContinuationMode = value as MyTerminalSettings['actionsContinuationMode'];
-      else if (field === 'non-blocking-tasks') next.nonBlockingTasksEnabled = value === 'on';
-      else if (field === 'passive-lock') { passiveAction = value.toLowerCase() as 'off' | 'arm' | 'standby'; next.passiveLockEnabled = passiveAction !== 'off'; }
-    });
+    const { next, passiveAction } = resolveSettingsAnswers(fields, answers, current, { items: workspaceItems, addedWorkspaceDir });
     if (process.platform !== 'darwin' && passiveAction && passiveAction !== 'off') {
       this.currentRuntime.log(this.text('Passive lock is available only on macOS.', '被动锁屏目前仅支持 macOS。'), 'error');
       return;

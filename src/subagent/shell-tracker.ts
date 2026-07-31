@@ -1,29 +1,30 @@
 // ADR-0007 决策 28：agent-scoped shell 进程追踪 + finally 批量清理
 // 使用 detached:true 进程组，杀时用 process.kill(-pid) 杀整个组
+// ADR-0032 #34：状态收敛到 SubagentContext，函数追加可选末参 ctx（缺省 defaultContext）
 
 import { type ChildProcess } from 'node:child_process';
+import { defaultContext } from './context.js';
+import type { SubagentContext } from './context.js';
 
-const agentShellTasks = new Map<string, Set<ChildProcess>>();
-
-export function trackShellTask(agentId: string, child: ChildProcess): void {
-  let tasks = agentShellTasks.get(agentId);
+export function trackShellTask(agentId: string, child: ChildProcess, ctx: SubagentContext = defaultContext): void {
+  let tasks = ctx.agentShellTasks.get(agentId);
   if (!tasks) {
     tasks = new Set();
-    agentShellTasks.set(agentId, tasks);
+    ctx.agentShellTasks.set(agentId, tasks);
   }
   tasks.add(child);
 
   // 子进程退出时自动从 Set 移除
   child.on('exit', () => {
-    const currentTasks = agentShellTasks.get(agentId);
+    const currentTasks = ctx.agentShellTasks.get(agentId);
     if (currentTasks) {
       currentTasks.delete(child);
     }
   });
 }
 
-export function cleanupAgentShellTasks(agentId: string): void {
-  const tasks = agentShellTasks.get(agentId);
+export function cleanupAgentShellTasks(agentId: string, ctx: SubagentContext = defaultContext): void {
+  const tasks = ctx.agentShellTasks.get(agentId);
   if (!tasks || tasks.size === 0) return;
 
   for (const child of tasks) {
@@ -67,15 +68,15 @@ export function cleanupAgentShellTasks(agentId: string): void {
     }, 2000).unref(); // 不阻止进程退出
   }
 
-  agentShellTasks.delete(agentId);
+  ctx.agentShellTasks.delete(agentId);
 }
 
-/** 仅供测试——清空全部状态 */
+/** 仅供测试——清空 defaultContext 全部状态 */
 export function clearAllShellTasks(): void {
-  agentShellTasks.clear();
+  defaultContext.agentShellTasks.clear();
 }
 
 /** 获取 agent 当前追踪的任务数——仅供测试 */
-export function getTrackedCount(agentId: string): number {
-  return agentShellTasks.get(agentId)?.size ?? 0;
+export function getTrackedCount(agentId: string, ctx: SubagentContext = defaultContext): number {
+  return ctx.agentShellTasks.get(agentId)?.size ?? 0;
 }

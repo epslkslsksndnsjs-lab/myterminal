@@ -13,7 +13,8 @@ import { HelpOverlay } from './components/HelpOverlay.js';
 import { FatalErrorBoundary } from './FatalErrorBoundary.js';
 import { FormDialog } from './components/FormDialog.js';
 import { routeCommand, commandCompletions, type CommandAction } from './model/command-router.js';
-import { copyFor } from './copy/index.js';
+import { i18nFor } from './copy/i18n.js';
+import { I18nProvider } from './copy/context.js';
 import { Home } from './screens/Home.js';
 import { Sessions, SessionDetail } from './screens/Sessions.js';
 import { Messages, ConversationDetail } from './screens/Messages.js';
@@ -57,9 +58,9 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const snapshot = controller.snapshot();
   const { runtime, state, diff, logs, update } = snapshot;
-  const zh = runtime.config.uiLanguage === 'zh-CN';
   const theme = themeFor(runtime.config.uiTheme);
-  const copy = copyFor(zh);
+  const i18n = i18nFor(runtime.config.uiLanguage);
+  const { t } = i18n;
   const pending = state.sessions.filter((session) => !['completed', 'cancelled'].includes(session.phase) && session.presence !== 'claimed').length;
 
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
@@ -193,20 +194,19 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
         .filter((session) => session.presence === 'claimed')
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       if (eligible.length === 0) {
-        showNotice(zh
-          ? '没有可接收消息的 session。先在会话页创建一个。'
-          : 'No session can receive messages. Create one on the Sessions page.');
+        showNotice(t('No session can receive messages. Create one on the Sessions page.', '没有可接收消息的 session。先在会话页创建一个。'));
         return;
       }
       const target = eligible[0];
       controller.runtime.store.sendUserMessage(target.id, action.body);
-      showNotice(zh ? `已发给 ${target.name}` : `Sent to ${target.name}`);
+      showNotice(t(`Sent to ${target.name}`, `已发给 ${target.name}`));
     } else if (action.kind === 'unknown') {
-      showNotice(zh
-        ? `未知命令 ${action.input}${action.suggestion ? `，是指 ${action.suggestion} 吗？` : '。输入 /help 看全部命令。'}`
-        : `Unknown command ${action.input}${action.suggestion ? `. Did you mean ${action.suggestion}?` : '. Type /help for all commands.'}`);
+      showNotice(t(
+        `Unknown command ${action.input}${action.suggestion ? `. Did you mean ${action.suggestion}?` : '. Type /help for all commands.'}`,
+        `未知命令 ${action.input}${action.suggestion ? `，是指 ${action.suggestion} 吗？` : '。输入 /help 看全部命令。'}`,
+      ));
     }
-  }, [switchTab, createSessionAction, sendMessageAction, refreshDiffAction, controller, showNotice, zh]);
+  }, [switchTab, createSessionAction, sendMessageAction, refreshDiffAction, controller, showNotice]);
 
   const handleStartCommand = useCallback(() => {
     setInputEditing(true);
@@ -291,29 +291,30 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     renderer.copyToClipboardOSC52(text);
     void copyToHostClipboard(text);
     renderer.clearSelection();
-    showNotice(zh ? '已复制所选文字' : 'Selection copied');
-  }, [renderer, showNotice, zh]);
+    showNotice(t('Selection copied', '已复制所选文字'));
+  }, [renderer, showNotice]);
 
   const subagentData = controller.runtime.listSubagents();
-  const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} zh={zh} copy={copy} />
-    : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} zh={zh} copy={copy} />
-      : detail?.kind === 'subagent' ? <SubagentDetail subagentId={detail.id} theme={theme} zh={zh} copy={copy} />
-        : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} />
-          : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-            : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-              : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} zh={zh} copy={copy} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
-                : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} zh={zh} copy={copy} />
-                  : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-                    : tab === 6 ? <Settings runtime={runtime} theme={theme} zh={zh} reveal={revealCredentials} update={update} />
-                      : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} zh={zh} copy={copy} onSelect={selectItem} />
-                        : <Logs runtime={runtime} logs={logs} theme={theme} zh={zh} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
+  const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} />
+    : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} />
+      : detail?.kind === 'subagent' ? <SubagentDetail subagentId={detail.id} theme={theme} />
+        : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} />
+          : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
+            : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
+              : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
+                : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} />
+                  : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
+                    : tab === 6 ? <Settings runtime={runtime} theme={theme} reveal={revealCredentials} update={update} />
+                      : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
+                        : <Logs runtime={runtime} logs={logs} theme={theme} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
   const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;
   return (
-    <FatalErrorBoundary runtime={runtime} theme={theme} zh={zh} onFatal={setFatalError}>
+    <I18nProvider value={i18n}>
+    <FatalErrorBoundary runtime={runtime} theme={theme} onFatal={setFatalError}>
     <box width={width} height={height} flexDirection="column" backgroundColor={theme.background} onMouseUp={copySelection}>
-      <TopBar runtime={runtime} theme={theme} pending={pending} zh={zh} />
-      <BottomNav active={tab} theme={theme} zh={zh} onSelect={switchTab} />
+      <TopBar runtime={runtime} theme={theme} pending={pending} />
+      <BottomNav active={tab} theme={theme} onSelect={switchTab} />
       <box height={1} flexShrink={0} backgroundColor={theme.background}><text fg={theme.border}>{'─'.repeat(Math.max(1, width))}</text></box>
       <scrollbox
         key={scrollKey}
@@ -330,16 +331,16 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
       </scrollbox>
       <InputBar
         theme={theme}
-        copy={copy}
         editing={inputEditing}
         onEditingChange={setInputEditing}
         onSubmitText={handleInputSubmit}
         completions={commandCompletions}
       />
-      <StatusLine tab={tab} detail={detail} theme={theme} zh={zh} mouseEnabled={renderer.useMouse} notice={notice} inputEditing={inputEditing} />
-      {form ? <FormDialog key={form.id} questions={form.questions} preamble={form.preamble} theme={theme} width={width} height={height} zh={zh} mouseEnabled={renderer.useMouse} onComplete={completeForm} onCancel={cancelForm} /> : null}
-      {showHelp ? <HelpOverlay theme={theme} zh={zh} width={width} height={height} onClose={() => setShowHelp(false)} /> : null}
+      <StatusLine tab={tab} detail={detail} theme={theme} mouseEnabled={renderer.useMouse} notice={notice} inputEditing={inputEditing} />
+      {form ? <FormDialog key={form.id} questions={form.questions} preamble={form.preamble} theme={theme} width={width} height={height} mouseEnabled={renderer.useMouse} onComplete={completeForm} onCancel={cancelForm} /> : null}
+      {showHelp ? <HelpOverlay theme={theme} width={width} height={height} onClose={() => setShowHelp(false)} /> : null}
     </box>
     </FatalErrorBoundary>
+    </I18nProvider>
   );
 }

@@ -11,6 +11,7 @@ import {
 } from './store.js';
 import { MyTerminalError } from '../store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
+import { defaultContext, type SubagentContext } from './context.js';
 import type { UsageSummary } from './cost-tracker.js';
 
 // ── 类型 ──
@@ -240,27 +241,25 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
 
 export type SubagentRunner = ReturnType<typeof createSubagentRunner>;
 
-// ── 模块级单例 ──
-
-let singleton: SubagentRunner | null = null;
+// ── 装配单例（#34 第 7 项：状态收进 SubagentContext，缺省 defaultContext 向后兼容）──
 
 /** 生产启动时调用——在 ExtensionService 构造之后装配 */
-export function initSubagentRunner(deps: SubagentRunnerDeps): void {
-  singleton = createSubagentRunner(deps);
+export function initSubagentRunner(deps: SubagentRunnerDeps, ctx: SubagentContext = defaultContext): void {
+  ctx.runner = createSubagentRunner(deps);
 }
 
 /** 获取单例——core-tools 的 invoke 无类上下文，用单例 */
-export function getSubagentRunner(): SubagentRunner {
-  if (!singleton) throw new Error('SubagentRunner not initialized. Call initSubagentRunner() at runtime startup.');
-  return singleton;
+export function getSubagentRunner(ctx: SubagentContext = defaultContext): SubagentRunner {
+  if (!ctx.runner) throw new Error('SubagentRunner not initialized. Call initSubagentRunner() at runtime startup.');
+  return ctx.runner;
 }
 
 /** 仅供测试——注入 fake deps */
-export function setRunnerDepsForTesting(deps: SubagentRunnerDeps): void {
-  singleton = createSubagentRunner(deps);
+export function setRunnerDepsForTesting(deps: SubagentRunnerDeps, ctx: SubagentContext = defaultContext): void {
+  ctx.runner = createSubagentRunner(deps);
 }
 
 /** 仅供测试——重置单例 */
-export function resetSubagentRunner(): void {
-  singleton = null;
+export function resetSubagentRunner(ctx: SubagentContext = defaultContext): void {
+  ctx.runner = null;
 }

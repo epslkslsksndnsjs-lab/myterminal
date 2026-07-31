@@ -7,7 +7,9 @@ import type {
   SessionEvent, SessionEventKind, SessionIdentity, SessionPhase, StoredState, TaskPackage,
   SessionHistoryEntry, ToolAuditEvent, PlannedToolCall,
 } from './types.js';
-import { redact } from './redact.js';
+import { AuditLog } from './audit-log.js';
+import type { AuditFact, AuditFactsPage } from './audit-log.js';
+import { projectContext } from './context-projector.js';
 
 const EMPTY_STATE: StoredState = {
   schemaVersion: 2, revision: 0, sessions: [], messages: [], events: [], subscriptions: [], appBindings: [], extensions: [],
@@ -90,15 +92,6 @@ export function publicSession(session: MyTerminalSession): JsonObject {
   };
 }
 
-type AuditFact = ToolAuditEvent & {
-  sessionId: string;
-  sessionName: string;
-  at: string;
-  tool: string;
-  ok: boolean;
-  errorCode?: string;
-};
-
 type HistoryIndex = { size: number; mtimeMs: number; total: number; offsets: number[] };
 const HISTORY_INDEX_STRIDE = 256;
 const HISTORY_TAIL_LIMIT = 5_000;
@@ -112,7 +105,10 @@ export class MyTerminalStore {
   private readonly journalPath: string;
   private readonly transientClaimCodes = new Map<string, string>();
   private readonly historyIndexes = new Map<string, HistoryIndex>();
-  private auditCache?: AuditFact[];
+  /** ADR-0032 #63 S2: parsed tail cache keyed by (session, size, mtime) — mirrors historyIndexes invalidation. Skips re-read/re-parse when the history file is unchanged. */
+  private readonly historyTailCache = new Map<string, { size: number; mtimeMs: number; entries: SessionHistoryEntry[] }>();
+  /** ADR-0032 #64: audit write/read seam. Store stays the state holder + IO adapter. */
+  private readonly audit: AuditLog;
   private journalEntries = 0;
   private journalBytes = 0;
 
@@ -122,6 +118,12 @@ export class MyTerminalStore {
     this.journalPath = path.join(stateDir, 'state.journal.jsonl');
     mkdirSync(this.historyDir, { recursive: true, mode: 0o700 });
     this.state = this.load();
+    this.audit = new AuditLog({
+      appendToolAudit: (sessionId, data) => this.appendHistory(sessionId, 'tool_audit', data),
+      readRecentHistory: (sessionId) => this.readRecentHistory(sessionId),
+      listSessions: () => this.state.sessions,
+      requireSession: (id) => this.requireSession(id),
+    }, this.now);
   }
 
   snapshot(): StoredState { return structuredClone(this.state); }
@@ -637,118 +639,36 @@ export class MyTerminalStore {
 
   historyCount(sessionId: string): number { return this.historyIndex(sessionId).total; }
 
-  auditFacts(limit = 500): AuditFact[] {
-    this.auditCache ||= this.state.sessions.flatMap((session) => this.auditFactsFromHistory(session))
-      .sort((a, b) => a.at.localeCompare(b.at));
-    return structuredClone(this.auditCache.slice(-Math.max(1, Math.min(5000, limit))));
-  }
+  auditFacts(limit = 500): AuditFact[] { return this.audit.facts(limit); }
+
+  /** Coherent pagination over the audit stream (ADR-0032 #64 seam, consumed by #62). */
+  auditFactsPage(offset = 0, limit = 100): AuditFactsPage { return this.audit.factsPage(offset, limit); }
+
+  /** Backwards-paginated audit view for log screens (ADR-0033 #62). */
+  auditRecentFactsPage(page = 0, limit = 100, until?: string): AuditFactsPage { return this.audit.recentFactsPage(page, limit, until); }
 
   cumulativeContextChars(sessionId?: string): number {
     const facts = this.auditFacts(5000).filter((f) => !sessionId || f.sessionId === sessionId);
     return facts.reduce((sum, f) => sum + JSON.stringify(f.args || {}).length + JSON.stringify(f.result || {}).length, 0);
   }
 
-  auditEvent(sessionId: string, event: ToolAuditEvent): ToolAuditEvent {
-    const session = this.requireSession(sessionId);
-    const redacted = redact(event);
-    const args = redacted.args;
-    const result = redacted.result;
-    const error = event.error ? redacted.error : undefined;
-    const data = {
-      ...event,
-      error,
-      args,
-      result,
-      // Compatibility fields keep older history readers and continuation projections useful.
-      tool: event.action,
-      ok: event.status === 'completed',
-      startedAt: event.timestamp,
-      errorCode: event.error?.code,
-    } as unknown as JsonObject;
-    this.appendHistory(sessionId, 'tool_audit', data);
-    if (this.auditCache) {
-      const next = this.auditFact(session, { at: this.iso(), type: 'tool_audit', data });
-      const index = this.auditCache.findIndex((fact) => fact.sessionId === session.id && fact.id === event.id);
-      if (index >= 0) this.auditCache[index] = { ...this.auditCache[index], ...next, at: this.auditCache[index].at };
-      else this.auditCache.push(next);
-    }
-    return {
-      ...event,
-      args,
-      result,
-      error: error && typeof error === 'object' ? error as ToolAuditEvent['error'] : undefined,
-    };
-  }
+  auditEvent(sessionId: string, event: ToolAuditEvent): ToolAuditEvent { return this.audit.event(sessionId, event); }
 
-  private auditFactsFromHistory(session: MyTerminalSession): AuditFact[] {
-    const facts = new Map<string, AuditFact>();
-    for (const entry of this.readRecentHistory(session.id)) {
-      if (entry.type !== 'tool_audit') continue;
-      const next = this.auditFact(session, entry);
-      const previous = facts.get(next.id);
-      facts.set(next.id, previous ? { ...previous, ...next, at: previous.at, timestamp: previous.timestamp } : next);
-    }
-    return [...facts.values()];
-  }
-
-  private auditFact(session: MyTerminalSession, entry: SessionHistoryEntry): AuditFact {
-    const data = entry.data as JsonObject;
-    const action = String(data.action || data.tool || 'unknown');
-    const rawStatus = typeof data.status === 'string' ? data.status : data.ok === true ? 'completed' : 'failed';
-    const status: ToolAuditEvent['status'] = rawStatus === 'started' ? 'running' : rawStatus === 'succeeded' ? 'completed'
-      : ['running', 'completed', 'failed', 'timeout', 'policy_rejected'].includes(rawStatus) ? rawStatus as ToolAuditEvent['status'] : 'failed';
-    const rawErrorCode = typeof data.errorCode === 'string'
-      ? data.errorCode
-      : data.error && typeof data.error === 'object' && typeof (data.error as JsonObject).code === 'string'
-        ? String((data.error as JsonObject).code)
-        : undefined;
-    const errorCode = rawErrorCode || (status === 'failed' || status === 'timeout' ? 'UNKNOWN_ERROR' : undefined);
-    return {
-      id: String(data.id || `legacy-${session.id}-${entry.at}-${action}`),
-      timestamp: String(data.timestamp || data.startedAt || entry.at),
-      completedAt: typeof data.completedAt === 'string' ? data.completedAt : undefined,
-      source: ['apps', 'actions', 'tui', 'test', 'mcp'].includes(String(data.source)) ? data.source as ToolAuditEvent['source'] : 'test',
-      action,
-      status,
-      durationMs: Number(data.durationMs || 0),
-      error: errorCode ? { code: errorCode } : undefined,
-      workspace: String(data.workspace || ''),
-      session: String(data.session || session.id),
-      args: data.args,
-      result: data.result,
-      sessionId: session.id,
-      sessionName: session.name,
-      at: String(data.timestamp || data.startedAt || entry.at),
-      tool: action,
-      ok: status === 'completed',
-      errorCode,
-    };
-  }
-
+  /** ADR-0032 #63: store reads each involved session's tail exactly once; assembly + budget fitting live in the pure projector seam. */
   context(sessionId: string): JsonObject {
     const session = this.requireSession(sessionId);
-    const history = this.readRecentHistory(session.id);
-    const audits = history.filter((item) => item.type === 'tool_audit').slice(-10).map((item) => item.data);
-    const candidates = this.state.messages.filter((message) => message.from === session.id || message.to === session.id);
-    const unread = candidates.filter((message) => message.to === session.id && !message.readAt).slice(-20);
-    const messages = [...candidates.filter((message) => message.readAt || message.to !== session.id).slice(-(20 - unread.length)), ...unread];
     const parent = session.parentSessionId ? this.requireSession(session.parentSessionId) : undefined;
-    const parentAudits = parent ? this.readRecentHistory(parent.id).filter((item) => item.type === 'tool_audit').slice(-10).map((item) => item.data) : [];
     const predecessor = session.continuesSessionId ? this.requireSession(session.continuesSessionId) : undefined;
-    const predecessorAudits = predecessor ? this.readRecentHistory(predecessor.id).filter((item) => item.type === 'tool_audit').slice(-10).map((item) => item.data) : [];
-    const predecessorMessages = predecessor ? this.state.messages.filter((message) => message.from === predecessor.id || message.to === predecessor.id).slice(-20) : [];
-    const projection: JsonObject = {
-      session: publicSession(session), objective: session.task?.objective,
-      finalSummary: session.finalSummary,
-      latestSummary: session.latestCheckpoint?.summary,
-      parentContext: parent ? { session: publicSession(parent), finalSummary: parent.finalSummary, latestSummary: parent.latestCheckpoint?.summary } : undefined,
-      parentRecentToolCalls: parentAudits,
-      inheritedFrom: predecessor ? publicSession(predecessor) : undefined,
-      inheritedRecentToolCalls: predecessorAudits,
-      inheritedRecentMessages: predecessorMessages,
-      recentToolCalls: audits, recentMessages: messages,
-    };
-    return this.fitProjection(projection, 16_000);
+    return projectContext({
+      session,
+      history: this.readRecentHistory(session.id),
+      messages: this.state.messages,
+      parent,
+      parentHistory: parent ? this.readRecentHistory(parent.id) : undefined,
+      predecessor,
+      predecessorHistory: predecessor ? this.readRecentHistory(predecessor.id) : undefined,
+      toPublic: publicSession,
+    });
   }
 
   refreshTemporalStates(): void {
@@ -797,8 +717,8 @@ export class MyTerminalStore {
     this.state.subscriptions = this.state.subscriptions.filter((item) => !deleted.has(item.subscriberSessionId) && !deleted.has(item.targetSessionId));
     this.state.appBindings = this.state.appBindings.filter((item) => !deleted.has(item.sessionId));
     for (const item of this.state.sessions) if (item.continuesSessionId && deleted.has(item.continuesSessionId)) item.predecessorDeleted = true;
-    for (const id of deleted) { rmSync(this.historyPath(id), { force: true }); this.transientClaimCodes.delete(id); this.historyIndexes.delete(id); }
-    if (this.auditCache) this.auditCache = this.auditCache.filter((item) => !deleted.has(item.sessionId));
+    for (const id of deleted) { rmSync(this.historyPath(id), { force: true }); this.transientClaimCodes.delete(id); this.historyIndexes.delete(id); this.historyTailCache.delete(id); }
+    this.audit.pruneDeleted(deleted);
     this.save();
     return { deleted: [...deleted] };
   }
@@ -896,9 +816,18 @@ export class MyTerminalStore {
     const entry: SessionHistoryEntry = { at: this.iso(), type, data };
     appendFileSync(this.historyPath(sessionId), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
     this.historyIndexes.delete(sessionId);
+    this.historyTailCache.delete(sessionId);
   }
   private readRecentHistory(sessionId: string): SessionHistoryEntry[] {
-    return this.readHistoryTail(sessionId, HISTORY_TAIL_LIMIT);
+    const file = this.historyPath(sessionId);
+    if (!existsSync(file)) return [];
+    const stat = statSync(file);
+    const cached = this.historyTailCache.get(sessionId);
+    // 返回拷贝而非缓存数组本身：调用方原地 push/splice 不得污染缓存（#70 门禁收尾，别名风险）。
+    if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.entries.slice();
+    const entries = this.readHistoryTail(sessionId, HISTORY_TAIL_LIMIT);
+    this.historyTailCache.set(sessionId, { size: stat.size, mtimeMs: stat.mtimeMs, entries });
+    return entries.slice();
   }
 
   private readHistoryTail(sessionId: string, limit: number): SessionHistoryEntry[] {
@@ -977,18 +906,6 @@ export class MyTerminalStore {
       if (entries.length < limit && carry.length) consume(carry);
     } finally { closeSync(fd); }
     return entries;
-  }
-
-  private fitProjection(projection: JsonObject, limit: number): JsonObject {
-    let result = structuredClone(projection);
-    while (JSON.stringify(result).length > limit && Array.isArray(result.recentMessages) && result.recentMessages.length) (result.recentMessages as unknown[]).shift();
-    while (JSON.stringify(result).length > limit && Array.isArray(result.recentToolCalls) && result.recentToolCalls.length) (result.recentToolCalls as unknown[]).shift();
-    while (JSON.stringify(result).length > limit && Array.isArray(result.inheritedRecentMessages) && result.inheritedRecentMessages.length) (result.inheritedRecentMessages as unknown[]).shift();
-    while (JSON.stringify(result).length > limit && Array.isArray(result.inheritedRecentToolCalls) && result.inheritedRecentToolCalls.length) (result.inheritedRecentToolCalls as unknown[]).shift();
-    while (JSON.stringify(result).length > limit && Array.isArray(result.parentRecentToolCalls) && result.parentRecentToolCalls.length) (result.parentRecentToolCalls as unknown[]).shift();
-    if (JSON.stringify(result).length > limit) result = { session: projection.session, objective: projection.objective, finalSummary: projection.finalSummary, latestSummary: projection.latestSummary };
-    const encoded = JSON.stringify(result);
-    return encoded.length <= limit ? result : { objective: String(projection.objective || '').slice(0, 4000), finalSummary: String(projection.finalSummary || projection.latestSummary || '').slice(0, 4000), truncated: true };
   }
 
   private load(): StoredState {

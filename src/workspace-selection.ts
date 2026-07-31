@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { isWorkspaceRecordActive, type WorkspaceRecord } from './instances.js';
+import type { Translate } from './tui/copy/i18n.js';
 
 export type CurrentWorkspaceRuntime = {
   workspaceDir: string;
@@ -24,10 +25,14 @@ function sameWorkspace(left: string, right: string): boolean {
   return path.resolve(left) === path.resolve(right);
 }
 
+/**
+ * @param t — 语言无关的就地翻译函数（#31）。取自 `i18nFor(lang).t`，
+ *            替代原先的 `zh: boolean`，让本模块不再自行判定语言。
+ */
 export function workspaceSelectionItems(
   records: WorkspaceRecord[],
   current: CurrentWorkspaceRuntime | undefined,
-  zh: boolean,
+  t: Translate,
   includeAdd = false,
 ): WorkspaceSelectionItem[] {
   const items = records.map((record) => {
@@ -38,10 +43,10 @@ export function workspaceSelectionItems(
     const pid = isCurrent ? (current!.pid || process.pid) : record.lastPid;
     const activity: WorkspaceSelectionItem['activity'] = isCurrent ? 'current' : activeElsewhere ? 'active' : 'inactive';
     const status = isCurrent
-      ? `${zh ? '当前进程运行中' : 'running in this process'} · ${host}:${port || '?'} · PID ${pid || '?'}`
+      ? `${t('running in this process', '当前进程运行中')} · ${host}:${port || '?'} · PID ${pid || '?'}`
       : activeElsewhere
-        ? `${zh ? '其他进程运行中' : 'running in another process'} · ${host}:${port || '?'} · PID ${pid || '?'}`
-        : (zh ? '未运行' : 'inactive');
+        ? `${t('running in another process', '其他进程运行中')} · ${host}:${port || '?'} · PID ${pid || '?'}`
+        : t('inactive', '未运行');
     return {
       id: record.id,
       title: record.label || path.basename(record.workspaceDir) || record.id,
@@ -55,9 +60,9 @@ export function workspaceSelectionItems(
   if (includeAdd) {
     items.push({
       id: ADD_WORKSPACE_ID,
-      title: zh ? '添加新的工作区…' : 'Add a new workspace…',
+      title: t('Add a new workspace…', '添加新的工作区…'),
       workspaceDir: '',
-      status: zh ? '输入一个新的目录路径' : 'Enter a new directory path',
+      status: t('Enter a new directory path', '输入一个新的目录路径'),
       activity: 'inactive',
       active: false,
       disabled: false,

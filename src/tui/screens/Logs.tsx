@@ -6,6 +6,7 @@ import type { ToolAuditEvent } from '../../types.js';
 import type { Theme } from '../state.js';
 import { Heading } from './shared.js';
 import { ToolCallRow } from '../components/ToolCallRow.js';
+import { useI18n } from '../copy/context.js';
 
 type DisplayEntry = {
   at: string;
@@ -57,7 +58,8 @@ function formatContext(chars: number): string {
   return `${(chars / 1000).toFixed(1)}K`;
 }
 
-export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { runtime: MyTerminalRuntime; logs: RuntimeLog[]; theme: Theme; zh: boolean; showAudit: boolean; page: number; anchorAt?: string }) {
+export function Logs({ runtime, logs, theme, showAudit, page, anchorAt }: { runtime: MyTerminalRuntime; logs: RuntimeLog[]; theme: Theme; showAudit: boolean; page: number; anchorAt?: string }) {
+  const { t } = useI18n();
   const activeSession = runtime.store.listSessions().find((s) => s.presence === 'claimed' && !['completed', 'cancelled'].includes(s.phase));
   const cumulativeContext = runtime.store.cumulativeContextChars(activeSession?.id);
   const anchoredLogs = anchorAt ? logs.filter((entry) => entry.at <= anchorAt) : logs;
@@ -89,10 +91,8 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
     }
   } catch { /* cross-workspace logs are best effort */ }
   if (showAudit) {
-    const audit = runtime.store.auditFacts(5000).filter((fact) => !anchorAt || fact.at <= anchorAt);
-    const auditEnd = Math.max(0, audit.length - page * PAGE_SIZE);
-    const auditStart = Math.max(0, auditEnd - PAGE_SIZE);
-    for (const fact of audit.slice(auditStart, auditEnd)) entries.push({
+    // 分页与 anchorAt 截断由 store 的 audit seam 负责（#62）——屏内不再全量扫描重排。
+    for (const fact of runtime.store.auditRecentFactsPage(page, PAGE_SIZE, anchorAt).facts) entries.push({
       at: fact.at,
       kind: 'audit',
       level: fact.status === 'running' ? 'info' : fact.status === 'completed' ? 'ok' : 'error',
@@ -133,10 +133,10 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
   return (
     <box flexDirection="column" width="100%" padding={1} gap={0}>
       <box flexDirection="row" gap={2} flexWrap="wrap" marginBottom={1}>
-        <Heading theme={theme}>{zh ? '本机工作区日志' : 'Local workspace logs'}</Heading>
-        <text fg={showAudit ? theme.good : theme.muted}>{showAudit ? (zh ? '调用审计：开启' : 'audit: ON') : (zh ? '调用审计：关闭' : 'audit: OFF')}</text>
-        <text fg={theme.muted}>{zh ? `第 ${page + 1} 页 · PgUp/PgDn 翻页` : `Page ${page + 1} · PgUp/PgDn`}</text>
-        <text fg={theme.warn}>{zh ? `累积模型上下文: ${formatContext(cumulativeContext)}` : `Cumulative ctx: ${formatContext(cumulativeContext)}`}</text>
+        <Heading theme={theme}>{t('Local workspace logs', '本机工作区日志')}</Heading>
+        <text fg={showAudit ? theme.good : theme.muted}>{showAudit ? (t('audit: ON', '调用审计：开启')) : (t('audit: OFF', '调用审计：关闭'))}</text>
+        <text fg={theme.muted}>{t(`Page ${page + 1} · PgUp/PgDn`, `第 ${page + 1} 页 · PgUp/PgDn 翻页`)}</text>
+        <text fg={theme.warn}>{t(`Cumulative ctx: ${formatContext(cumulativeContext)}`, `累积模型上下文: ${formatContext(cumulativeContext)}`)}</text>
       </box>
       {visibleEntries.length ? visibleEntries.map((entry, index) => {
         if (entry.audit) {
@@ -157,7 +157,6 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
               }}
               workspace={entry.workspace}
               theme={theme}
-              zh={zh}
               expanded={expanded.has(key)}
               onToggle={() => toggleAuditExpand(entry.audit!.id, entry.workspace)}
             />
@@ -167,7 +166,7 @@ export function Logs({ runtime, logs, theme, zh, showAudit, page, anchorAt }: { 
           <RuntimeRow key={`${entry.at}-${entry.kind}-${index}`} entry={entry} theme={theme} />
         );
       })
-      : <text fg={theme.muted}>{zh ? '暂无日志。' : 'No log entries.'}</text>}
+      : <text fg={theme.muted}>{t('No log entries.', '暂无日志。')}</text>}
     </box>
   );
 }

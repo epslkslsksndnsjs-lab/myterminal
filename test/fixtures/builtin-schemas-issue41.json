@@ -1,0 +1,1133 @@
+{
+  "workspace_info": {
+    "title": "Workspace info",
+    "description": "Inspect the single authorized workspace and MyTerminal runtime.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "list_dir": {
+    "title": "List directory",
+    "description": "List one directory inside the authorized workspace.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "default": "."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "find_files": {
+    "title": "Find files",
+    "description": "Find files by case-insensitive path substring.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "aliases": {
+      "pattern": "query"
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "search_text": {
+    "title": "Search text",
+    "description": "Search bounded UTF-8 files for text or a regular expression.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "aliases": {
+      "pattern": "query"
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "default": "."
+        },
+        "regex": {
+          "type": "boolean",
+          "default": false
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "read_file": {
+    "title": "Read file",
+    "description": "Read a bounded UTF-8 file.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "read_file_range": {
+    "title": "Read file lines",
+    "description": "Read a line range with a content hash.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "path",
+        "startLine",
+        "endLine"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "write_file": {
+    "title": "Write file",
+    "description": "Create or replace one UTF-8 file inside the workspace.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "type": "string"
+        },
+        "expectedSha256": {
+          "type": "string"
+        },
+        "createParents": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "apply_patch": {
+    "title": "Apply exact patch",
+    "description": "Apply exact text replacements with optional SHA protection.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expectedSha256": {
+          "type": "string"
+        },
+        "replacements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "oldText": {
+                "type": "string"
+              },
+              "newText": {
+                "type": "string"
+              },
+              "replaceAll": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "oldText",
+              "newText"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "path",
+        "replacements"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "blob_create": {
+    "title": "Create local blob",
+    "description": "Store UTF-8 or base64 content in a local content-addressed staging blob without changing workspace files or contacting external services.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "maxLength": 1400000
+        },
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "utf-8",
+            "base64"
+          ],
+          "default": "utf-8"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "blob_read": {
+    "title": "Read local blob",
+    "description": "Read bounded content from a previously staged local blob without changing files.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "utf-8",
+            "base64"
+          ],
+          "default": "utf-8"
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        }
+      },
+      "required": [
+        "sha256"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "blob_write_file": {
+    "title": "Create file from blob",
+    "description": "Create a workspace file from a staged blob. Repeating the same content succeeds; different existing content is never overwritten.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "createParents": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "sha256",
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "execute_cli": {
+    "title": "Execute command",
+    "description": "Execute one bounded shell command in the workspace.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "openWorldHint": true,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "timeoutSec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "git_status": {
+    "title": "git status",
+    "description": "Run bounded git_status in the workspace.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "git_diff": {
+    "title": "git diff",
+    "description": "Run bounded git_diff in the workspace.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "git_log": {
+    "title": "git log",
+    "description": "Run bounded git_log in the workspace.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "git_show": {
+    "title": "Git show",
+    "description": "Show one bounded Git revision or object.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "run_checks": {
+    "title": "Run project checks",
+    "description": "Run declared typecheck, build, and test package scripts in order.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "includeTest": {
+          "type": "boolean",
+          "default": true
+        },
+        "cwd": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "session_register": {
+    "title": "Register session",
+    "description": "Create and claim a root session, or delegate one direct child from an authenticated root. Delegate by domain and parallel workload with a complete role/task package; do not offload one large objective wholesale to a single child.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "root",
+            "delegate"
+          ],
+          "default": "root"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "continuesSessionId": {
+          "type": "string"
+        },
+        "task": {
+          "type": "object",
+          "properties": {
+            "objective": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "background": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4000
+            },
+            "deliverables": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "minItems": 1
+            },
+            "acceptanceCriteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "minItems": 1
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100,
+              "minItems": 1
+            }
+          },
+          "required": [
+            "objective",
+            "background",
+            "deliverables",
+            "acceptanceCriteria",
+            "constraints"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "mode",
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "session_inherit": {
+    "title": "Inherit session",
+    "description": "Claim unfinished work. Use claimCode for handoff/released/revoked sessions, or the previous sessionToken to reclaim the same stale session after an interrupted ChatGPT run.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claimCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionToken": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "session_list": {
+    "title": "List sessions",
+    "description": "List the audited session hierarchy, phases, presence, and continuation links.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "session_checkpoint": {
+    "title": "Checkpoint session",
+    "description": "Record durable session state. When the optional enhanced Actions long-task harness is enabled, a working checkpoint requires 1-3 exact concrete nextCalls and the returned nextCall must run immediately.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "working",
+            "waiting",
+            "blocked",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "nextSteps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100
+        },
+        "milestone": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100
+        },
+        "nextCalls": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 64
+              },
+              "input": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "tool",
+              "input"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "replanReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      },
+      "required": [
+        "phase",
+        "summary"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "session_context": {
+    "title": "Read session context",
+    "description": "Return the bounded 16K context projection for the authenticated session.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "session_history": {
+    "title": "Read paginated session history",
+    "description": "Read permanent structured history for the authenticated session and its continuation ancestors without overloading context.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "includeAncestors": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "session_release": {
+    "title": "Release session",
+    "description": "Release the current controller and issue a new one-time handoff code.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  "session_unregister": {
+    "title": "Release session (deprecated)",
+    "description": "Compatibility alias for session_release. It never deletes history.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "session_tag": {
+    "title": "Tag session",
+    "description": "Append audit-friendly tags to the authenticated session.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "tags"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "session_subscribe": {
+    "title": "Subscribe to session",
+    "description": "Subscribe the authenticated session to another session’s key progress.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "targetSessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "targetSessionId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "session_events_ack": {
+    "title": "Acknowledge events",
+    "description": "Acknowledge delivered event IDs; history remains permanent.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "eventIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "eventIds"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "message_send": {
+    "title": "Send session message",
+    "description": "Send a durable message as the authenticated session to a recipient session name or ID; sender cannot be overridden. The response includes send/return timestamps and call latency.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "to": {
+          "type": "string",
+          "minLength": 1
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20000
+        }
+      },
+      "required": [
+        "to",
+        "body"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "message_inbox": {
+    "title": "Read session inbox",
+    "description": "Read only the authenticated session’s durable inbox.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "markRead": {
+          "type": "boolean",
+          "default": false
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 50
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "message_list": {
+    "title": "List own collaboration messages",
+    "description": "List recent inbound and outbound messages involving the authenticated session.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "message_conversation": {
+    "title": "Read two-way conversation",
+    "description": "Read the complete recent two-way conversation between the authenticated session and another session selected by name or ID.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "with": {
+          "type": "string",
+          "minLength": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000
+        }
+      },
+      "required": [
+        "with"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "skill": {
+    "title": "Run skill",
+    "description": "List installed skills when called without arguments, or run one by name. Inline skills return their instructions; fork skills start a subagent and return a taskId to poll with subagent_status.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "subagent_start": {
+    "title": "Start subagent",
+    "description": "Start a subagent to work on a sub-task asynchronously. Returns taskId immediately; poll with subagent_status for progress. Completion arrives as a message notification.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "background": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "deliverables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20
+        },
+        "acceptanceCriteria": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20
+        },
+        "provider": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "anthropic",
+            "deepseek",
+            "glm",
+            "qwen"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200
+        },
+        "timeoutSec": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600
+        },
+        "readOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "objective"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "subagent_status": {
+    "title": "Subagent status",
+    "description": "Query subagent progress, tasks, cost, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.",
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": true
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "subagent_abort": {
+    "title": "Abort subagent",
+    "description": "Abort a running subagent. Idempotent — calling on an already-terminal subagent returns its current status.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "taskId"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

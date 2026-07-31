@@ -98,8 +98,8 @@ test('mergeActivity handles null args and result', () => {
 test('memoizedMergeActivity args/result included in memoization', () => {
   const audits1 = [{ at: '2026-07-26T12:00:00.000Z', action: 'a', source: 'apps', status: 'completed', args: { v: 1 } }];
   const audits2 = [{ at: '2026-07-26T12:00:00.000Z', action: 'a', source: 'apps', status: 'completed', args: { v: 2 } }];
-  const r1 = memoizedMergeActivity('r1', [], audits1, 10);
-  const r2 = memoizedMergeActivity('r1', [], audits2, 10); // same revision, different audits — but memo uses revision only
+  const r1 = memoizedMergeActivity('r1', [], () => audits1, 10);
+  const r2 = memoizedMergeActivity('r1', [], () => audits2, 10); // same revision, different audits — but memo uses revision only
   // same revision returns same cached reference regardless of new args
   assert.strictEqual(r1, r2);
 });
