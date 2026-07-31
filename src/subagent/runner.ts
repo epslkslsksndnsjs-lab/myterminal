@@ -55,6 +55,8 @@ export type SubagentStatusResult = {
   cost: UsageSummary;
   error?: string;
   result?: string;
+  /** ADR-0042 #78 选项 A：来源（skill fork 时标注 skillName；direct start 为 undefined） */
+  origin?: SubagentOrigin;
   auditLogs: unknown[];
 };
 
@@ -153,11 +155,12 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         task: taskPkg,
       });
 
-      // M2 store 记录
+      // M2 store 记录（ADR-0042 #78 选项 A：透传 origin，使其落 SubagentRecord）
       const subagentId = `sa_${randomUUID().slice(0, 8)}`;
       createSubagent(subagentId, {
         subject: input.objective.slice(0, 200),
         description: input.background?.slice(0, 500),
+        origin,
       });
 
       // 存储 child identity 供 notify/checkpoint 使用
@@ -211,6 +214,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         cost: record.cost,
         error: record.error,
         result: record.status === 'completed' ? record.result : undefined,
+        origin: record.origin,
         auditLogs: getRecentAuditLogs(taskId),
       };
     },
