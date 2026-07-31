@@ -25,13 +25,62 @@ const identitySchema = z.object({ sessionId: z.string().min(1), sessionToken: z.
 const optionalIdentitySchema = identitySchema.nullish();
 
 /**
- * extension_call/extension_register 面向**任意**扩展（含用户注册的 custom extension），
- * 参数形状只有目标工具自己知道——真正的校验发生在 `invokeTool` 运行期（对着单源
- * JSON Schema）。协议层只需要"一个对象"，所以用开放 record。
- * ADR-0032（#41）：这里原来是手抄的 44 字段 catchall——字段清单是从各工具 schema
- * 里人肉汇总的第三份副本，既约束不了什么（catchall 全通），又随工具演进持续腐烂。
+ * extension_call/extension_register 入参的协议层 schema —— **main 09f2246 基线逐字还原**。
+ *
+ * 语义（#70 门禁探针实证，见 scripts/probe-41-baseline-vs-seams.mjs）：
+ *   · 44 个**已声明**字段的类型校验在协议层生效（`limit:"abc"`、`mode:"wildcard"` 等即拒）；
+ *   · `.catchall(z.unknown())` 只放行**未声明**的额外键（面向任意 custom extension 的开放性）。
+ * #41 曾把它退化为 `z.record`（全通），使 6 类类型错误从「协议层即拒」变「放行」——
+ * 那是真实行为放宽，违反批5「纯重构行为不变」铁律，已还原。
+ * 「防第三份副本腐烂」的诉求由锁测试 PROTO-LOCK-3（基线字段快照）承担；
+ * 若要改为从单源派生/收紧约束，属显式行为变更，须单独开票走流程。
  */
-const extensionToolInput = z.record(z.string(), z.unknown());
+export const extensionToolInput = z.object({
+  name: z.string().optional(),
+  role: z.string().optional(),
+  session: z.string().optional(),
+  workspaceId: z.string().optional(),
+  mode: z.enum(['root', 'delegate']).optional(),
+  phase: z.enum(['pending', 'working', 'waiting', 'blocked', 'completed', 'cancelled']).optional(),
+  note: z.string().optional(),
+  sessionId: z.string().optional(),
+  sessionToken: z.string().optional(),
+  claimCode: z.string().optional(),
+  continuesSessionId: z.string().optional(),
+  summary: z.string().optional(),
+  objective: z.string().optional(),
+  background: z.string().optional(),
+  deliverables: z.array(z.string()).optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
+  constraints: z.array(z.string()).optional(),
+  task: z.record(z.string(), z.unknown()).optional(),
+  nextSteps: z.array(z.string()).optional(),
+  nextCalls: z.array(z.record(z.string(), z.unknown())).optional(),
+  replanReason: z.string().optional(),
+  blockers: z.array(z.string()).optional(),
+  artifacts: z.array(z.string()).optional(),
+  milestone: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  targetSessionId: z.string().optional(),
+  eventIds: z.array(z.string()).optional(),
+  to: z.string().optional(),
+  body: z.string().optional(),
+  markRead: z.boolean().optional(),
+  limit: z.number().int().optional(),
+  offset: z.number().int().optional(),
+  includeAncestors: z.boolean().optional(),
+  with: z.string().optional(),
+  path: z.string().optional(),
+  content: z.string().optional(),
+  patch: z.string().optional(),
+  encoding: z.string().optional(),
+  sha256: z.string().optional(),
+  createParents: z.boolean().optional(),
+  command: z.string().optional(),
+  cwd: z.string().optional(),
+  timeoutSec: z.number().int().optional(),
+  taskId: z.string().optional(),
+}).catchall(z.unknown());
 
 const extensionSpec = z.object({
   name: z.string(),
