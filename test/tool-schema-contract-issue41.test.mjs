@@ -278,3 +278,84 @@ test('[NEGATIVE-3] 派生器抛错信息带上出错路径，便于定位', asyn
     /probe\.outer\.inner/,
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [LOCK-6] 协议层 inputSchema 对 main 基线的全量守卫（二轮审查补锁）
+//
+// 背景：MCP_BASELINE（main 09f2246 全量快照）一直存有 inputSchema，但 LOCK-1~5
+// 从不断言它——正是这个盲区让 #2a（extension_call 放宽）一轮漏网、19 处漂移长期
+// 隐形。本锁逐工具 diff inputSchema，除下方【显式 allowlist】外任何差异立即红灯。
+//
+// allowlist 的 19 处均已逐项审阅并实证（scripts/probe-mcp-schema-drift.mjs）：
+//   A 类（11 处）default 仅进展示层——派生器用 .meta({default}) 而非 .default()，
+//     实测 parse({}) => {}，服务端行为零变化，仅客户端可见契约新增广告；
+//   B 类（8 处）约束收紧——与运行期单源一致，invokeTool 的 validateJsonSchema
+//     本就会拒，判定结果不变，仅错误通道由 INVALID_INPUT 变为协议层校验错误。
+// 两类均记为 #41 的显式契约变更（方向=协议层向运行期单源靠拢，即 #41 设计目标）。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 形如 `${tool} :: ${path}` → { baseline, current, reason }
+const INPUT_SCHEMA_ALLOWLIST = new Map([
+  // ── A 类：展示层 default 广告（parse 行为不变）──
+  ['session_register :: properties.mode.default', { baseline: undefined, current: 'root', reason: 'A:展示层default' }],
+  ['session_history :: properties.includeAncestors.default', { baseline: undefined, current: true, reason: 'A:展示层default' }],
+  ['message_inbox :: properties.markRead.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
+  ['message_inbox :: properties.limit.default', { baseline: undefined, current: 50, reason: 'A:展示层default' }],
+  ['list_dir :: properties.path.default', { baseline: undefined, current: '.', reason: 'A:展示层default' }],
+  ['find_files :: properties.path.default', { baseline: undefined, current: '.', reason: 'A:展示层default' }],
+  ['search_text :: properties.path.default', { baseline: undefined, current: '.', reason: 'A:展示层default' }],
+  ['search_text :: properties.regex.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
+  ['blob_create :: properties.encoding.default', { baseline: undefined, current: 'utf-8', reason: 'A:展示层default' }],
+  ['blob_read :: properties.encoding.default', { baseline: undefined, current: 'utf-8', reason: 'A:展示层default' }],
+  ['blob_write_file :: properties.createParents.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
+  // ── B 类：约束收紧（运行期本就拒，判定结果不变，错误通道前移）──
+  ['session_inherit :: properties.claimCode.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
+  ['session_inherit :: properties.sessionToken.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
+  ['session_checkpoint :: properties.replanReason.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
+  ['subagent_start :: properties.objective.maxLength', { baseline: undefined, current: 4000, reason: 'B:收紧对齐运行期' }],
+  ['subagent_start :: properties.background.maxLength', { baseline: undefined, current: 4000, reason: 'B:收紧对齐运行期' }],
+  ['subagent_start :: properties.deliverables.maxItems', { baseline: undefined, current: 20, reason: 'B:收紧对齐运行期' }],
+  ['subagent_start :: properties.acceptanceCriteria.maxItems', { baseline: undefined, current: 20, reason: 'B:收紧对齐运行期' }],
+  ['subagent_start :: properties.constraints.maxItems', { baseline: undefined, current: 20, reason: 'B:收紧对齐运行期' }],
+]);
+
+function flattenSchema(node, path, out) {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+    out.set(path, node);
+    return;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    flattenSchema(value, path ? `${path}.${key}` : key, out);
+  }
+}
+
+test('[LOCK-6] 全部 32 工具 inputSchema 对 main 基线快照零静默漂移（allowlist 外必红）', async () => {
+  const actual = await collectMcpTools();
+  const names = Object.keys(MCP_BASELINE);
+  const seen = new Set();
+  const violations = [];
+
+  for (const name of names) {
+    const base = new Map();
+    const cur = new Map();
+    flattenSchema(MCP_BASELINE[name].inputSchema ?? null, '', base);
+    flattenSchema(actual[name]?.inputSchema ?? null, '', cur);
+    for (const path of new Set([...base.keys(), ...cur.keys()])) {
+      const b = base.get(path);
+      const c = cur.get(path);
+      if (Object.is(b, c) || JSON.stringify(b) === JSON.stringify(c)) continue;
+      const key = `${name} :: ${path}`;
+      const allowed = INPUT_SCHEMA_ALLOWLIST.get(key);
+      if (allowed && JSON.stringify(allowed.baseline) === JSON.stringify(b) && JSON.stringify(allowed.current) === JSON.stringify(c)) {
+        seen.add(key);
+        continue;
+      }
+      violations.push(`${key}  [${JSON.stringify(b)} -> ${JSON.stringify(c)}]`);
+    }
+  }
+
+  assert.deepEqual(violations, [], `协议层 inputSchema 出现 allowlist 之外的漂移：\n${violations.join('\n')}`);
+  // 反向守卫：allowlist 条目若已不存在（如某处被还原），必须从清单删除，防清单腐烂
+  const stale = [...INPUT_SCHEMA_ALLOWLIST.keys()].filter((k) => !seen.has(k));
+  assert.deepEqual(stale, [], `allowlist 存在已失效条目（差异已消失，请删除）：\n${stale.join('\n')}`);
+});
