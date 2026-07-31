@@ -11,8 +11,21 @@
 //     任何错字、漏搬、串行、误删都会让某个文件的多重集与基线不等。
 //     测试跑在 dist/ 上、无终端渲染器，做不了渲染快照，所以行为锁只能走源码级字面量比对——
 //     这是本刀行为锁的真实强度边界，不粉饰。
-//     基线：test/fixtures/i18n-literals-issue31.json，生成自重构前 HEAD(198214e)，
-//     53 文件 / 1758 条字面量。收割逻辑与生成器共用 test/fixtures/i18n-harvest.mjs（单源）。
+//     基线：test/fixtures/i18n-literals-issue31.json，最初生成自重构前 HEAD(198214e)，
+//     现 55 文件 / 1758 条字面量。收割逻辑与生成器共用 test/fixtures/i18n-harvest.mjs（单源）。
+//
+//     重锁记录（2026-07-31，#70 门禁下）：本轮对 #14（致命错误屏不再泄漏开发指令）、
+//     #17（设置字段两份 11 分支级联收敛为单一注册表）做了正当改动，二者都触碰了 TUI 层
+//     文件，使字面量多重集发生预期内漂移，打破了原始冻结基线。经逐条人工核对，三条漂移
+//     均非 i18n 回归（无 zh/CJK 串被改、无 t() 参数颠倒——那些由本文件其余子测试继续守住，
+//     且全绿）：
+//       · FatalErrorBoundary.tsx 新增 DevInvariantError + 两语用户向兜底文案（#14 新功能）
+//       · context.tsx 新增 DevInvariantError 类名字面量（#14）
+//       · controller-logic.ts 删 11 字段标识的重复副本（两份级联→注册表，2→1 份；
+//         运行期行为不变，已由 tui-controller-logic-issue29 的 16 例锁证明）、新增 3 处
+//         workspace-unavailable（注册表内出现 3 处）。净变化 1762→1758。
+//     本锁是「重新审查后重锁」路径（测试注释预留：字面量总数变化需重新审查后重锁），
+//     重锁后继续作为 TUI 层字面量回归护栏。
 //
 // (b) 覆盖率断言 —— 重构前红、重构后绿。这是本刀的目标指标，不是锁。
 //     断言 seam 作用域内不再存在 `zh ? … : …` 三元与 `zh: boolean` / `zh={zh}` prop 传递。
@@ -75,7 +88,7 @@ describe('#31 i18n seam', () => {
     }
     assert.equal(Object.keys(baseline).length, 55, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 1762, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 1758, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───
