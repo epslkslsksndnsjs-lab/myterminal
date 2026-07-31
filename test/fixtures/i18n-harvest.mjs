@@ -11,18 +11,30 @@ const here = path.dirname(url.fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, '..', '..');
 export const FIXTURE = path.join(here, 'i18n-literals-issue31.json');
 
-/** seam 作用域：整个 TUI 层 + 被 TUI 穿透的 workspace-selection。 */
+/**
+ * 作用域键的唯一归一化入口：一律 POSIX 分隔符。
+ *
+ * 基线 JSON 的键在 POSIX 平台生成（`src/tui/App.tsx`），而 path.relative/path.join 在
+ * Windows 上产出 `src\tui\App.tsx`——不归一化会让 Windows CI 上全部基线键匹配失败
+ * （症状：55 个文件齐报「文件消失」）。键只作为标识符使用，读文件时再交给 path.join
+ * 还原成平台路径，故归一化不影响任何实际 I/O。
+ */
+export function toPosixKey(relativePath) {
+  return relativePath.split(path.sep).join('/').split('\\').join('/');
+}
+
+/** seam 作用域：整个 TUI 层 + 被 TUI 穿透的 workspace-selection。键一律 POSIX。 */
 export function scopeFiles() {
   const files = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      else if (/\.tsx?$/.test(entry.name)) files.push(path.relative(ROOT, full));
+      else if (/\.tsx?$/.test(entry.name)) files.push(toPosixKey(path.relative(ROOT, full)));
     }
   };
   walk(path.join(ROOT, 'src', 'tui'));
-  files.push(path.join('src', 'workspace-selection.ts'));
+  files.push('src/workspace-selection.ts');
   return files.sort();
 }
 
@@ -58,9 +70,15 @@ export function stripModuleSpecifiers(source) {
     .replace(/^\s*import\s*(['"])[^'"]*\1\s*;?\s*$/gm, '');
 }
 
-/** 收割一个文件里全部字符串/模板字面量（原样，含 ${} 片段），排序后返回。 */
+/**
+ * 收割一个文件里全部字符串/模板字面量（原样，含 ${} 片段），排序后返回。
+ *
+ * 先把 CRLF 折成 LF：无 .gitattributes 时 Windows checkout 会落 CRLF，跨行模板字面量
+ * 会把 \r 一并收进多重集，使行为锁在 Windows 上假红。当前基线 0 条跨行字面量，故此归一化
+ * 对既有基线是逐字节 no-op（已用重新生成基线 + git diff 为空验证）。
+ */
 export function harvestLiterals(source) {
-  const text = stripModuleSpecifiers(stripComments(source));
+  const text = stripModuleSpecifiers(stripComments(source.replace(/\r\n/g, '\n')));
   const literals = [];
   let index = 0;
   while (index < text.length) {
