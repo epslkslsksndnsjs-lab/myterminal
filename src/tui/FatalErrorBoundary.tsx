@@ -2,7 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react';
 import type { MyTerminalRuntime } from '../server.js';
 import type { Theme } from './state.js';
 import { Mascot } from './components/Mascot.js';
-import { I18nContext } from './copy/context.js';
+import { DevInvariantError, I18nContext } from './copy/context.js';
 import { i18nFor } from './copy/i18n.js';
 
 type Props = {
@@ -40,7 +40,13 @@ export class FatalErrorBoundary extends Component<Props, State> {
               <Mascot mood="sad" theme={this.props.theme} animated={false} />
               <text fg={this.props.theme.bad}><b>{t('Fatal error', '严重错误')}</b></text>
               <text fg={this.props.theme.text}>{message}</text>
-              <text fg={this.props.theme.muted}>{error.message}</text>
+              {/* 开发不变量错误的 message 是开发指令，不是 UI 文案（AI_RULES）：
+                  只给用户向兜底提示，原始指令已由 componentDidCatch 写入日志。 */}
+              <text fg={this.props.theme.muted}>
+                {error instanceof DevInvariantError || error.name === 'DevInvariantError'
+                  ? t('Internal interface error. Details were written to the log.', '界面内部错误。详细信息已写入日志。')
+                  : error.message}
+              </text>
             </box>
           );
         }}

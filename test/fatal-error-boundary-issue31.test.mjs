@@ -63,3 +63,16 @@ test('FATAL-LOCK-3: 有 I18nProvider（en）时渲染英文指引', () => {
   assert.match(out, /Press q or Esc to exit safely/);
   assert.match(out, /Fatal error/);
 });
+
+test('FATAL-LOCK-4: 开发不变量错误的开发指令文案不得渲染给用户（AI_RULES），普通错误不受影响', async () => {
+  const { DevInvariantError } = await import('../dist/tui/copy/context.js');
+  const runtime = { log: () => {}, config: { uiLanguage: 'zh-CN' } };
+  const theme = { background: '#000', bad: '#f00', text: '#fff', muted: '#888' };
+  const boundary = new FatalErrorBoundary({ runtime, theme, onFatal: () => {}, children: null });
+  boundary.state = { error: new DevInvariantError('useI18n() used outside <I18nProvider>. Wrap the render root with I18nProvider.') };
+  const out = collectText(boundary.render(), undefined);
+  assert.ok(out.length > 0, '仍必须渲染致命错误屏');
+  assert.match(out, /按 q 或 Esc|Press q or Esc/, '安全退出指引不受影响');
+  assert.doesNotMatch(out, /useI18n|I18nProvider|Wrap the render root/, '开发指令不得作为 UI 文案泄漏给用户');
+  assert.match(out, /界面内部错误|Internal interface error/, '须用用户向兜底文案替代');
+});

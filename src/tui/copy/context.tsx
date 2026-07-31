@@ -16,6 +16,18 @@ import type { I18n } from './i18n.js';
 
 export const I18nContext = createContext<I18n | undefined>(undefined);
 
+/**
+ * 开发不变量被破坏时抛的错误（如渲染根忘包 Provider）。
+ * message 是给开发者的指令，**不是 UI 文案**（AI_RULES）：FatalErrorBoundary
+ * 识别此类型后只渲染用户向兜底文案，开发指令仅进日志。
+ */
+export class DevInvariantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DevInvariantError';
+  }
+}
+
 export function I18nProvider({ value, children }: { value: I18n; children?: ReactNode }) {
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
@@ -26,6 +38,6 @@ export function I18nProvider({ value, children }: { value: I18n; children?: Reac
  */
 export function useI18n(): I18n {
   const value = useContext(I18nContext);
-  if (!value) throw new Error('useI18n() used outside <I18nProvider>. Wrap the render root with I18nProvider.');
+  if (!value) throw new DevInvariantError('useI18n() used outside <I18nProvider>. Wrap the render root with I18nProvider.');
   return value;
 }
