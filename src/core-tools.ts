@@ -187,7 +187,13 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   const add = (definition: ToolDefinition) => tools.set(definition.name, definition);
   const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: false, idempotentHint: true };
   const mutating = { readOnlyHint: false, destructiveHint: true, openWorldHint: false, idempotentHint: false };
-  const localCreate = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: true };
+  // ADR-0034（#74）：这里曾有一个 `localCreate` 共享对象，把 idempotentHint:true
+  // 一次性撒给 10 个工具且从未向下覆盖，与 mcp.ts:181 `safeLocalMutation`（以 false
+  // 为基准、真幂等者显式 opt-in）默认极性相反，造成 4 条对外声明漂移。
+  // 现改为：`localWrite` 只承载三个安全语义 hint，刻意不含 idempotentHint，
+  // 强制每个使用者显式表态。判定理由登记在
+  // test/annotations-contract-issue74.test.mjs 的 IDEMPOTENCY_LEDGER。
+  const localWrite = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
   const actor = (context: Parameters<ToolDefinition['invoke']>[1]) => {
     if (!context.authenticatedSession) throw new MyTerminalError('IDENTITY_REQUIRED', 'Register or inherit a MyTerminal session before calling this tool.');
     return context.authenticatedSession;
@@ -309,7 +315,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'blob_create', title: 'Create local blob', description: 'Store UTF-8 or base64 content in a local content-addressed staging blob without changing workspace files or contacting external services.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_create, annotations: localCreate,
+    // 内容寻址：同内容重复创建得同一 blob（与 mcp.ts:229 opt-in 一致）
+    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_create, annotations: { ...localWrite, idempotentHint: true },
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
       const buffer = decodeBlob(asString(input.content, 'content'), asOptionalString(input.encoding) || 'utf-8');
@@ -337,7 +344,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'blob_write_file', title: 'Create file from blob', description: 'Create a workspace file from a staged blob. Repeating the same content succeeds; different existing content is never overwritten.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_write_file, annotations: localCreate,
+    // 同内容重复写成功，不同内容永不覆盖（与 mcp.ts:231 opt-in 一致）
+    inputSchema: BUILTIN_INPUT_SCHEMAS.blob_write_file, annotations: { ...localWrite, idempotentHint: true },
     invoke: async (input, context) => {
       actor(context); // ADR-0016: 纵深防御鉴权
       const sha256 = asString(input.sha256, 'sha256');
@@ -407,7 +415,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   add({
     name: 'session_register', title: 'Register session', description: 'Create and claim a root session, or delegate one direct child from an authenticated root. Delegate by domain and parallel workload with a complete role/task package; do not offload one large objective wholesale to a single child.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_register, annotations: localCreate,
+    // 非幂等：每次调用产出新 session 与新 token，重放会留下孤儿 session
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_register, annotations: { ...localWrite, idempotentHint: false },
     invoke: async (input, context) => {
       const mode = input.mode === 'delegate' ? 'delegate' : 'root';
       if (mode === 'root') {
@@ -422,7 +431,8 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'session_inherit', title: 'Inherit session', description: 'Claim unfinished work. Use claimCode for handoff/released/revoked sessions, or the previous sessionToken to reclaim the same stale session after an interrupted ChatGPT run.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_inherit, annotations: localCreate,
+    // 非幂等：消耗一次性 claimCode，重放不等价
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_inherit, annotations: { ...localWrite, idempotentHint: false },
     invoke: async (input) => {
       const claimCode = asOptionalString(input.claimCode);
       const sessionToken = asOptionalString(input.sessionToken);
@@ -470,32 +480,38 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   });
   add({
     name: 'session_release', title: 'Release session', description: 'Release the current controller and issue a new one-time handoff code.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_release, annotations: localCreate,
+    // 非幂等：每次签发新的一次性 handoff code
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_release, annotations: { ...localWrite, idempotentHint: false },
     invoke: async (_input, context) => { const result = store.release(actor(context).id); return { session: publicSession(result.session), claimCode: result.claimCode, handoffPrompt: result.handoffPrompt }; },
   });
   add({
     name: 'session_unregister', title: 'Release session (deprecated)', description: 'Compatibility alias for session_release. It never deletes history.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_unregister, annotations: localCreate,
+    // 非幂等：session_release 的逐字别名，必须同值
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_unregister, annotations: { ...localWrite, idempotentHint: false },
     invoke: async (_input, context) => { const result = store.release(actor(context).id); return { deprecated: true, replacement: 'session_release', removed: false, session: publicSession(result.session), claimCode: result.claimCode, handoffPrompt: result.handoffPrompt }; },
   });
   add({
     name: 'session_tag', title: 'Tag session', description: 'Append audit-friendly tags to the authenticated session.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_tag, annotations: localCreate,
+    // store.ts tag()：`[...new Set(...)]` 去重，重复打同一标签结果不变
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_tag, annotations: { ...localWrite, idempotentHint: true },
     invoke: async (input, context) => ({ session: publicSession(store.tag(actor(context).id, input.tags as string[])) }),
   });
   add({
     name: 'session_subscribe', title: 'Subscribe to session', description: 'Subscribe the authenticated session to another session’s key progress.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_subscribe, annotations: localCreate,
+    // store.ts subscribe()：`some()` 查重后才 push，重复订阅不产生第二条
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_subscribe, annotations: { ...localWrite, idempotentHint: true },
     invoke: async (input, context) => { const current = actor(context); store.subscribe(current.id, asString(input.targetSessionId, 'targetSessionId')); return { subscribed: true, subscriberSessionId: current.id, targetSessionId: input.targetSessionId }; },
   });
   add({
     name: 'session_events_ack', title: 'Acknowledge events', description: 'Acknowledge delivered event IDs; history remains permanent.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.session_events_ack, annotations: localCreate,
+    // 按事件 ID 确认，重复确认无额外效果（与 mcp.ts:214 opt-in 一致）
+    inputSchema: BUILTIN_INPUT_SCHEMAS.session_events_ack, annotations: { ...localWrite, idempotentHint: true },
     invoke: async (input, context) => ({ acknowledged: store.acknowledgeEvents(actor(context).id, input.eventIds as string[]) }),
   });
   add({
     name: 'message_send', title: 'Send session message', description: 'Send a durable message as the authenticated session to a recipient session name or ID; sender cannot be overridden. The response includes send/return timestamps and call latency.',
-    inputSchema: BUILTIN_INPUT_SCHEMAS.message_send, annotations: localCreate,
+    // 非幂等：每次调用追加一条新的持久消息，重放产生重复消息
+    inputSchema: BUILTIN_INPUT_SCHEMAS.message_send, annotations: { ...localWrite, idempotentHint: false },
     invoke: async (input, context) => {
       const startedAt = new Date().toISOString();
       const message = store.sendMessage(actor(context).id, asString(input.to, 'to'), asString(input.body, 'body'));

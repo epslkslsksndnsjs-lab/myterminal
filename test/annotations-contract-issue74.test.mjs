@@ -25,9 +25,13 @@
 
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { collectBuiltinSchemas, collectMcpTools } from './fixtures/tool-schema-baseline-issue41.mjs';
 
+const here = dirname(fileURLToPath(import.meta.url));
 const HINTS = ['readOnlyHint', 'destructiveHint', 'openWorldHint', 'idempotentHint'];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -37,10 +41,9 @@ const HINTS = ['readOnlyHint', 'destructiveHint', 'openWorldHint', 'idempotentHi
 //    ADR-0034 的收敛目标是把它清成空表。
 // ─────────────────────────────────────────────────────────────────────────────
 const KNOWN_DRIFT = {
-  session_register: ['idempotentHint'],
-  session_inherit: ['idempotentHint'],
-  session_release: ['idempotentHint'],
-  message_send: ['idempotentHint'],
+  // 空表 —— ADR-0034 CP3 修复完成，两侧 annotations 已完全一致。
+  // 立锁时（CP2, commit 13a1621）这里有 4 条：
+  //   session_register / session_inherit / session_release / message_send 的 idempotentHint。
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,14 +81,12 @@ const IDEMPOTENCY_LEDGER = {
   session_tag: [true, 'store.ts:486 用 Set 去重，重复打同一标签结果不变'],
   session_subscribe: [true, 'store.ts:499 用 some() 查重后才 push，重复订阅不产生第二条'],
 
-  // ── 待修：现状 true，ADR-0034 判定应为 false（CP3 修正）──
-  session_register: [true, '⚠️ 现状值。实际每次产出新 session 与新 token，应为 false'],
-  session_inherit: [true, '⚠️ 现状值。实际消耗一次性 claimCode，应为 false'],
-  session_release: [true, '⚠️ 现状值。实际每次签发新的一次性 handoff code，应为 false'],
-  session_unregister: [true, '⚠️ 现状值。session_release 的逐字别名，应随之为 false'],
-  message_send: [true, '⚠️ 现状值。实际每次追加一条新的持久消息，应为 false'],
-
   // ── 非幂等：每次调用都产生新的不可回收效果 ──
+  session_register: [false, '每次调用产出新 session 与新 token；重放会留下孤儿 session'],
+  session_inherit: [false, '消耗一次性 claimCode，重放不等价'],
+  session_release: [false, '每次签发新的一次性 handoff code'],
+  session_unregister: [false, 'session_release 的逐字兼容别名，必须同值'],
+  message_send: [false, '每次调用追加一条新的持久消息；重放产生重复消息'],
   session_checkpoint: [false, '每次记录一条新的检查点状态'],
   write_file: [false, '整文件替换，破坏性'],
   apply_patch: [false, '文本替换，重放会打到已变更的内容上'],
@@ -130,6 +131,15 @@ test('[LOCK-74-1] core 与 MCP 两侧共有工具的 annotations 逐字相等（
   assert.deepEqual(
     staleAllowlist, [],
     'KNOWN_DRIFT 里有条目已经不漂移了，请从 allowlist 删掉：\n  ' + staleAllowlist.join('\n  '),
+  );
+});
+
+test('[LOCK-74-1b] KNOWN_DRIFT allowlist 必须为空（ADR-0034 的收敛终态）', () => {
+  const remaining = Object.entries(KNOWN_DRIFT).flatMap(([n, hs]) => hs.map((h) => `${n}.${h}`));
+  assert.deepEqual(
+    remaining, [],
+    'annotations 两侧仍有 ' + remaining.length + ' 条漂移。#74 已修复，这张表不该再有条目——'
+    + '若确需新增，必须先在 ADR 里说明为什么这条漂移是可接受的：\n  ' + remaining.join('\n  '),
   );
 });
 
@@ -202,4 +212,47 @@ test('[LOCK-74-2c] readOnlyHint 为 true 的工具必须同时 idempotentHint �
     }
   }
   assert.deepEqual(bad, [], '只读工具不可能非幂等：\n  ' + bad.join('\n  '));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// [LOCK-74-3] 结构锁 —— 防的是根因复发，不是症状
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('[LOCK-74-3] core-tools.ts 不得再出现「非只读 + idempotentHint:true 预设」的共享注解对象', () => {
+  const source = readFileSync(join(here, '..', 'src', 'core-tools.ts'), 'utf8').replace(/\r\n/g, '\n');
+
+  // #74 根因：形如
+  //   const localCreate = { readOnlyHint: false, ..., idempotentHint: true };
+  // 的共享对象被多个工具原样引用，等于把一个「乐观且需要论证」的幂等判断当默认值撒出去。
+  //
+  // 只禁 true，不禁 false：ADR-0034 决策 1 定的就是「默认 false、真幂等才 opt-in」。
+  // 共享 idempotentHint:false（如 `mutating`、`SUBAGENT_ANNOTATIONS`）是保守侧，
+  // 误报方向无害——客户端只是少一次重试优化。把它们一并判红属于锁过严。
+  const pattern = /const\s+(\w+)\s*=\s*\{([^}]*readOnlyHint:\s*false[^}]*idempotentHint:\s*true[^}]*)\}/g;
+
+  const offenders = [];
+  for (const match of source.matchAll(pattern)) {
+    const identifier = match[1];
+    // 只有被当作 annotations 直接复用才构成问题；单点内联字面量不算。
+    const reuse = source.split(new RegExp(`annotations:\\s*${identifier}\\b`)).length - 1;
+    if (reuse > 0) offenders.push(`${identifier}（被 ${reuse} 处直接用作 annotations）`);
+  }
+
+  assert.deepEqual(
+    offenders, [],
+    '共享注解对象把 idempotentHint 当默认值撒出去了（#74 根因，ADR-0034）：\n  '
+    + offenders.join('\n  ')
+    + '\n  非只读工具请写成 { ...localWrite, idempotentHint: <显式判断> }，并在 IDEMPOTENCY_LEDGER 登记理由。',
+  );
+});
+
+test('[LOCK-74-3b] localWrite 本身不得含 idempotentHint（强制使用者显式表态）', () => {
+  const source = readFileSync(join(here, '..', 'src', 'core-tools.ts'), 'utf8');
+  const match = source.match(/const\s+localWrite\s*=\s*\{([^}]*)\}/);
+  assert.ok(match, 'localWrite 定义不见了——若已重命名，请同步本锁');
+  assert.ok(
+    !/idempotentHint/.test(match[1]),
+    'localWrite 里出现了 idempotentHint。它的存在意义就是「不替使用者做幂等性判断」，'
+    + '一旦带上默认值，#74 的根因就复活了。',
+  );
 });

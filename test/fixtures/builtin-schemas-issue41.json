@@ -498,7 +498,7 @@
       "readOnlyHint": false,
       "destructiveHint": false,
       "openWorldHint": false,
-      "idempotentHint": true
+      "idempotentHint": false
     },
     "inputSchema": {
       "type": "object",
@@ -585,7 +585,7 @@
       "readOnlyHint": false,
       "destructiveHint": false,
       "openWorldHint": false,
-      "idempotentHint": true
+      "idempotentHint": false
     },
     "inputSchema": {
       "type": "object",
@@ -777,7 +777,7 @@
       "readOnlyHint": false,
       "destructiveHint": false,
       "openWorldHint": false,
-      "idempotentHint": true
+      "idempotentHint": false
     },
     "inputSchema": {
       "type": "object",
@@ -792,7 +792,7 @@
       "readOnlyHint": false,
       "destructiveHint": false,
       "openWorldHint": false,
-      "idempotentHint": true
+      "idempotentHint": false
     },
     "inputSchema": {
       "type": "object",
@@ -888,7 +888,7 @@
       "readOnlyHint": false,
       "destructiveHint": false,
       "openWorldHint": false,
-      "idempotentHint": true
+      "idempotentHint": false
     },
     "inputSchema": {
       "type": "object",
