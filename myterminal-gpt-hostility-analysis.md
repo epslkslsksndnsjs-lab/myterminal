@@ -91,5 +91,3 @@ MyTerminal 选 router 模式有它的理由，只是代价全由模型承担：
 - 这违反了 OpenAI function calling 的每一条核心建议（清晰 schema、别让模型路由、enum 防错、结构化错误、认证走传输层）。
 - 对 GPT 尤甚：GPT Actions 的整个设计前提就是"每个 operation 一个原生工具"，而 MyTerminal 恰恰把 operation 压没了。
 - 本质：**为"小 spec + 动态注册"优化了系统侧，却把认知成本 100% 转嫁给模型**。改起来不难（方案 B 是最小改动且立竿见影）。
-
-> 附：本分析可与 `system-tools-vs-gpt-comparison.md` 对照看——那篇讲"换成我这种本地 GPT 的影响"，这篇讲"即使不换、原样给 GPT 用也已经是 hostile 设计"。
