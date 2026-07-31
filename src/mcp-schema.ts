@@ -119,7 +119,9 @@ function objectSchema(schema: JsonSchema, path: string): z.ZodType {
     const node = jsonSchemaToZod(child, `${path}.${key}`);
     shape[key] = required.has(key) ? node : node.optional();
   }
-  return z.strictObject(shape);
+  // strip 模式（见文件头注释）：1:1 复刻 main 基线 raw-shape 注册的未知字段语义。
+  // 刻意不用 z.strictObject——strict 会拒绝未知字段，属 #41 实现者自加的行为变更（main 是 strip）。
+  return z.object(shape);
 }
 
 /**

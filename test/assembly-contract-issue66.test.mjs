@@ -220,6 +220,41 @@ describe('issue66 assembly contract — AnthropicAdapter.create', () => {
     assert.equal(message.content[1].type, 'tool_use');
   });
 
+  test('工具在前文本在后 → 保持原始顺序（不重排为 text 在前）', async () => {
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => jsonFakeResponse({
+        content: [
+          { type: 'tool_use', id: 'tu_3', name: 'bash', input: { command: 'whoami' } },
+          { type: 'text', text: 'Done. Here is the output.' },
+        ],
+        usage: { input_tokens: 10, output_tokens: 12 },
+      }));
+    const { message } = await adapter.create(makeChatParams(), NEVER_ABORT);
+
+    assert.equal(message.content.length, 2);
+    // 关键回归锁：原始顺序为 [tool_use, text]，绝不能重排成 [text, tool_use]
+    assert.equal(message.content[0].type, 'tool_use');
+    assert.equal(message.content[1].type, 'text');
+    assert.deepEqual(message.content[0], {
+      type: 'tool_use', id: 'tu_3', name: 'bash', input: { command: 'whoami' },
+    });
+    assert.deepEqual(message.content[1], { type: 'text', text: 'Done. Here is the output.' });
+  });
+
+  test('文本/工具交错 → 保持原始交错顺序', async () => {
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => jsonFakeResponse({
+        content: [
+          { type: 'text', text: 'First.' },
+          { type: 'tool_use', id: 'tu_4', name: 'bash', input: { command: 'a' } },
+          { type: 'text', text: 'Second.' },
+        ],
+        usage: { input_tokens: 10, output_tokens: 14 },
+      }));
+    const { message } = await adapter.create(makeChatParams(), NEVER_ABORT);
+
+    assert.equal(message.content.length, 3);
+    assert.deepEqual(message.content.map((b) => b.type), ['text', 'tool_use', 'text']);
+  });
+
   test('cache_read_input_tokens 透传', async () => {
     const adapter = new AnthropicAdapter('sk-ant-test', async () => jsonFakeResponse({
         content: [{ type: 'text', text: 'cached' }],

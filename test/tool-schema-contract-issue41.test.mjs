@@ -18,7 +18,7 @@
 //   M4  漏掉 cluster 路由字段 workspaceId               → LOCK-5 杀
 //   M5  派生器丢约束（minLength/maxItems/enum/required）→ CONTRACT-1 + NEGATIVE-1 杀
 //   M6  派生器对不支持关键字静默回退 z.any()/passthrough → NEGATIVE-2 杀
-//   M7  派生的顶层对象没 strict，未知字段全通           → NEGATIVE-1 杀
+//   M7  派生必须 strip（未知字段静默通，匹配 main 基线）；误 strict 化拒绝未知字段属行为回归
 
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
@@ -127,12 +127,18 @@ function normalize(node, source) {
     if (out.maximum === SAFE_INT && source?.maximum === undefined) delete out.maximum;
     if (out.minimum === -SAFE_INT && source?.minimum === undefined) delete out.minimum;
   }
-  // 开放 record：源写 additionalProperties:true，z.record 往返输出
-  // { propertyNames:{type:'string'}, additionalProperties:{} }——语义等价，归一化回源形态。
-  // 仅在源确实声明 additionalProperties:true 时才归一化，避免掩盖真漂移。
-  if (node.type === 'object' && source?.additionalProperties === true && source?.properties === undefined) {
-    if (out.propertyNames && out.propertyNames.type === 'string' && Object.keys(out.propertyNames).length === 1) delete out.propertyNames;
-    if (typeof out.additionalProperties === 'object' && Object.keys(out.additionalProperties).length === 0) out.additionalProperties = true;
+  if (node.type === 'object') {
+    if (source?.additionalProperties === true && source?.properties === undefined) {
+      // 开放 record：源写 additionalProperties:true，z.record 往返输出
+      // { propertyNames:{type:'string'}, additionalProperties:{} }——语义等价，归一化回源形态。
+      if (out.propertyNames && out.propertyNames.type === 'string' && Object.keys(out.propertyNames).length === 1) delete out.propertyNames;
+      if (typeof out.additionalProperties === 'object' && Object.keys(out.additionalProperties).length === 0) out.additionalProperties = true;
+    } else {
+      // strip 模式（匹配 main 基线 raw-shape 注册）：未知字段在到达 invokeTool 前被静默丢弃，
+      // 运行期不强制 additionalProperties:false。往返测试不应要求 derived 保留它，
+      // 否则会把「恢复 strip 以匹配 main」误判成漂移。
+      delete out.additionalProperties;
+    }
   }
   if (out.properties) {
     const props = {};
@@ -172,7 +178,8 @@ test('[CONTRACT-1] 29 个 direct tool 的 MCP inputSchema 与源 JSON Schema 逐
       assert.deepEqual(normalize(actualProps[key], expectedProps[key]), normalize(expectedProps[key], expectedProps[key]), `${name}.${key} 约束不一致`);
     }
     assert.deepEqual(actualRequired.sort(), [...(source.required ?? [])].sort(), `${name} required 不一致`);
-    assert.equal(tool.inputSchema.additionalProperties, false, `${name} 顶层未收口 additionalProperties`);
+    // strip 模式匹配 main 基线：顶层对象不 strict 收口（未知字段被静默吞掉而非协议拒绝）。
+    assert.notEqual(tool.inputSchema.additionalProperties, false, `${name} 顶层不应 strict 收口——strip 以匹配 main 基线`);
     checked += 1;
   }
   assert.equal(checked, 29, `direct tool 数量应为 29，实际 ${checked}`);
@@ -199,7 +206,7 @@ test('[CONTRACT-3] task_poll 的 schema 与 extension_discover 目录里公布�
 // [NEGATIVE] ② 非法输入必须被拒；派生器不得静默放行
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/边界/未知字段/缺必填/类型）', async () => {
+test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/边界/缺必填/类型）', async () => {
   const { jsonSchemaToZod } = await import('../dist/mcp-schema.js');
   const { BUILTIN_INPUT_SCHEMAS } = await import('../dist/tool-schemas.js');
   const of = (name) => jsonSchemaToZod(BUILTIN_INPUT_SCHEMAS[name], name);
@@ -207,7 +214,6 @@ test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/
   const rejects = [
     ['缺必填 query', of('find_files'), {}],
     ['类型错 query', of('find_files'), { query: 42 }],
-    ['未知字段', of('find_files'), { query: 'a', nope: 1 }],
     ['枚举越界 encoding', of('blob_create'), { content: 'x', encoding: 'utf-16' }],
     ['枚举越界 mode', of('session_register'), { mode: 'sideways', name: 'n' }],
     ['枚举越界 phase', of('session_checkpoint'), { phase: 'napping', summary: 's' }],
@@ -220,7 +226,6 @@ test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/
     ['minItems 违例 eventIds', of('session_events_ack'), { eventIds: [] }],
     ['数组元素类型错', of('session_events_ack'), { eventIds: [1] }],
     ['嵌套对象缺必填', of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o' } }],
-    ['嵌套对象未知字段', of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o', background: 'b', deliverables: ['d'], acceptanceCriteria: ['a'], constraints: ['c'], sneaky: true } }],
     ['sha256 长度违例', of('blob_read'), { sha256: 'abc' }],
   ];
   for (const [label, schema, value] of rejects) {
@@ -235,6 +240,9 @@ test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/
     [of('session_history'), { offset: 0, limit: 500, includeAncestors: false }],
     [of('subagent_start'), { objective: 'o', provider: 'qwen', maxTurns: 3 }],
     [of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o', background: 'b', deliverables: ['d'], acceptanceCriteria: ['a'], constraints: ['c'] } }],
+    // strip 模式（匹配 main 基线）：未知字段被静默接受，不拒绝
+    [of('find_files'), { query: 'a', nope: 1 }],
+    [of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o', background: 'b', deliverables: ['d'], acceptanceCriteria: ['a'], constraints: ['c'], sneaky: true } }],
   ];
   for (const [schema, value] of accepts) {
     const result = schema.safeParse(value);

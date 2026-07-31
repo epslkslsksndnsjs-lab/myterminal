@@ -264,7 +264,18 @@ export class ExtensionService {
 
   async discover(input: JsonObject = {}, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
-    const authenticated = this.authenticate(input, context, true);
+    let authenticated: { id: string } | undefined;
+    try {
+      authenticated = this.authenticate(input, context, true) ?? undefined;
+      if (authenticated) {
+        this.store.acknowledgeHarnessRequirements(authenticated.id);
+        this.store.touchControl(authenticated.id);
+      }
+    } catch (error) {
+      const failed = failure(error);
+      const sessionId = authenticated?.id;
+      return this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
+    }
     if (!authenticated) {
       return { ok: true, data: {
         agentMd: loadAgentMd(this.config.settingsPath),
@@ -282,8 +293,6 @@ export class ExtensionService {
         skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
       } };
     }
-    this.store.acknowledgeHarnessRequirements(authenticated.id);
-    this.store.touchControl(authenticated.id);
     return this.withAudit(authenticated.id, context.transport, 'extension_discover', input, {
       onSuccess: () => {
         const query = typeof input.query === 'string' ? input.query.toLowerCase() : '';
@@ -341,14 +350,18 @@ export class ExtensionService {
 
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
-    let authenticated: { id: string };
+    // ADR-0032 #30 修复：main 基线中 authenticate + beforeOrdinaryCall 同在方法级 try 内，
+    // beginAudit 在其后（auditStarted=false）→ 两者抛错都不写 audit，只返回
+    // attachEvents(failure(error), sessionId)。authenticate 抛时 sessionId 未赋值。
+    let authenticated: { id: string } | undefined;
     try {
       authenticated = this.authenticate(input, context, false)!;
+      this.store.beforeOrdinaryCall(authenticated.id);
     } catch (error) {
-      return this.attachEvents(failure(error), undefined);
+      return this.attachEvents(failure(error), authenticated?.id);
     }
-    this.store.beforeOrdinaryCall(authenticated.id);
-    return this.withAudit(authenticated.id, context.transport, 'extension_register', input, {
+    const session = authenticated;
+    return this.withAudit(session.id, context.transport, 'extension_register', input, {
       onSuccess: () => {
         const action = typeof input.action === 'string' ? input.action : '';
         let data: JsonObject;
@@ -362,9 +375,9 @@ export class ExtensionService {
           if (action === 'upsert') this.store.upsertExtension(spec);
           data = { action, valid: true, registered: action === 'upsert', spec };
         }
-        return this.attachEvents({ ok: true, data }, authenticated.id);
+        return this.attachEvents({ ok: true, data }, session.id);
       },
-      onError: (_meta, error) => this.attachEvents(failure(error), authenticated.id),
+      onError: (_meta, error) => this.attachEvents(failure(error), session.id),
     });
   }
 
@@ -482,12 +495,21 @@ export class ExtensionService {
     this.trimBackgroundTasks();
     const tool = typeof input.tool === 'string' ? input.tool : 'unknown';
     const args = callArguments(input);
-    const authenticated = this.authenticate(input, context, false)!;
-    // 按 CONTROL_TOOLS 判断走 beforeOrdinaryCall 还是 touchControl
-    if (!CONTROL_TOOLS.has(tool)) this.store.beforeOrdinaryCall(authenticated.id);
-    else this.store.touchControl(authenticated.id);
+    // ADR-0032 #30 修复：main 基线中 authenticate 位于方法级 try 内，抛错 → catch →
+    // failure(error)（sessionId 未赋值、auditStarted=false，故不写 audit）。
+    let authenticated: NonNullable<ReturnType<ExtensionService['authenticate']>>;
+    try {
+      authenticated = this.authenticate(input, context, false)!;
+    } catch (error) {
+      return failure(error);
+    }
     return this.withAudit(authenticated.id, 'subagent', tool, args, {
       onSuccess: async () => {
+        // main 基线顺序为 beginAudit → beforeOrdinaryCall/touchControl，故这两句必须留在
+        // onSuccess 内（beginAudit 之后）：抛错时 auditStarted 已为 true，需落一条 failed 审计。
+        // 按 CONTROL_TOOLS 判断走 beforeOrdinaryCall 还是 touchControl
+        if (!CONTROL_TOOLS.has(tool)) this.store.beforeOrdinaryCall(authenticated.id);
+        else this.store.touchControl(authenticated.id);
         // 同步 await，无 fast-return
         const invocationContext: InvocationContext = {
           ...context,

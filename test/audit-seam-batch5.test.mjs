@@ -367,3 +367,116 @@ test('S9: non-blocking detach immediate ToolResponse structure', async () => {
     cleanup(root);
   }
 });
+
+// ─── S10–S16: #30 错误路径回归锁（ADR-0032）─────────────────────────────────
+// 行为契约：authenticate 抛错时，discover / register / callSubagent 必须返回
+// 结构化 ToolResponse（ok:false + error），绝不可向上抛异常——main 基线即如此。
+// #30 抽取 withAudit 时曾把 authenticate 移出 try，导致错误路径改为 throw；
+// 此处锁死「返回结构化错误而非抛异常」，保证与 main 行为一致。
+function badTokenIdentity(identity, token = 'wrong-token') {
+  return { sessionId: identity.sessionId, sessionToken: token };
+}
+function ghostIdentity(sessionId) {
+  return { sessionId, sessionToken: 'ghost-token' };
+}
+
+test('S10: discover() wrong-token identity returns structured ToolResponse (no throw)', async () => {
+  const { root, service, identity } = setup({}, []);
+  try {
+    const response = await service.discover({ identity: badTokenIdentity(identity) }, { transport: 'actions' });
+    assert.equal(response.ok, false);
+    assert.equal(typeof response.error.code, 'string');
+    assert.equal(typeof response.error.message, 'string');
+    assert.equal(typeof response.error.retryable, 'boolean');
+  } catch (e) {
+    assert.fail(`discover() must not throw on bad identity; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('S11: register() wrong-token identity returns structured ToolResponse (no throw)', async () => {
+  const { root, service, identity } = setup({}, []);
+  try {
+    const response = await service.register({ action: 'validate', name: 'x', identity: badTokenIdentity(identity) }, { transport: 'actions' });
+    assert.equal(response.ok, false);
+    assert.equal(typeof response.error.code, 'string');
+    assert.equal(typeof response.error.message, 'string');
+    assert.equal(typeof response.error.retryable, 'boolean');
+  } catch (e) {
+    assert.fail(`register() must not throw on bad identity; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('S12: callSubagent() wrong-token identity returns structured ToolResponse (no throw)', async () => {
+  const okTool = tool('seam_cs', async () => ({ v: 1 }));
+  const { root, service, identity } = setup({}, [okTool]);
+  try {
+    const response = await service.callSubagent({ tool: 'seam_cs', input: {}, identity: badTokenIdentity(identity) }, { transport: 'subagent' });
+    assert.equal(response.ok, false);
+    assert.equal(typeof response.error.code, 'string');
+    assert.equal(typeof response.error.message, 'string');
+    assert.equal(typeof response.error.retryable, 'boolean');
+  } catch (e) {
+    assert.fail(`callSubagent() must not throw on bad identity; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('S13: discover() non-existent session returns structured ToolResponse (no throw)', async () => {
+  const { root, service, sessionId } = setup({}, []);
+  try {
+    const response = await service.discover({ identity: ghostIdentity(sessionId) }, { transport: 'actions' });
+    assert.equal(response.ok, false);
+    assert.equal(typeof response.error.code, 'string');
+  } catch (e) {
+    assert.fail(`discover() must not throw on ghost session; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('S14: register() non-existent session returns structured ToolResponse (no throw)', async () => {
+  const { root, service, sessionId } = setup({}, []);
+  try {
+    const response = await service.register({ action: 'validate', name: 'x', identity: ghostIdentity(sessionId) }, { transport: 'actions' });
+    assert.equal(response.ok, false);
+    assert.equal(typeof response.error.code, 'string');
+  } catch (e) {
+    assert.fail(`register() must not throw on ghost session; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('S15: callSubagent() non-existent session returns structured ToolResponse (no throw)', async () => {
+  const okTool = tool('seam_cs2', async () => ({ v: 2 }));
+  const { root, service, sessionId } = setup({}, [okTool]);
+  try {
+    const response = await service.callSubagent({ tool: 'seam_cs2', input: {}, identity: ghostIdentity(sessionId) }, { transport: 'subagent' });
+    assert.equal(response.ok, false);
+    assert.equal(typeof response.error.code, 'string');
+  } catch (e) {
+    assert.fail(`callSubagent() must not throw on ghost session; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('S16: callSubagent() bad identity writes NO audit event (auditStarted=false)', async () => {
+  const okTool = tool('seam_cs3', async () => ({ v: 3 }));
+  const { root, service, auditEvents, identity } = setup({}, [okTool]);
+  try {
+    const response = await service.callSubagent({ tool: 'seam_cs3', input: {}, identity: badTokenIdentity(identity) }, { transport: 'subagent' });
+    assert.equal(response.ok, false);
+    // main 基线：authenticate 抛错时 auditStarted=false → 不应落任何审计事件。
+    assert.equal(auditEvents.length, 0, 'callSubagent bad identity must not write audit events');
+  } catch (e) {
+    assert.fail(`callSubagent() must not throw on bad identity; threw: ${e?.message ?? e}`);
+  } finally {
+    cleanup(root);
+  }
+});

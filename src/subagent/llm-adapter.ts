@@ -215,26 +215,34 @@ function classifyNetworkError(err: unknown): LlmError {
 export type AssemblyToolPart = { id: string; name: string; input: JsonObject };
 
 /**
+ * 组装输入的有序元素。#66 修复：早期实现收 `(textParts[], toolParts[])` 两个独立数组，
+ * 组装时先铺完所有 text 再铺所有 tool——这会丢掉 Anthropic 非流式响应里 text/tool_use
+ * 的原始交错顺序（`[tool, text]` 被重排成 `[text, tool]`），属行为变更。改为单个有序
+ * 列表后，各调用点按到达顺序 push，assembleMessage 只做「空 text 过滤 + 定型」。
+ */
+export type MessagePart =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; tool: AssemblyToolPart };
+
+/**
  * assembleMessage——NormalizedMessage 组装单源（#66）
  * 所有适配器 / collectStream 的最终组装统一走此函数，行为契约：
  * - 空 text 不入 content
+ * - content 块顺序 = parts 的到达顺序（不重排）
  * - hadToolCalls = content 中存在 tool_use 块
  */
 export function assembleMessage(
-  textParts: string[],
-  toolParts: AssemblyToolPart[],
+  parts: MessagePart[],
   usage: TokenUsage,
 ): { message: NormalizedMessage; usage: TokenUsage; hadToolCalls: boolean } {
   const content: ContentBlock[] = [];
 
-  for (const text of textParts) {
-    if (text.length > 0) {
-      content.push({ type: 'text', text });
+  for (const part of parts) {
+    if (part.kind === 'text') {
+      if (part.text.length > 0) content.push({ type: 'text', text: part.text });
+    } else {
+      content.push({ type: 'tool_use', id: part.tool.id, name: part.tool.name, input: part.tool.input });
     }
-  }
-
-  for (const tool of toolParts) {
-    content.push({ type: 'tool_use', id: tool.id, name: tool.name, input: tool.input });
   }
 
   const hadToolCalls = content.some(b => b.type === 'tool_use');
@@ -521,11 +529,12 @@ export class OpenAIAdapter implements LlmAdapter {
     }
 
     // 组装 NormalizedMessage（#66：走 assembleMessage 单源）
-    const textParts: string[] = [];
-    const toolParts: AssemblyToolPart[] = [];
+    // OpenAI 响应形状本身就是 content(文本) 与 tool_calls 两个分离字段，
+    // 故到达顺序天然是「先 text 后 tools」，与 main 基线一致。
+    const parts: MessagePart[] = [];
 
     if (msg.content && typeof msg.content === 'string' && msg.content.length > 0) {
-      textParts.push(msg.content);
+      parts.push({ kind: 'text', text: msg.content });
     }
 
     const toolCalls = msg.tool_calls as Array<Record<string, unknown>> | undefined;
@@ -540,11 +549,11 @@ export class OpenAIAdapter implements LlmAdapter {
             input = { _parse_error: true, raw: func.arguments };
           }
         }
-        toolParts.push({
+        parts.push({ kind: 'tool', tool: {
           id: tc.id as string,
           name: func?.name as string ?? 'unknown',
           input,
-        });
+        } });
       }
     }
 
@@ -553,7 +562,7 @@ export class OpenAIAdapter implements LlmAdapter {
       output_tokens: (data.usage as Record<string, number>)?.completion_tokens ?? 0,
     };
 
-    const { message, usage: assembledUsage } = assembleMessage(textParts, toolParts, usage);
+    const { message, usage: assembledUsage } = assembleMessage(parts, usage);
     return { message, usage: assembledUsage };
     } catch (err) {
       throw classifyNetworkError(err);
@@ -810,23 +819,24 @@ export class AnthropicAdapter implements LlmAdapter {
 
     const data = await response.json() as Record<string, unknown>;
     const rawContent = data.content as Array<Record<string, unknown>> | undefined;
-    const textParts: string[] = [];
-    const toolParts: AssemblyToolPart[] = [];
+    // #66 修复：Anthropic 的 content 是一个**有序**块数组，text 与 tool_use 可任意交错。
+    // 必须按到达顺序 push，不能拆成 text/tool 两桶再拼接——那会重排块顺序（行为变更）。
+    const parts: MessagePart[] = [];
 
     if (rawContent) {
       for (const block of rawContent) {
         switch (block.type) {
           case 'text':
             if (typeof block.text === 'string') {
-              textParts.push(block.text);
+              parts.push({ kind: 'text', text: block.text });
             }
             break;
           case 'tool_use':
-            toolParts.push({
+            parts.push({ kind: 'tool', tool: {
               id: block.id as string,
               name: block.name as string,
               input: (block.input as JsonObject) ?? {},
-            });
+            } });
             break;
         }
       }
@@ -839,7 +849,7 @@ export class AnthropicAdapter implements LlmAdapter {
       cache_read_input_tokens: msgUsage?.cache_read_input_tokens,
     };
 
-    const { message, usage: assembledUsage } = assembleMessage(textParts, toolParts, usage);
+    const { message, usage: assembledUsage } = assembleMessage(parts, usage);
     return { message, usage: assembledUsage };
     } catch (err) {
       throw classifyNetworkError(err);
@@ -1038,7 +1048,9 @@ export async function collectStream(params: {
     }
 
     // 流正常结束——组装 NormalizedMessage（#66：走 assembleMessage 单源）
-    const toolParts: AssemblyToolPart[] = [];
+    // 流式路径把所有 text_delta 累进单个 textBuffer，工具在其后，
+    // 故顺序天然是「先 text 后 tools」，与 main 基线一致。
+    const parts: MessagePart[] = [{ kind: 'text', text: textBuffer }];
     for (const [, buf] of toolInputBuffers) {
       let input: JsonObject;
       try {
@@ -1047,10 +1059,10 @@ export async function collectStream(params: {
         // 决策 27：JSON 解析失败 → 文本降级 + 注释说明
         input = { _parse_error: true, raw: buf.json };
       }
-      toolParts.push({ id: buf.id, name: buf.name, input });
+      parts.push({ kind: 'tool', tool: { id: buf.id, name: buf.name, input } });
     }
 
-    return assembleMessage([textBuffer], toolParts, finalUsage);
+    return assembleMessage(parts, finalUsage);
   } catch (error) {
     // 用户 abort 原样抛出（决策 21）
     if (error instanceof DOMException && error.name === 'AbortError') {
