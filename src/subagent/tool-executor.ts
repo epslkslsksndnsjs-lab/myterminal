@@ -433,7 +433,7 @@ export async function executeToolCalls(
   }
 
   // 决策 19：消息组预算（Bug 1 修复版——先应用冻结决策再做新预算检查）
-  const budgeted = enforceMessageBudget(results);
+  const budgeted = enforceMessageBudget(results, ctx.agentId);
 
   // 决策 19：空结果保护——空 tool_result 导致某些模型误判 turn 边界
   for (const r of budgeted) {

@@ -10,7 +10,7 @@ import assert from 'node:assert';
 import { sessionResourceManager, SessionResourceManager } from '../dist/session-resource-manager.js';
 import { defaultContext } from '../dist/subagent/context.js';
 import { recordFileRead, clearAllFileStates } from '../dist/subagent/file-state.js';
-import { resetReplacementDecisions } from '../dist/subagent/result-budget.js';
+import { resetReplacementDecisions, enforceMessageBudget } from '../dist/subagent/result-budget.js';
 import { trackShellTask, getTrackedCount, clearAllShellTasks } from '../dist/subagent/shell-tracker.js';
 
 function resetContext() {
@@ -39,11 +39,27 @@ test('disposeAgent clears file state (no leak)', () => {
 
 test('disposeAgent resets replacement decisions (no leak)', () => {
   resetContext();
-  // 模拟跨 turn 冻结决策
-  defaultContext.replacementDecisions.set('leak-t1', 'preview');
-  assert.strictEqual(defaultContext.replacementDecisions.get('leak-t1'), 'preview');
-  sessionResourceManager.disposeAgent('leak-A');
-  assert.strictEqual(defaultContext.replacementDecisions.has('leak-t1'), false);
+  const agentA = 'leak-A';
+  const agentB = 'leak-B';
+  const big = 'x'.repeat(250_000); // 单结果超预算，触发冻结决策
+  // 跨 turn 冻结决策（经公共 API，按 agentId 分桶）
+  enforceMessageBudget([{ tool_use_id: 't1', content: big, is_error: false }], agentA);
+  enforceMessageBudget([{ tool_use_id: 't1', content: big, is_error: false }], agentB);
+  // 小内容二次提交：若冻结决策仍在应被压成预览
+  const a2 = [{ tool_use_id: 't1', content: 'y'.repeat(100), is_error: false }];
+  enforceMessageBudget(a2, agentA);
+  assert.ok(a2[0].content.includes('budget-compressed'), 'agentA 冻结决策应已建立');
+  const b2 = [{ tool_use_id: 't1', content: 'y'.repeat(100), is_error: false }];
+  enforceMessageBudget(b2, agentB);
+  assert.ok(b2[0].content.includes('budget-compressed'), 'agentB 冻结决策应已建立');
+  // dispose 仅清 agentA 自己的桶，不得误清 agentB（#77 无串扰）
+  sessionResourceManager.disposeAgent(agentA);
+  const a3 = [{ tool_use_id: 't1', content: 'y'.repeat(100), is_error: false }];
+  enforceMessageBudget(a3, agentA);
+  assert.equal(a3[0].content, 'y'.repeat(100), 'disposeAgent(agentA) 后 agentA 决策应被清空');
+  const b3 = [{ tool_use_id: 't1', content: 'y'.repeat(100), is_error: false }];
+  enforceMessageBudget(b3, agentB);
+  assert.ok(b3[0].content.includes('budget-compressed'), 'agentB 决策不得被 agentA 的 dispose 误清（无泄漏）');
 });
 
 test('disposeAgent kills tracked shell tasks (no leak)', () => {

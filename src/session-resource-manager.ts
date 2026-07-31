@@ -89,7 +89,7 @@ export const sessionResourceManager = new SessionResourceManager();
 // agent 作用域（executor.finally 原 3 项，注册顺序即现状 ①②③）
 sessionResourceManager.registerAgentResource('agent-shell-tasks', cleanupAgentShellTasks);
 sessionResourceManager.registerAgentResource('file-state', clearFileState);
-sessionResourceManager.registerAgentResource('replacement-decisions', () => resetReplacementDecisions());
+sessionResourceManager.registerAgentResource('replacement-decisions', (agentId) => resetReplacementDecisions(agentId));
 
 // session 作用域（session 结束收口）
 sessionResourceManager.registerSessionResource('session-resources', (config, sessionId) =>
