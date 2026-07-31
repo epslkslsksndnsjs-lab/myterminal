@@ -6,6 +6,7 @@
 import type { UsageSummary } from './cost-tracker.js';
 import { defaultContext } from './context.js';
 import type { SubagentContext } from './context.js';
+import type { SubagentOrigin } from './runner.js';
 
 // ── 类型（决策 6 + 39）──
 
@@ -38,6 +39,9 @@ export interface SubagentRecord {
   tasks: SubagentTask[];
   result?: string;            // completed 时的最终摘要
   error?: string;             // failed/aborted 时的原因
+  /** ADR-0042 #78（选项 A）：subagent 来源——skill fork 时记录派生 skill，direct start 为 undefined。
+   *  仅可选字段，不影响既有序列化（#62 持久化格式纪律）。 */
+  origin?: SubagentOrigin;
   abortController: AbortController;
   cost: UsageSummary;
   auditLogs: ToolAuditLog[];
@@ -63,7 +67,7 @@ export function getCleanupDelayMs(): number {
 
 export function createSubagent(
   id: string,
-  fields: { subject: string; description?: string },
+  fields: { subject: string; description?: string; origin?: SubagentOrigin },
   ctx: SubagentContext = defaultContext,
 ): SubagentRecord {
   const record: SubagentRecord = {
@@ -75,6 +79,7 @@ export function createSubagent(
       description: fields.description ?? '',
       status: 'pending',
     }],
+    origin: fields.origin,
     abortController: new AbortController(),
     cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalUSD: 0 },
     auditLogs: [],
