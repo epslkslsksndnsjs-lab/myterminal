@@ -2575,5 +2575,53 @@
       ],
       "$schema": "http://json-schema.org/draft-07/schema#"
     }
+  },
+  "skill": {
+    "title": "Run skill",
+    "description": "List installed skills when called without arguments, or run one by name. Inline skills return their instructions; fork skills start a subagent and return a taskId to poll with subagent_status.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "openai/toolInvocation/invoking": "Running Run skill…",
+      "openai/toolInvocation/invoked": "Run skill ready"
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sessionToken": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "sessionId",
+                "sessionToken"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
   }
 }

@@ -236,6 +236,11 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
   registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up.');
   registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
 
+  // ── Skill 工具（ADR-0037 #82：指令 mcp.ts:150 已承诺 skill() 直呼，须补齐 direct 注册）──
+  // 1:1 镜像 core-tools.ts builtin `skill` 行为：无参列清单 / 有参运行（fork 走 subagent）。
+  // inputSchema 由 BUILTIN_INPUT_SCHEMAS.skill 派生；注解对齐 core-tools.ts:526 四 hint。
+  registerDirect('skill', 'Run skill', 'List installed skills when called without arguments, or run one by name. Inline skills return their instructions; fork skills start a subagent and return a taskId to poll with subagent_status.', safeLocalMutation);
+
   return server;
 }
 
