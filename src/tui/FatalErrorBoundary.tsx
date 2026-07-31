@@ -3,6 +3,7 @@ import type { MyTerminalRuntime } from '../server.js';
 import type { Theme } from './state.js';
 import { Mascot } from './components/Mascot.js';
 import { I18nContext } from './copy/context.js';
+import { i18nFor } from './copy/i18n.js';
 
 type Props = {
   runtime: MyTerminalRuntime;
@@ -29,8 +30,10 @@ export class FatalErrorBoundary extends Component<Props, State> {
     return (
       <I18nContext.Consumer>
         {(i18n) => {
-          if (!i18n) return null;
-          const t = i18n.t;
+          // 致命错误屏是最后一道兜底，**任何情况下都必须渲染**（main 基线行为）。
+          // 缺 Provider 时从 runtime 配置推导语言兜底，绝不 return null——
+          // 白屏会吞掉用户唯一的「按 q/Esc 安全退出」指引。
+          const t = (i18n ?? i18nFor(this.props.runtime.config.uiLanguage)).t;
           const message = t('The interface encountered a fatal error. The damaged screen was stopped. Press q or Esc to exit safely.', '界面发生严重错误。已停止渲染损坏页面。按 q 或 Esc 安全退出。');
           return (
             <box flexGrow={1} flexDirection="column" padding={2} backgroundColor={this.props.theme.background} alignItems="center">
