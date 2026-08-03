@@ -33,8 +33,13 @@ function parseArgs() {
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--yes' || a[i] === '-y') r.yes = true;
     else if (a[i] === '--help' || a[i] === '-h') r.help = true;
-    else if (a[i] === '--target') r.targets.push(a[++i]);
-    else if (a[i] === '--skills-dir') r.skillsDir = a[++i];
+    else if (a[i] === '--target') {
+      if (a[i + 1] === undefined || a[i + 1].startsWith('--')) { out(`${c.red}--target 缺少参数${c.reset}`); process.exit(1); }
+      r.targets.push(a[++i]);
+    } else if (a[i] === '--skills-dir') {
+      if (a[i + 1] === undefined || a[i + 1].startsWith('--')) { out(`${c.red}--skills-dir 缺少参数${c.reset}`); process.exit(1); }
+      r.skillsDir = a[++i];
+    }
     else if (a[i].startsWith('--target=')) r.targets.push(a[i].slice(9));
   }
   return r;
