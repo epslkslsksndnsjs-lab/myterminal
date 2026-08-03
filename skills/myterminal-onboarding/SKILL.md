@@ -96,9 +96,11 @@ clearly has an account there.
 If the user names anything outside the table, apply Non-negotiable 1. Offer the closest
 supported alternative and let them choose from the five.
 
-**Decision B — Model.** Recommend the model from the table for the chosen provider. Accept any
-model string the user gives; model names are not validated against a list, only providers are.
-Warn only if the model obviously belongs to a different provider.
+**Decision B — Model.** Recommend the model from the table for the chosen provider. The script
+**enforces** model↔provider consistency: a model that clearly belongs to another provider
+(e.g. `qwen3.7-plus` under `openai`) is rejected with an error, not silently written. Unknown
+prefixes are allowed but flagged with a warning. If the user names a model from another provider's
+row, switch `--provider` to match it.
 
 **Decision C — Install location.** Skip if `myterminal.installed` is true; say where it was found.
 Otherwise recommend `~/myterminal` and accept any path.

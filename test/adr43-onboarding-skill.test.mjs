@@ -59,6 +59,8 @@ import {
   verifyProviderKey,
   VERIFY_ENDPOINTS,
   FIRST_RUN_FIELDS,
+  validateModelForProvider,
+  MODEL_PREFIXES,
   REQUIRED_CONFIG_FIELDS,
   PROFILE_MARKER_BEGIN,
   PROFILE_MARKER_END,
@@ -664,6 +666,65 @@ describe('[LOCK-43-11] 首次运行设置界面引导（P0-2）', () => {
     for (const f of FIRST_RUN_FIELDS) {
       assert.equal(typeof f.field, 'string');
       assert.ok(f.what && f.what.length > 4, `字段 ${f.field} 缺少可读说明`);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-12] model↔provider 一致性强制（P1-3）
+//
+// 为什么这把锁必须存在（用户评审 P1）：
+//   SKILL.md 说"model 明显属于别的 provider 会 warn"，但 doWriteConfig 里没有任何
+//   代码检查——agent 一忘就把 qwen3.7-plus 写进 provider: openai，config 写成功了，
+//   runtime 调 subagent 才崩。现在 mergeSubagentConfig 直接抛错，静默写错不再发生。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-12] model↔provider 一致性强制（P1-3）', () => {
+  test('匹配的 model → ok', () => {
+    assert.equal(validateModelForProvider('openai', 'gpt-4o').ok, true);
+    assert.equal(validateModelForProvider('anthropic', 'claude-3-5-sonnet-20241022').ok, true);
+    assert.equal(validateModelForProvider('deepseek', 'deepseek-chat').ok, true);
+    assert.equal(validateModelForProvider('glm', 'glm-4').ok, true);
+    assert.equal(validateModelForProvider('qwen', 'qwen-max').ok, true);
+  });
+
+  test('空 model → ok（用 provider 默认）', () => {
+    assert.equal(validateModelForProvider('openai', '').ok, true);
+    assert.equal(validateModelForProvider('openai', undefined).ok, true);
+  });
+
+  test('明显错配 → ok=false，点名该用哪个 provider（杜绝 qwen3.7-plus 写进 openai）', () => {
+    const r = validateModelForProvider('openai', 'qwen3.7-plus');
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'mismatch');
+    assert.match(r.message, /qwen/);
+    assert.match(r.message, /openai/);
+  });
+
+  test('未知前缀 → ok=true 但带 advisory warning（不误杀自定义模型）', () => {
+    const r = validateModelForProvider('openai', 'my-fine-tuned-42');
+    assert.equal(r.ok, true);
+    assert.ok(r.warning, '未知前缀应给出警告而非静默通过');
+  });
+
+  test('mergeSubagentConfig 遇错配直接抛错（不再静默写坏 config）', () => {
+    const base = { schemaVersion: 1, workspaceDir: '/w', host: '127.0.0.1', port: 1, publicBaseUrl: 'x', connectorKey: 'a'.repeat(24), actionsToken: 'b'.repeat(24), maxOutputChars: 1, commandTimeoutSec: 1 };
+    assert.throws(
+      () => mergeSubagentConfig(base, { provider: 'openai', model: 'qwen3.7-plus' }),
+      /mismatch/i,
+    );
+  });
+
+  test('mergeSubagentConfig 正常 model 不抛，且 model 字段正确写入', () => {
+    const base = { schemaVersion: 1, workspaceDir: '/w', host: '127.0.0.1', port: 1, publicBaseUrl: 'x', connectorKey: 'a'.repeat(24), actionsToken: 'b'.repeat(24), maxOutputChars: 1, commandTimeoutSec: 1 };
+    const merged = mergeSubagentConfig(base, { provider: 'openai', model: 'gpt-4o' });
+    assert.equal(merged.subagent.provider, 'openai');
+    assert.equal(merged.subagent.model, 'gpt-4o');
+  });
+
+  test('MODEL_PREFIXES 覆盖全部 5 个 provider', () => {
+    for (const p of SUPPORTED_PROVIDERS) {
+      assert.ok(Array.isArray(MODEL_PREFIXES[p.provider]) && MODEL_PREFIXES[p.provider].length > 0, `${p.provider} 缺前缀定义`);
     }
   });
 });

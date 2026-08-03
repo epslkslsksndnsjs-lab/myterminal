@@ -190,6 +190,73 @@ function stripSecrets(obj) {
 }
 
 /**
+ * Known model-name prefixes per provider. Used to catch the silent failure where an
+ * agent writes e.g. `qwen3.7-plus` under `provider: openai` — the config writes fine
+ * but the subagent crashes at runtime (review gap P1-3). Heuristic, not a registry:
+ * it only flags *clear* mismatches and *unknown* prefixes (advisory), never invents support.
+ */
+export const MODEL_PREFIXES = {
+  openai: ['gpt-', 'o1', 'o3', 'o4', 'chatgpt-', 'ft:gpt-'],
+  anthropic: ['claude-'],
+  deepseek: ['deepseek-'],
+  glm: ['glm-', 'charglm-'],
+  qwen: ['qwen-'],
+};
+
+// Infix keywords that strongly imply a provider. Used (in addition to prefixes) to catch
+// mismatches the prefix check misses — e.g. "qwen3.7-plus" has no "qwen-" prefix but is clearly qwen.
+export const PROVIDER_MODEL_KEYWORDS = {
+  openai: ['gpt', 'o1', 'o3', 'o4', 'chatgpt'],
+  anthropic: ['claude'],
+  deepseek: ['deepseek'],
+  glm: ['glm'],
+  qwen: ['qwen'],
+};
+
+/**
+ * Decide whether `model` is plausible for `provider`.
+ * Returns { ok, reason, message, warning }.
+ *   ok:false  → clear mismatch (belongs to another provider) — caller must throw.
+ *   ok:true   → matches this provider, or empty (use default), or unknown model (advisory warning).
+ * Never returns "supported" for an unknown provider — validateProvider handles that upstream.
+ */
+export function validateModelForProvider(provider, model) {
+  const check = validateProvider(provider);
+  if (!check.ok) return { ok: false, reason: 'bad-provider', message: check.message };
+  const modelId = String(model ?? '').trim();
+  if (!modelId) return { ok: true, warning: null, message: 'empty model — will use provider default' };
+
+  const lower = modelId.toLowerCase();
+  const ownPrefixes = MODEL_PREFIXES[check.entry.provider] || [];
+  const ownKeywords = PROVIDER_MODEL_KEYWORDS[check.entry.provider] || [];
+  const matchesOwn =
+    ownPrefixes.some((p) => lower.startsWith(p.toLowerCase())) ||
+    ownKeywords.some((k) => lower.includes(k.toLowerCase()));
+  if (matchesOwn) return { ok: true, warning: null, message: 'model matches provider' };
+
+  for (const [other, keywords] of Object.entries(PROVIDER_MODEL_KEYWORDS)) {
+    if (other === check.entry.provider) continue;
+    const hit = keywords.find((k) => lower.includes(k.toLowerCase()));
+    if (hit) {
+      return {
+        ok: false,
+        reason: 'mismatch',
+        message:
+          `Model "${modelId}" looks like a ${other} model (keyword "${hit}"), but the chosen provider ` +
+          `is ${check.entry.provider}. This would write a config that fails at runtime. ` +
+          `Pass --provider ${other}, or pick a ${check.entry.provider} model (e.g. ${check.entry.defaultModel}).`,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    warning: `Model "${modelId}" does not match a known ${check.entry.provider} model; proceeding — make sure it is valid for this provider.`,
+    message: 'unknown model (advisory)',
+  };
+}
+
+/**
  * Merge provider/model into an existing config object.
  * Preserves every other key the user already has; fills in repo defaults for
  * anything missing; refuses to carry an API key.
@@ -197,6 +264,10 @@ function stripSecrets(obj) {
 export function mergeSubagentConfig(existing, patch) {
   const check = validateProvider(patch?.provider);
   if (!check.ok) throw new Error(check.message);
+
+  const modelId = String(patch.model ?? check.entry.defaultModel);
+  const modelCheck = validateModelForProvider(check.entry.provider, modelId);
+  if (!modelCheck.ok) throw new Error(`Model/provider mismatch: ${modelCheck.message}`);
 
   const source = existing && typeof existing === 'object' ? existing : {};
   const cloned = structuredClone(source);
@@ -207,7 +278,7 @@ export function mergeSubagentConfig(existing, patch) {
     ...preserved,
     enabled: preserved.enabled ?? SUBAGENT_DEFAULTS.enabled,
     provider: check.entry.provider,
-    model: String(patch.model ?? check.entry.defaultModel),
+    model: modelId,
     maxTurns: preserved.maxTurns ?? SUBAGENT_DEFAULTS.maxTurns,
     timeoutSec: preserved.timeoutSec ?? SUBAGENT_DEFAULTS.timeoutSec,
     maxParallel: preserved.maxParallel ?? SUBAGENT_DEFAULTS.maxParallel,
@@ -583,6 +654,10 @@ function doWriteConfig(report, { provider, model, dryRun }) {
   const check = validateProvider(provider);
   if (!check.ok) throw new Error(check.message);
 
+  const modelId = model ?? check.entry.defaultModel;
+  const modelCheck = validateModelForProvider(check.entry.provider, modelId);
+  if (!modelCheck.ok) throw new Error(`Model/provider mismatch: ${modelCheck.message}`);
+
   const configPath = report.config.path;
   const existing = report.config.exists ? readJsonIfExists(configPath) : null;
 
@@ -592,11 +667,12 @@ function doWriteConfig(report, { provider, model, dryRun }) {
     throw new Error(`Cannot write ${configPath} (${writability.reason}).\n\n${writability.guidance}`);
   }
 
-  const merged = mergeSubagentConfig(existing, { provider: check.entry.provider, model: model ?? check.entry.defaultModel });
+  const merged = mergeSubagentConfig(existing, { provider: check.entry.provider, model: modelId });
   const serialized = `${JSON.stringify(merged, null, 2)}\n`;
 
   if (dryRun) {
     process.stdout.write(`[dry-run] would write ${configPath}:\n${serialized}`);
+    if (modelCheck.warning) process.stdout.write(`Warning: ${modelCheck.warning}\n`);
     return merged;
   }
 
@@ -607,6 +683,7 @@ function doWriteConfig(report, { provider, model, dryRun }) {
   fs.chmodSync(configPath, 0o600);
   process.stdout.write(`Wrote ${configPath} (backup: ${configPath}.myterminal-backup)\n  subagent.provider = ${merged.subagent.provider}\n  subagent.model    = ${merged.subagent.model}\n`);
   process.stdout.write('The API key is deliberately NOT stored here — it is read from the environment.\n');
+  if (modelCheck.warning) process.stdout.write(`Warning: ${modelCheck.warning}\n`);
   return merged;
 }
 
