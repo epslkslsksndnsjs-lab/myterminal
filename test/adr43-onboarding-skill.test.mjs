@@ -56,6 +56,8 @@ import {
   parseBunVersion,
   satisfiesMinVersion,
   assessConfigWritability,
+  verifyProviderKey,
+  VERIFY_ENDPOINTS,
   PROFILE_MARKER_BEGIN,
   PROFILE_MARKER_END,
 } from '../skills/myterminal-onboarding/scripts/onboard.mjs';
@@ -544,4 +546,97 @@ describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
       assert.equal(out.trim(), 'IMPORTED_QUIET', 'import 时不该有任何额外输出');
     });
   }
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-10] provider key 真实验证（P0-1）
+//
+// 为什么这把锁必须存在（ADR-0043 D11，用户评审 P0）：
+//   旧流程结束只 echo $ENV_VAR 看 key 在不在，从不验证 key 有效、也从不
+//   通一次 provider。拿个吊销的 key 走完全程，只有 runtime 调 subagent 崩了
+//   才发现。verifyProviderKey 必须：① 为每个 provider 构造正确的请求
+//   （URL/header/body）② 200→ok ③ 非200→fail 带 HTTP 状态 ④ 网络错→graceful。
+//   网络调用通过注入 fetchImpl 锁，不真打外网。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-10] provider key 真实验证（P0-1）', () => {
+  function fakeFetch(expectStatus = 200, bodyText = '{}') {
+    const calls = [];
+    const impl = async (url, opts) => {
+      calls.push({ url, opts });
+      return {
+        ok: expectStatus >= 200 && expectStatus < 300,
+        status: expectStatus,
+        text: async () => bodyText,
+      };
+    };
+    return { calls, impl };
+  }
+
+  test('VERIFY_ENDPOINTS 五种 provider 的 base URL 与仓库 llm-adapter.ts 一致', () => {
+    assert.equal(VERIFY_ENDPOINTS.openai.baseUrl, 'https://api.openai.com/v1');
+    assert.equal(VERIFY_ENDPOINTS.anthropic.baseUrl, 'https://api.anthropic.com/v1');
+    assert.equal(VERIFY_ENDPOINTS.deepseek.baseUrl, 'https://api.deepseek.com/v1');
+    assert.equal(VERIFY_ENDPOINTS.glm.baseUrl, 'https://open.bigmodel.cn/api/paas/v4');
+    assert.equal(VERIFY_ENDPOINTS.qwen.baseUrl, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
+  });
+
+  test('openai 系构造 /chat/completions + Bearer + max_tokens=1', async () => {
+    const { calls, impl } = fakeFetch(200);
+    const r = await verifyProviderKey('openai', 'sk-test', { fetchImpl: impl });
+    assert.ok(r.ok, '200 应判定 ok');
+    assert.equal(r.status, 200);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, /\/chat\/completions$/);
+    assert.equal(calls[0].opts.headers.authorization, 'Bearer sk-test');
+    const body = JSON.parse(calls[0].opts.body);
+    assert.equal(body.model, 'gpt-4o');
+    assert.equal(body.max_tokens, 1);
+  });
+
+  test('anthropic 构造 /messages + x-api-key header', async () => {
+    const { calls, impl } = fakeFetch(200);
+    await verifyProviderKey('anthropic', 'sk-ant', { fetchImpl: impl });
+    assert.match(calls[0].url, /\/messages$/);
+    assert.equal(calls[0].opts.headers['x-api-key'], 'sk-ant');
+    assert.equal(calls[0].opts.headers['anthropic-version'], '2023-06-01');
+    const body = JSON.parse(calls[0].opts.body);
+    assert.equal(body.max_tokens, 1);
+  });
+
+  test('非 200 → ok=false 且带 HTTP 状态（吊销 key 必被抓住）', async () => {
+    const { impl } = fakeFetch(401, '{"error":"invalid_key"}');
+    const r = await verifyProviderKey('deepseek', 'bad', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 401);
+    assert.match(r.message, /HTTP 401/);
+  });
+
+  test('网络异常 → ok=false status=0 不抛', async () => {
+    const impl = async () => { throw new Error('ECONNREFUSED'); };
+    const r = await verifyProviderKey('glm', 'k', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 0);
+    assert.match(r.message, /Network error/);
+  });
+
+  test('无 key → ok=false（不偷偷用空串打请求）', async () => {
+    const impl = async () => assert.fail('不应发起请求');
+    const r = await verifyProviderKey('qwen', '', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 0);
+  });
+
+  test('闭列表外 provider → ok=false（诚实边界不变）', async () => {
+    const impl = async () => assert.fail('不应发起请求');
+    const r = await verifyProviderKey('gemini', 'k', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.match(r.message, /not supported/);
+  });
+
+  test('qwen 接受 baseUrl 覆盖（DASHSCOPE_BASE_URL 场景）', async () => {
+    const { calls, impl } = fakeFetch(200);
+    await verifyProviderKey('qwen', 'k', { baseUrl: 'https://private/v1', fetchImpl: impl });
+    assert.match(calls[0].url, /^https:\/\/private\/v1\/chat\/completions$/);
+  });
 });

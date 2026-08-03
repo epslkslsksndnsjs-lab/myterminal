@@ -334,6 +334,63 @@ export function satisfiesMinVersion(version, minimum) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Provider key verification (P0-1)
+//
+// A real, minimal round-trip against the provider. Base URLs mirror
+// src/subagent/llm-adapter.ts:298/869/882/1140. A 1-token chat completion is the
+// strongest proof that the key is valid, reachable, and the model actually
+// responds — exactly what the old flow lacked (it only echoed $ENV_VAR, so a
+// revoked key sailed through to a runtime crash). `fetchImpl` is injectable so the
+// lock suite can assert request construction without touching the network.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const VERIFY_ENDPOINTS = {
+  openai: { baseUrl: 'https://api.openai.com/v1', kind: 'openai-compatible', defaultModel: 'gpt-4o' },
+  anthropic: { baseUrl: 'https://api.anthropic.com/v1', kind: 'anthropic', defaultModel: 'claude-3-5-sonnet-20241022' },
+  deepseek: { baseUrl: 'https://api.deepseek.com/v1', kind: 'openai-compatible', defaultModel: 'deepseek-chat' },
+  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', kind: 'openai-compatible', defaultModel: 'glm-4' },
+  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', kind: 'openai-compatible', defaultModel: 'qwen-max' },
+};
+
+/**
+ * Prove a provider key works by making a real, minimal API call.
+ * Returns { ok, status, message } — never throws. `fetchImpl` must match the
+ * global fetch signature: (url, opts) => Promise<{ ok, status, text() }>.
+ */
+export async function verifyProviderKey(provider, key, { model, baseUrl, fetchImpl = fetch } = {}) {
+  const check = validateProvider(provider);
+  if (!check.ok) return { ok: false, status: 0, message: check.message };
+  if (!key) return { ok: false, status: 0, message: `No API key supplied for ${check.entry.provider}. Set ${check.entry.envVar} or pass --key.` };
+
+  const endpoint = VERIFY_ENDPOINTS[check.entry.provider];
+  const resolvedBase = baseUrl || endpoint.baseUrl;
+  const modelId = model || endpoint.defaultModel;
+
+  let url;
+  let headers;
+  let bodyObj;
+  if (endpoint.kind === 'anthropic') {
+    url = `${resolvedBase}/messages`;
+    headers = { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };
+    bodyObj = { model: modelId, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] };
+  } else {
+    url = `${resolvedBase}/chat/completions`;
+    headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json' };
+    bodyObj = { model: modelId, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 };
+  }
+
+  try {
+    const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(bodyObj) });
+    if (res.ok) return { ok: true, status: res.status, message: `${check.entry.provider} key valid; model ${modelId} responded.` };
+    let detail = '';
+    try { detail = (await res.text()).slice(0, 200); } catch { /* ignore */ }
+    return { ok: false, status: res.status, message: `${check.entry.provider} rejected the key (HTTP ${res.status}). ${detail}` };
+  } catch (err) {
+    return { ok: false, status: 0, message: `Network error reaching ${check.entry.provider}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Side effects (CLI only)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -573,6 +630,33 @@ function doKey(report, { provider, key, writeProfile, dryRun }) {
   );
 }
 
+async function doVerify(report, { provider, model, key, dryRun } = {}) {
+  const resolvedProvider = provider || report.config.subagent?.provider;
+  if (!resolvedProvider) {
+    throw new Error('No provider specified and no current subagent provider found. Pass --provider <p>.');
+  }
+  const check = validateProvider(resolvedProvider);
+  if (!check.ok) throw new Error(check.message);
+
+  const resolvedKey = key || optionalEnv(process.env[check.entry.envVar]);
+  const resolvedBase = check.entry.provider === 'qwen' ? optionalEnv(process.env.DASHSCOPE_BASE_URL) : undefined;
+
+  if (!resolvedKey) {
+    throw new Error(`No API key for ${check.entry.provider}. Set ${check.entry.envVar} in your environment, or pass --key.`);
+  }
+
+  if (dryRun) {
+    const target = resolvedBase || VERIFY_ENDPOINTS[check.entry.provider].baseUrl;
+    process.stdout.write(`[dry-run] would verify ${check.entry.provider} key (model ${model || check.entry.defaultModel}) against ${target}\n`);
+    return { ok: null, status: 0, message: 'dry-run' };
+  }
+
+  process.stdout.write(`Verifying ${check.entry.provider} key against the live API (model ${model || check.entry.defaultModel})...\n`);
+  const result = await verifyProviderKey(check.entry.provider, resolvedKey, { model, baseUrl: resolvedBase });
+  process.stdout.write(`${result.ok ? '✓ PASS' : '✗ FAIL'} ${result.message} (HTTP ${result.status})\n`);
+  return result;
+}
+
 const HELP = `onboard.mjs — install MyTerminal and configure its subagent LLM
 
 USAGE
@@ -583,6 +667,9 @@ USAGE
                                               Write subagent settings to config.json.
   node scripts/onboard.mjs --key <API_KEY> --provider <p> [--write-profile]
                                               Print (or append) the export line for the key.
+  node scripts/onboard.mjs --verify [--provider <p>] [--model <m>] [--key <k>]
+                                              Prove the key works: real 1-token API call to the provider.
+  node scripts/onboard.mjs --test-call        Alias for --verify.
 
 OPTIONS
   --install-dir <path>   Where to clone MyTerminal. Default: ~/myterminal
@@ -591,6 +678,9 @@ OPTIONS
   --key <value>          API key. Use "--key -" to read it from stdin instead
                          (avoids leaving the key in your shell history).
   --write-profile        Append the export line to your shell profile (idempotent, backed up).
+  --verify               Prove the key works: make a real 1-token API call to the provider.
+                         Reads the key from the provider env var (or --key). Network call; opt-in.
+  --test-call            Alias for --verify.
   --dry-run              Show what would change; write nothing.
   --help                 This text.
 
@@ -629,7 +719,7 @@ function readStdin() {
   }
 }
 
-function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
 
   if (args.help) {
@@ -644,6 +734,16 @@ function main(argv = process.argv.slice(2)) {
   if (args.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return 0;
+  }
+
+  if (args.verify || args['test-call']) {
+    const keyArg = args.key === '-' ? readStdin() : (args.key ? String(args.key) : undefined);
+    if (args.key && args.key !== '-') {
+      process.stderr.write('Warning: the key was passed on the command line and may be stored in your shell history. Use "--key -" to pipe it via stdin instead.\n');
+    }
+    const result = await doVerify(report, { provider: args.provider, model: args.model, key: keyArg, dryRun });
+    if (dryRun) return 0;
+    return result.ok === false ? 1 : 0;
   }
 
   const wantsWork = args.install || args['write-config'] || args.key;
@@ -698,12 +798,14 @@ function isInvokedDirectly() {
 }
 
 if (isInvokedDirectly()) {
-  try {
-    process.exitCode = main();
-  } catch (error) {
-    process.stderr.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 1;
-  }
+  (async () => {
+    try {
+      process.exitCode = await main();
+    } catch (error) {
+      process.stderr.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    }
+  })();
 }
 
 export { detect, main };
