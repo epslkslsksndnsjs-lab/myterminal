@@ -1,4 +1,5 @@
 import { useBindings } from '@opentui/keymap/react';
+import { TABS } from './state.js';
 import type { Detail } from './state.js';
 
 type Actions = {
@@ -27,6 +28,14 @@ type Actions = {
 };
 
 const command = (run: () => void | Promise<void>) => () => { void run(); return true; };
+
+/** 数字键 1..N 直达页签（#88 修复：N 跟随 TABS.length，消除魔数 8） */
+export function buildNumberTabBindings(switchTab: (index: number) => void) {
+  return Array.from({ length: TABS.length }, (_, index) => ({
+    key: String(index + 1),
+    cmd: command(() => switchTab(index)),
+  }));
+}
 
 /**
  * useAppKeymap — 键盘路由五层优先级（ADR-0004 决策 4、9）：
@@ -88,7 +97,7 @@ export function useAppKeymap(actions: Actions): void {
     priority: 100,
     enabled: enabled && !inputEditing,
     bindings: [
-      ...Array.from({ length: 8 }, (_, index) => ({ key: String(index + 1), cmd: command(() => actions.switchTab(index)) })),
+      ...buildNumberTabBindings(actions.switchTab),
       { key: 'tab', cmd: command(() => actions.nextTab(1)) },
       { key: 'shift+tab', cmd: command(() => actions.nextTab(-1)) },
       { key: 'q', cmd: command(actions.quit) },
