@@ -409,6 +409,48 @@ export function assessConfigWritability(config) {
   return { ok: true, reason: 'ok', missing: [] };
 }
 
+/**
+ * Back up and remove a broken config so the first-run setup screen can re-mint one.
+ * Pure decision + side effect gated by --repair (never runs by default). A healthy config
+ * is left untouched. Destructive only on the specific broken states assessConfigWritability
+ * already flags (review gap P2-6): unparsable / unsupported-schema / incomplete.
+ */
+export function repairConfig(configPath, { dryRun = false } = {}) {
+  if (!fs.existsSync(configPath)) {
+    return { ok: false, reason: 'absent', message: `No config at ${configPath} — nothing to repair.` };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (error) {
+    parsed = { __parseError: error instanceof Error ? error.message : String(error) };
+  }
+  const assessment = assessConfigWritability(parsed);
+  if (assessment.ok) {
+    return { ok: false, reason: 'healthy', message: `Config at ${configPath} is valid — nothing to repair.` };
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = `${configPath}.repair-backup-${stamp}`;
+  if (dryRun) {
+    return {
+      ok: true,
+      reason: assessment.reason,
+      dryRun: true,
+      backup,
+      message: `[dry-run] would back up ${configPath} -> ${backup} and remove the broken file.`,
+    };
+  }
+  fs.copyFileSync(configPath, backup);
+  fs.unlinkSync(configPath);
+  return {
+    ok: true,
+    reason: assessment.reason,
+    backup,
+    message: `Backed up ${configPath} -> ${backup} and removed the broken file. Re-run 'bun run dev' to mint a fresh config.`,
+  };
+}
+
 /** Numeric (not lexicographic) version comparison. 1.10.0 is newer than 1.3.0. */
 export function satisfiesMinVersion(version, minimum) {
   if (!version) return false;
@@ -821,6 +863,9 @@ OPTIONS
   --test-call            Alias for --verify.
   --force                Force a rebuild even if dist/cli.js already exists (use after a
                          half-broken build — e.g. node_modules was wiped).
+  --repair               Back up and remove a broken config.json so the first-run setup
+                         screen can re-mint one (use when the file is corrupt or credentials
+                         were lost). Safe: a healthy config is left untouched.
   --dry-run              Show what would change; write nothing.
   --help                 This text.
 
@@ -873,6 +918,12 @@ async function main(argv = process.argv.slice(2)) {
 
   if (args.json) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return 0;
+  }
+
+  if (args.repair) {
+    const result = repairConfig(report.config.path, { dryRun });
+    process.stdout.write(`${result.ok ? '✓' : '•'} ${result.message}\n`);
     return 0;
   }
 

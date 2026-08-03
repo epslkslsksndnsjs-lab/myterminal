@@ -42,7 +42,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync, utimesSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -64,6 +64,7 @@ import {
   lookupInstallDir,
   INSTALL_CANDIDATE_DIRS,
   shouldRebuild,
+  repairConfig,
   detect,
   REQUIRED_CONFIG_FIELDS,
   PROFILE_MARKER_BEGIN,
@@ -886,6 +887,98 @@ describe('[LOCK-43-14] 构建完整性检查 + --force（P2-5）', () => {
       setMtime(path.join(root, 'package.json'), base);            // 旧
       setMtime(path.join(root, 'dist', 'cli.js'), base + 60_000); // 新
       assert.equal(shouldRebuild(root, {}), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）
+//
+// 为什么这把锁必须存在（用户评审 P2）：
+//   原 assessConfigWritability 遇 __parseError 只说"fix or move the file"，无 --repair；
+//   connectorKey/actionsToken 丢了只能手动删文件重跑设置。现在提供明确的重置路径：
+//   备份破损文件并移除，让首跑界面重新 mint。健康 config 绝不碰。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () => {
+  function writeConfig(root, name, content) {
+    const file = path.join(root, name);
+    writeFileSync(file, content);
+    return file;
+  }
+  function validConfig() {
+    return JSON.stringify({
+      schemaVersion: 1,
+      workspaceDir: '/w', host: '127.0.0.1', port: 1, publicBaseUrl: 'x',
+      connectorKey: 'a'.repeat(24), actionsToken: 'b'.repeat(24),
+      maxOutputChars: 1, commandTimeoutSec: 1,
+    });
+  }
+
+  test('健康 config → 不修复、不改动', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-repair-'));
+    try {
+      const file = writeConfig(root, 'config.json', validConfig());
+      const r = repairConfig(file, {});
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, 'healthy');
+      assert.ok(existsSync(file), '健康 config 应原封不动');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('坏 JSON → 备份并移除原文件（修 P2-6）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-repair-'));
+    try {
+      const file = writeConfig(root, 'config.json', '{ this is not json');
+      const r = repairConfig(file, {});
+      assert.equal(r.ok, true);
+      assert.ok(/repair-backup-/.test(r.backup), '应生成带时间戳的备份');
+      assert.ok(existsSync(r.backup), '备份应存在');
+      assert.equal(existsSync(file), false, '破损原文件应被移除');
+      assert.match(r.message, /Re-run 'bun run dev'/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('缺字段（凭据丢失）的合法 JSON → 同样备份移除，让首跑重 mint', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-repair-'));
+    try {
+      const incomplete = JSON.stringify({ schemaVersion: 1, workspaceDir: '/w' });
+      const file = writeConfig(root, 'config.json', incomplete);
+      const r = repairConfig(file, {});
+      assert.equal(r.ok, true);
+      assert.equal(r.reason, 'incomplete');
+      assert.equal(existsSync(file), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('--dry-run → 不删文件，只报告会做什么', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-repair-'));
+    try {
+      const file = writeConfig(root, 'config.json', '{ bad');
+      const r = repairConfig(file, { dryRun: true });
+      assert.equal(r.ok, true);
+      assert.equal(r.dryRun, true);
+      assert.ok(existsSync(file), 'dry-run 不应删除原文件');
+      assert.equal(existsSync(r.backup), false, 'dry-run 不应生成备份');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('文件不存在 → 无可修复', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-repair-'));
+    try {
+      const r = repairConfig(path.join(root, 'nope.json'), {});
+      assert.equal(r.ok, false);
+      assert.equal(r.reason, 'absent');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
