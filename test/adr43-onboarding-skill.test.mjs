@@ -42,7 +42,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -61,6 +61,9 @@ import {
   FIRST_RUN_FIELDS,
   validateModelForProvider,
   MODEL_PREFIXES,
+  lookupInstallDir,
+  INSTALL_CANDIDATE_DIRS,
+  detect,
   REQUIRED_CONFIG_FIELDS,
   PROFILE_MARKER_BEGIN,
   PROFILE_MARKER_END,
@@ -725,6 +728,81 @@ describe('[LOCK-43-12] model↔provider 一致性强制（P1-3）', () => {
   test('MODEL_PREFIXES 覆盖全部 5 个 provider', () => {
     for (const p of SUPPORTED_PROVIDERS) {
       assert.ok(Array.isArray(MODEL_PREFIXES[p.provider]) && MODEL_PREFIXES[p.provider].length > 0, `${p.provider} 缺前缀定义`);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-13] 安装目录扫描扩展（P1-4）
+//
+// 为什么这把锁必须存在（用户评审 P1）：
+//   原 detect 只扫 3 条固定路径；装到 ~/projects/myterminal 这类地方 → installed 误判 false
+//   → doInstall 往 ~/myterminal 重新 clone，跟现有 checkout 脱节。现在扫一组标准候选目录，
+//   且 suggestedInstallDir 优先用找到的真实目录。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-13] 安装目录扫描扩展（P1-4）', () => {
+  function fakeCheckout(root, rel) {
+    const dir = path.join(root, rel);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'myterminal' }));
+    return dir;
+  }
+  function decoy(root, rel) {
+    const dir = path.join(root, rel);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'something-else' }));
+    return dir;
+  }
+
+  test('INSTALL_CANDIDATE_DIRS 含 projects/code/dev 等标准位置', () => {
+    for (const rel of ['projects/myterminal', 'code/myterminal', 'dev/myterminal', 'Desktop/myterminal']) {
+      assert.ok(INSTALL_CANDIDATE_DIRS.includes(rel), `候选目录缺 ${rel}`);
+    }
+  });
+
+  test('在 ~/projects/myterminal 找到 checkout，不误判未安装（修 P1-4）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-homedir-'));
+    try {
+      decoy(root, 'myterminal'); // ~/myterminal 是别的仓库，不应被误认
+      const found = fakeCheckout(root, 'projects/myterminal');
+      const result = lookupInstallDir(root, undefined);
+      assert.equal(result, found, '应在 projects/myterminal 找到，而非误判未安装');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('显式 --install-dir 优先于候选目录', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-installdir-'));
+    try {
+      const explicit = fakeCheckout(root, 'custom/location');
+      const result = lookupInstallDir(root, explicit);
+      assert.equal(result, explicit);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('完全不存在时返回 null（不是空串/假值坑）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-empty-'));
+    try {
+      assert.equal(lookupInstallDir(root, undefined), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('detect 对装在非默认目录的 checkout 报告 installed=true 且 suggestedInstallDir 指向它', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-detect-'));
+    try {
+      const found = fakeCheckout(root, 'code/myterminal');
+      const report = detect({ installDir: undefined, homedir: root, env: {} });
+      assert.equal(report.myterminal.installed, true);
+      assert.equal(report.myterminal.installDir, found);
+      assert.equal(report.myterminal.suggestedInstallDir, found, 'suggestedInstallDir 应指向已找到的真实目录');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

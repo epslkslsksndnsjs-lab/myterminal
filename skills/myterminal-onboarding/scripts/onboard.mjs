@@ -514,20 +514,41 @@ function isMyTerminalCheckout(dir) {
   }
 }
 
-function detect({ env = process.env, installDir } = {}) {
-  const homedir = os.homedir();
+/**
+ * Standard places a MyTerminal checkout is likely to live. Purely heuristic — the goal is to
+ * avoid wrongly concluding "not installed" and cloning a fresh copy next to an existing one
+ * (review gap P1-4). Explicit --install-dir always wins.
+ */
+export const INSTALL_CANDIDATE_DIRS = [
+  'myterminal',
+  'Desktop/myterminal',
+  'projects/myterminal',
+  'code/myterminal',
+  'dev/myterminal',
+  'src/myterminal',
+  'git/myterminal',
+  'repos/myterminal',
+];
+
+/** Find an existing MyTerminal checkout among the candidate dirs. Returns the path or null. */
+export function lookupInstallDir(homedir, installDir) {
+  const candidates = [
+    installDir,
+    ...INSTALL_CANDIDATE_DIRS.map((rel) => path.join(homedir, rel)),
+    '/opt/myterminal',
+    '/usr/local/myterminal',
+  ].filter(Boolean);
+  return candidates.find((dir) => isMyTerminalCheckout(dir)) ?? null;
+}
+
+function detect({ env = process.env, installDir, homedir = os.homedir() } = {}) {
   const platform = process.platform;
   const profile = detectShellProfile({ platform, env, homedir });
 
   const bunProbe = tryExec('bun', ['--version']);
   const bunVersion = parseBunVersion(bunProbe.stdout);
 
-  const candidates = [
-    installDir,
-    path.join(homedir, DEFAULT_INSTALL_DIRNAME),
-    path.join(homedir, 'Desktop', DEFAULT_INSTALL_DIRNAME),
-  ].filter(Boolean);
-  const foundDir = candidates.find((dir) => isMyTerminalCheckout(dir)) ?? null;
+  const foundDir = lookupInstallDir(homedir, installDir);
 
   const configPath = resolveConfigPath(env, homedir);
   const config = readJsonIfExists(configPath);
@@ -548,7 +569,7 @@ function detect({ env = process.env, installDir } = {}) {
       installDir: foundDir,
       installed: Boolean(foundDir),
       built: foundDir ? fs.existsSync(path.join(foundDir, 'dist', 'cli.js')) : false,
-      suggestedInstallDir: installDir ?? path.join(homedir, DEFAULT_INSTALL_DIRNAME),
+      suggestedInstallDir: foundDir ?? installDir ?? path.join(homedir, DEFAULT_INSTALL_DIRNAME),
       repoUrl: REPO_URL,
     },
     config: {
