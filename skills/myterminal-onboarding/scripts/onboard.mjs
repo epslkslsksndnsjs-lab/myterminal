@@ -184,15 +184,19 @@ export function buildExportLine(provider, key, shellKind = 'bash') {
 }
 
 /** Providers that accept an optional base URL override, and the env var that carries it. */
+// Only providers whose base URL is genuinely overridable via an env var. qwen reads
+// DASHSCOPE_BASE_URL (src/subagent/llm-adapter.ts:1140); glm/openai/deepseek hardcode their
+// base URL in the adapter and read no env, so emitting an export for them would be a no-op
+// (ADR-0043 D6: never pretend to configure what won't take effect).
 export const BASE_URL_ENV = {
   qwen: 'DASHSCOPE_BASE_URL',
-  glm: 'OPENAI_BASE_URL',
 };
 
 /**
  * Render the optional base-URL export line. Returns null when the provider does not support a
- * base URL or none was given (review gap P2-7). Only qwen (DASHSCOPE_BASE_URL) and glm
- * (OPENAI_BASE_URL, because it speaks OpenAI-compatible) honor it.
+ * base URL or none was given (review gap P2-7). Only qwen (DASHSCOPE_BASE_URL) genuinely
+ * honors it; glm/openai/deepseek hardcode their base URL in the adapter and ignore any env
+ * override, so emitting one for them would be a dead line (ADR-0043 D6).
  */
 export function buildBaseUrlLine(provider, baseUrl, shellKind = 'bash') {
   const check = validateProvider(provider);
@@ -840,7 +844,7 @@ export function doKey(report, { provider, key, baseUrl, writeProfile, dryRun }) 
   const lines = [keyLine, baseLine].filter(Boolean);
 
   if (baseUrl && !baseLine) {
-    process.stdout.write(`Note: a base URL is only honored for qwen/glm; ignored for ${check.entry.provider}.\n`);
+    process.stdout.write(`Note: a base URL is only honored for qwen; ignored for ${check.entry.provider}.\n`);
   }
 
   if (report.shell.manual) {
@@ -957,8 +961,8 @@ OPTIONS
   --repair               Back up and remove a broken config.json so the first-run setup
                          screen can re-mint one (use when the file is corrupt or credentials
                          were lost). Safe: a healthy config is left untouched.
-  --base-url <url>       Optional base URL. Only honored for qwen (DASHSCOPE_BASE_URL) and
-                         glm (OPENAI_BASE_URL); written as an extra export line alongside the key.
+  --base-url <url>       Optional base URL. Only honored for qwen (DASHSCOPE_BASE_URL);
+                         written as an extra export line alongside the key.
   --self-test            Self-diagnostic for a deployed copy: verify every expected export/flag is
                          present (no repo, no network). Run after install to catch a stale copy.
   --dry-run              Show what would change; write nothing.

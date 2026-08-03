@@ -992,17 +992,19 @@ describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () =>
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-16] qwen/glm 可选 base URL（P2-7）
+// [LOCK-43-16] qwen 可选 base URL（P2-7）
 //
 // 为什么这把锁必须存在（用户评审 P2）：
-//   qwen 的 DASHSCOPE_BASE_URL、glm 的 OPENAI_BASE_URL 在 provider note 里写了，但 doKey
-//   只写 API key 那一个 env var，自定义端点设不了。现在 buildBaseUrlLine 多输出一行。
+//   qwen 的 DASHSCOPE_BASE_URL 在 provider note 里写了，但 doKey 只写 API key 那一个 env
+//   var，自定义端点设不了。现在 buildBaseUrlLine 多输出一行。
+//   注意：glm/openai/deepseek 在 src/subagent/llm-adapter.ts 里硬编码 base URL 且不读 env，
+//   所以 BASE_URL_ENV 不含它们——否则会打出永不起作用的死 export 行（ADR-0043 D6）。
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-16] qwen/glm 可选 base URL（P2-7）', () => {
-  test('BASE_URL_ENV 只为 qwen/glm 定义', () => {
+describe('[LOCK-43-16] qwen 可选 base URL（P2-7）', () => {
+  test('BASE_URL_ENV 只为 qwen 定义', () => {
     assert.equal(BASE_URL_ENV.qwen, 'DASHSCOPE_BASE_URL');
-    assert.equal(BASE_URL_ENV.glm, 'OPENAI_BASE_URL');
+    assert.equal(BASE_URL_ENV.glm, undefined);
     assert.equal(BASE_URL_ENV.openai, undefined);
   });
 
@@ -1011,9 +1013,8 @@ describe('[LOCK-43-16] qwen/glm 可选 base URL（P2-7）', () => {
     assert.equal(line, 'export DASHSCOPE_BASE_URL="https://my-endpoint/v1"');
   });
 
-  test('glm + base-url → 输出 OPENAI_BASE_URL 行', () => {
-    const line = buildBaseUrlLine('glm', 'https://open.bigmodel.cn/api/paas/v4', 'bash');
-    assert.equal(line, 'export OPENAI_BASE_URL="https://open.bigmodel.cn/api/paas/v4"');
+  test('glm + base-url → 返回 null（glm 不读 env，不伪造死行）', () => {
+    assert.equal(buildBaseUrlLine('glm', 'https://open.bigmodel.cn/api/paas/v4', 'bash'), null);
   });
 
   test('fish shell → base URL 行也用 set -gx', () => {
