@@ -12,23 +12,22 @@ disable: false
 
 ## Install
 
-This skill is a plain folder — no `npm install`, no build step. Install it by copying the
-folder into your agent's skills directory. The bundled installer does exactly that copy and
-then runs the self-test so you know the copy is healthy:
+这是纯文件夹技能，无需 `npm install`、无构建步骤。一条命令即可安装——运行后会出现一个极简安装向导，
+自动检测已装的 Agent（WorkBuddy / Claude Code / Cursor），按 **Enter** 即全部装好，带进度条：
 
 ```bash
 node scripts/install.mjs
 ```
 
-- **Idempotent** — re-running just overwrites with the current copy, so run it again after any
-  update to the skill. No duplicates, no stale leftovers.
-- **Where** — copies into `~/.workbuddy/skills/myterminal-onboarding/` (user-level).
-- **Live immediately** — no restart needed once it prints `✓ Installed` and the self-test passes.
-- **Uninstall** — delete `~/.workbuddy/skills/myterminal-onboarding`.
+- **一条命令 + 回车**：无需选择、无方向键、无多余步骤。检测到的 Agent 全部安装，进度条走完即结束。
+- **幂等**：重复运行只会用当前副本覆盖，更新技能后随时再跑一次，不会重复或残留。
+- **目标目录**：默认装到 `~/.workbuddy/skills/myterminal-onboarding/`（检测到其他 Agent 也会一起装）。
+- **立即生效**：装完无需重启，Agent 里输入 `/myterminal-onboarding` 即可开始配置。
+- **无交互模式**：`node scripts/install.mjs --yes` 直接装；`--target claude` 只装指定 Agent。
+- **卸载**：删除 `~/.workbuddy/skills/myterminal-onboarding` 即可。
 
-This mirrors the reference skill's model: a skill is a folder the agent loads, not a package
-you register. (The reference uses `npx skills add` to copy it from a registry; this installer
-is the same copy, done locally so the skill need not be published anywhere.)
+这与参考技能（mattpocock/skills）的设计哲学一致：技能是被 Agent 加载的文件夹，而不是要注册的包。
+（参考技能用 `npx skills add` 从 registry 复制；本安装器做同样的复制，但完全本地、无需发布到任何地方。）
 
 # MyTerminal Onboarding
 
