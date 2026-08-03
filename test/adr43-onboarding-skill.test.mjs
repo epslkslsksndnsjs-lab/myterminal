@@ -43,7 +43,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync, utimesSync, existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   SUPPORTED_PROVIDERS,
@@ -173,10 +173,15 @@ describe('[LOCK-43-2] resolveConfigPath 复刻 settingsPath 三级回退', () =>
     );
   });
 
+  // Windows 上 '/custom/dir' 是「盘符相对」路径，src/config.ts:26 的 path.resolve(configured)
+  // 会补上当前盘符（→ D:\custom\dir）——这是 Node 的正常语义，不是缺陷。
+  // 断言输入必须给一条各平台都真正绝对的路径，否则 windows-latest 上假红。
+  const CUSTOM_DIR = process.platform === 'win32' ? 'C:\\custom\\dir' : '/custom/dir';
+
   test('MYTERMINAL_CONFIG_DIR 最高优先，且不再追加 myterminal 段', () => {
     assert.equal(
-      resolveConfigPath({ MYTERMINAL_CONFIG_DIR: '/custom/dir', XDG_CONFIG_HOME: '/xdg' }, HOME),
-      path.join('/custom/dir', 'config.json'),
+      resolveConfigPath({ MYTERMINAL_CONFIG_DIR: CUSTOM_DIR, XDG_CONFIG_HOME: '/xdg' }, HOME),
+      path.join(CUSTOM_DIR, 'config.json'),
     );
   });
 
@@ -556,7 +561,10 @@ describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
     });
 
     test(`[${runtime.name}] 被 import 时绝不自动执行（修 N11 不能变成一 import 就跑）`, () => {
-      const probe = `import('${SCRIPT_PATH}').then(() => process.stdout.write('IMPORTED_QUIET'));`;
+      // 必须走 file URL：Windows 上 SCRIPT_PATH 含反斜杠，直接插进模板字符串会被 JS
+      // 当转义序列吃掉（\a\m\s → amsss），运行时报 Cannot find package 'D:amyterminal...'。
+      // pathToFileURL 产出正斜杠 + 百分号编码，JSON.stringify 再兜一层引号安全。
+      const probe = `import(${JSON.stringify(pathToFileURL(SCRIPT_PATH).href)}).then(() => process.stdout.write('IMPORTED_QUIET'));`;
       const out = execFileSync(runtime.bin, ['--input-type=module', '-e', probe], { encoding: 'utf8' });
       assert.equal(out.trim(), 'IMPORTED_QUIET', 'import 时不该有任何额外输出');
     });
