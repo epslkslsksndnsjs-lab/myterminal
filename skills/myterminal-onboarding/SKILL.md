@@ -16,7 +16,11 @@ disable: false
 自动检测已装的 Agent（WorkBuddy / Claude Code / Cursor），按 **Enter** 即全部装好，带进度条：
 
 ```bash
-node scripts/install.mjs
+# 方式一：在 MyTerminal 仓库根目录运行（推荐）
+cd <你的 MyTerminal 目录> && node skills/myterminal-onboarding/scripts/install.mjs
+
+# 方式二：进入技能目录后运行
+cd <你的 MyTerminal 目录>/skills/myterminal-onboarding && node scripts/install.mjs
 ```
 
 - **一条命令 + 回车**：无需选择、无方向键、无多余步骤。检测到的 Agent 全部安装，进度条走完即结束。
