@@ -187,14 +187,17 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         settings: mergedSettings,
         readOnly: input.readOnly,
       }).then((result) => finalize(subagentId, child.id, parentSessionId, result, origin))
-        .catch((err: unknown) => {
+        .catch(async (err: unknown) => {
           const error = err instanceof Error ? err.message : String(err);
           const storedIdentity = childIdentities.get(subagentId);
           if (storedIdentity) {
             const body = origin?.type === 'skill'
               ? `skill '${origin.skillName}' fork failed (taskId=${subagentId}): ${error}`
               : `subagent failed (taskId=${subagentId}): ${error}`;
-            void notify(child.id, storedIdentity, parentSessionId, body).catch(() => { /* best effort */ });
+            // 🔧 #90 修复：对齐 finalize 失败分支——崩溃路径也必须更新 store 状态 + checkpoint
+            updateSubagentStatus(subagentId, 'failed', { error });
+            await checkpoint(child.id, storedIdentity, 'cancelled', error);
+            await notify(child.id, storedIdentity, parentSessionId, body);
           }
           childIdentities.delete(subagentId);
         });
