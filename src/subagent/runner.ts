@@ -114,24 +114,24 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       if (childIdentity) {
         await checkpoint(childSessionId, childIdentity, 'completed', result.result.length > 500
           ? `${result.result.slice(0, 500)}...`
-          : result.result);
+          : result.result).catch(() => { /* best-effort：失败必须静默，否则 finalize 抛错会被外层 .catch 误把 completed 覆盖为 failed */ });
         const body = origin?.type === 'skill'
           ? `skill '${origin.skillName}' fork completed (taskId=${agentId}): ${summary}`
           : `subagent completed (taskId=${agentId}): ${summary}`;
-        await notify(childSessionId, childIdentity, parentSessionId, body);
+        await notify(childSessionId, childIdentity, parentSessionId, body).catch(() => { /* best-effort */ });
       }
     } else {
       const reason = result.error || 'unknown error';
       updateSubagentStatus(agentId, 'failed', { error: reason });
       if (childIdentity) {
-        await checkpoint(childSessionId, childIdentity, 'cancelled', reason);
+        await checkpoint(childSessionId, childIdentity, 'cancelled', reason).catch(() => { /* best-effort */ });
         const body = origin?.type === 'skill'
           ? `skill '${origin.skillName}' fork failed (taskId=${agentId}): ${reason}`
           : `subagent failed (taskId=${agentId}): ${reason}`;
-        await notify(childSessionId, childIdentity, parentSessionId, body);
+        await notify(childSessionId, childIdentity, parentSessionId, body).catch(() => { /* best-effort */ });
       }
     }
-    // 清理 identity
+    // 清理 identity（best-effort 化后此行必然可达，不再有 Map 泄漏）
     childIdentities.delete(agentId);
   }
 
@@ -189,13 +189,21 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       }).then((result) => finalize(subagentId, child.id, parentSessionId, result, origin))
         .catch((err: unknown) => {
           const error = err instanceof Error ? err.message : String(err);
+          // 核心修复（issue #90）：runSubagentImpl 抛错时 .then(finalize) 被跳过，原代码只 notify 不更新 store
+          // 状态 → SubagentRecord 永久 status=running（僵尸），父代理被永久阻塞，checkpoint 永不落盘。
+          // 现补：无条件置 failed（无论是否有 childIdentity，先杀僵尸），再 best-effort checkpoint + notify。
+          updateSubagentStatus(subagentId, 'failed', { error });
           const storedIdentity = childIdentities.get(subagentId);
           if (storedIdentity) {
             const body = origin?.type === 'skill'
               ? `skill '${origin.skillName}' fork failed (taskId=${subagentId}): ${error}`
               : `subagent failed (taskId=${subagentId}): ${error}`;
-            void notify(child.id, storedIdentity, parentSessionId, body).catch(() => { /* best effort */ });
+            // best-effort：checkpoint/notify 失败必须静默，否则 async .catch 自身 reject →
+            // unhandledRejection → cli.ts process.exit(1) 杀进程（#90 之前改坏引入的回归）
+            void checkpoint(child.id, storedIdentity, 'cancelled', error).catch(() => {});
+            void notify(child.id, storedIdentity, parentSessionId, body).catch(() => {});
           }
+          // 清理 identity——best-effort 化后必然可达，不再有 Map 泄漏
           childIdentities.delete(subagentId);
         });
 
