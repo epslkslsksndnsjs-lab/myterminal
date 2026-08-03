@@ -221,6 +221,21 @@ Mention that they can change provider or model later by re-running
 `node scripts/onboard.mjs --write-config`, and that the key lives in their shell profile inside the
 `# >>> myterminal-onboarding >>>` block if they ever need to rotate it.
 
+### 6. Keep the copy current (self-check)
+
+This skill is a *copy* of the one in the MyTerminal repo. A stale copy won't error at import —
+it just silently rejects a provider the repo now supports, or lacks a flag you expect. After install
+(or any time you suspect drift), run the built-in self-test:
+
+```bash
+node scripts/onboard.mjs --self-test    # expect: SELF-TEST PASSED: N checks OK
+```
+
+It checks that every critical export and CLI flag (`--verify`, `--base-url`, `--healthcheck`,
+`--fallback-model`) is present — no repo, no network. Non-zero exit means the copy is stale;
+re-sync it from the MyTerminal repo. Repo-level provider-list parity is enforced separately by
+CI (`scripts/check-provider-sync.mjs`), which the deployed copy can't run on its own.
+
 ## Reference
 
 This skill is installed into an agent's skills directory, **not** into the MyTerminal repo, so

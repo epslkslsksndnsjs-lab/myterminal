@@ -25,6 +25,12 @@ jobs:
       - run: bun run build
       - run: bun test --timeout 300000 test/*.test.mjs
         shell: bash
+      - name: Skill — provider-list parity with repo (review-gap #4/B)
+        shell: bash
+        run: node skills/myterminal-onboarding/scripts/check-provider-sync.mjs
+      - name: Skill — self-test deployed-copy shape (review-gap #4/A)
+        shell: bash
+        run: node skills/myterminal-onboarding/scripts/onboard.mjs --self-test
       - run: bun audit
       - name: Build and exercise Unix installer
         if: runner.os != 'Windows'

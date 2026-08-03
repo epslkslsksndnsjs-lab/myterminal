@@ -959,6 +959,8 @@ OPTIONS
                          were lost). Safe: a healthy config is left untouched.
   --base-url <url>       Optional base URL. Only honored for qwen (DASHSCOPE_BASE_URL) and
                          glm (OPENAI_BASE_URL); written as an extra export line alongside the key.
+  --self-test            Self-diagnostic for a deployed copy: verify every expected export/flag is
+                         present (no repo, no network). Run after install to catch a stale copy.
   --dry-run              Show what would change; write nothing.
   --help                 This text.
 
@@ -997,12 +999,65 @@ function readStdin() {
   }
 }
 
+/**
+ * Self-diagnostic for a deployed skill copy (review-gap #4, plan A).
+ *
+ * The skill is frequently copied out of this repo (e.g. into ~/.workbuddy/skills/...),
+ * after which the repo's own lock suite can no longer see it. This flag lets the
+ * *installed copy* prove it still carries the features it should — no repo, no
+ * network, just node. Run after install / periodically:
+ *
+ *   node scripts/onboard.mjs --self-test
+ *
+ * Returns 0 if every expected export/flag is present, 1 otherwise. CI also calls it
+ * (see .github/workflows/ci.yaml) so a stale copy committed to the repo is caught.
+ * Provider-list parity with the main repo is enforced separately by
+ * scripts/check-provider-sync.mjs — this copy has no repo to compare against.
+ */
+function doSelfTest() {
+  const results = [];
+  const ok = (label, cond) => results.push({ label, pass: !!cond });
+
+  ok('export: verifyProviderKey', typeof verifyProviderKey === 'function');
+  ok('export: checkHealth', typeof checkHealth === 'function');
+  ok('export: doKey', typeof doKey === 'function');
+  ok('export: doHealthCheck', typeof doHealthCheck === 'function');
+  ok('export: doWriteConfig', typeof doWriteConfig === 'function');
+  ok('export: repairConfig', typeof repairConfig === 'function');
+  ok('export: buildBaseUrlLine', typeof buildBaseUrlLine === 'function');
+  ok('export: validateModelForProvider', typeof validateModelForProvider === 'function');
+  ok('export: lookupInstallDir', typeof lookupInstallDir === 'function');
+  ok('export: shouldRebuild', typeof shouldRebuild === 'function');
+  ok('export: detect', typeof detect === 'function');
+  ok('export: SUPPORTED_PROVIDERS', Array.isArray(SUPPORTED_PROVIDERS) && SUPPORTED_PROVIDERS.length >= 5);
+  ok('flag: --verify in HELP', HELP.includes('--verify'));
+  ok('flag: --base-url in HELP', HELP.includes('--base-url'));
+  ok('flag: --healthcheck in HELP', HELP.includes('--healthcheck'));
+  ok('flag: --fallback-model in HELP', HELP.includes('--fallback-model'));
+  ok('providers: openai/anthropic/deepseek/glm/qwen all present',
+    ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'].every((p) =>
+      SUPPORTED_PROVIDERS.some((x) => x.provider === p)));
+
+  const failed = results.filter((r) => !r.pass);
+  for (const r of results) process.stdout.write(`${r.pass ? '✓' : '✗'} ${r.label}\n`);
+  if (failed.length) {
+    process.stdout.write(`\nSELF-TEST FAILED: ${failed.length} check(s) failed. This skill copy is stale or corrupted — re-sync from the MyTerminal repo.\n`);
+    return 1;
+  }
+  process.stdout.write(`\nSELF-TEST PASSED: ${results.length} checks OK. Skill copy is current.\n`);
+  return 0;
+}
+
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
 
   if (args.help) {
     process.stdout.write(HELP);
     return 0;
+  }
+
+  if (args['self-test']) {
+    return doSelfTest();
   }
 
   const installDir = args['install-dir'] ? path.resolve(args['install-dir']) : undefined;
