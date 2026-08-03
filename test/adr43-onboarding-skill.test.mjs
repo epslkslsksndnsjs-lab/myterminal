@@ -479,11 +479,11 @@ describe('[LOCK-43-8] assessConfigWritability 绝不凭空造 config', () => {
 // ═══════════════════════════════════════════════
 // [LOCK-43-9] 入口守卫必须穿透符号链接
 //
-// 为什么这把锁必须存在（ADR-0043 D3/D5）：
-//   唯一触发方式是 install.sh 在 ~/.local/bin 建的符号链接 `myterminal-onboard`。
+// 为什么这把锁必须存在（ADR-0043）：
+//   脚本可能被一条符号链接调用（例如用户把它软链到 PATH 上命名为 `myterminal-onboard`）。
 //   而 import.meta.url 给的是**解析后的真实路径**，process.argv[1] 给的是**符号链接路径**，
 //   两者直接字符串比较必然不等 → main() 不执行 → 命令静默无输出。
-//   实测踩过：install.sh 装完后 `myterminal-onboard --help` 什么都不打印。
+//   实测踩过：早期 `isInvokedDirectly` 用字符串比较时，node 下经符号链接调用 `--help` 什么都不打印。
 // ═══════════════════════════════════════════════
 
 const SCRIPT_PATH = path.join(
@@ -497,14 +497,14 @@ const SCRIPT_PATH = path.join(
 
 // 必须逐个运行时验证：node 会把 import.meta.url 解析成真实路径，bun 不会。
 // 只在 bun（测试运行时）下测，这个 bug 测不出来——实测 node 0 行输出、bun 26 行。
-// 真实触发链是 shebang `#!/usr/bin/env node` 与 install.ps1 的 node shim，node 是必测项。
+// 真实触发链是经符号链接 + node shebang 调用，node 是必测项。
 function availableRuntimes() {
   const runtimes = [{ name: 'test-runtime', bin: process.execPath }];
   try {
     execFileSync('node', ['--version'], { stdio: 'ignore' });
     runtimes.push({ name: 'node', bin: 'node' });
   } catch {
-    // install.sh 硬性要求 node；此处缺失只降级为不测，不误报红。
+    // 脚本依赖 node；此处缺失只降级为不测，不误报红。
   }
   return runtimes;
 }
@@ -512,7 +512,7 @@ function availableRuntimes() {
 const RUNTIMES = availableRuntimes();
 
 describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
-  test('node 必须可用——install.sh 与 shebang 都依赖它', () => {
+  test('node 必须可用——脚本与 shebang 都依赖它', () => {
     assert.ok(
       RUNTIMES.some((r) => r.name === 'node'),
       'node 不在 PATH 上，N11 这条锁形同虚设（本机应装 node）',
@@ -532,7 +532,7 @@ describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
         symlinkSync(SCRIPT_PATH, link);
         const out = execFileSync(runtime.bin, [link, '--help'], { encoding: 'utf8' });
         assert.match(out, /USAGE/, `${runtime.name} 经符号链接调用时 main() 没有执行——命令哑火`);
-        assert.match(out, /myterminal-onboard/);
+        assert.match(out, /onboard\.mjs/);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

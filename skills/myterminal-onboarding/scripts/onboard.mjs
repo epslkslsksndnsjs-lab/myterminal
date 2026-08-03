@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * myterminal-onboard — one command that installs MyTerminal and configures its subagent LLM.
+ * onboard.mjs — installs MyTerminal and configures its subagent LLM.
  *
  * Design contract: docs/adr/0043-myterminal-onboarding-skill.md
  *
@@ -274,7 +274,7 @@ const FIRST_RUN_GUIDANCE =
   'Do this instead:\n' +
   '  1. cd <your MyTerminal checkout>\n' +
   '  2. bun run dev            # complete the first-run setup screen once\n' +
-  '  3. re-run: myterminal-onboard --write-config --provider <p> [--model <m>]';
+  '  3. re-run: node scripts/onboard.mjs --write-config --provider <p> [--model <m>]';
 
 /**
  * Decide whether it is safe to write the subagent section into an existing config.
@@ -573,15 +573,15 @@ function doKey(report, { provider, key, writeProfile, dryRun }) {
   );
 }
 
-const HELP = `myterminal-onboard — install MyTerminal and configure its subagent LLM
+const HELP = `onboard.mjs — install MyTerminal and configure its subagent LLM
 
 USAGE
-  myterminal-onboard                          Detect and report. Read-only, writes nothing.
-  myterminal-onboard --json                   Same report as JSON (for AI agents to parse).
-  myterminal-onboard --install                Clone + bun install + bun run build.
-  myterminal-onboard --write-config --provider <p> [--model <m>]
+  node scripts/onboard.mjs                    Detect and report. Read-only, writes nothing.
+  node scripts/onboard.mjs --json             Same report as JSON (for AI agents to parse).
+  node scripts/onboard.mjs --install          Clone + bun install + bun run build.
+  node scripts/onboard.mjs --write-config --provider <p> [--model <m>]
                                               Write subagent settings to config.json.
-  myterminal-onboard --key <API_KEY> --provider <p> [--write-profile]
+  node scripts/onboard.mjs --key <API_KEY> --provider <p> [--write-profile]
                                               Print (or append) the export line for the key.
 
 OPTIONS
@@ -677,8 +677,8 @@ function main(argv = process.argv.slice(2)) {
 /**
  * Was this file run as a command, rather than imported?
  *
- * Must compare *real* paths: the install step puts a `myterminal-onboard` symlink on PATH,
- * and Node resolves `import.meta.url` to the link target while leaving `process.argv[1]` as
+ * Must compare *real* paths: the entrypoint can be a symlink (a PATH shim, for example), and
+ * Node resolves `import.meta.url` to the link target while leaving `process.argv[1]` as
  * the link itself. A naive string compare therefore never matches and the command silently
  * does nothing. (Bun happens to behave differently, which is exactly how this stayed hidden.)
  * Locked by test/adr43-onboarding-skill.test.mjs [LOCK-43-9].

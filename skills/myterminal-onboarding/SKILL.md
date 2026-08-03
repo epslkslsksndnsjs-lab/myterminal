@@ -1,13 +1,13 @@
 ---
-name: myterminal-onboarding
+name: node scripts/onboard.mjsing
 description: Install MyTerminal on this machine and configure its subagent LLM provider, model and API key, step by step. Run once per machine.
 license: MIT
 disable: false
 ---
 
-> **Invocation:** Command-only. Do not auto-trigger this skill and do not run it because
-> the user mentioned MyTerminal in passing. It runs only when the user executes
-> `myterminal-onboard`, or explicitly asks for MyTerminal onboarding by name.
+> **Invocation:** Run `node scripts/onboard.mjs` from this skill's directory whenever the user asks
+> to install or configure MyTerminal (or its subagent LLM). Do not auto-run it just because
+> MyTerminal was mentioned in passing.
 
 # MyTerminal Onboarding
 
@@ -43,7 +43,7 @@ Read these before doing anything. Violating one of them breaks the user's machin
    follow the guidance it prints instead of working around it.
 4. **Order matters.** bun → build → **first run** → write subagent config → API key. Never write
    the subagent config before the user has completed the first-run setup screen.
-5. **Read-only until told otherwise.** `myterminal-onboard` with no flags writes nothing.
+5. **Read-only until told otherwise.** `node scripts/onboard.mjs` with no flags writes nothing.
    Use `--dry-run` when you want to show the user what a write would do.
 
 ## Process
@@ -53,7 +53,7 @@ Read these before doing anything. Violating one of them breaks the user's machin
 Run the detector and read the report. It writes nothing:
 
 ```bash
-myterminal-onboard --json
+node scripts/onboard.mjs --json
 ```
 
 The JSON tells you everything you need:
@@ -112,7 +112,7 @@ Show a draft before writing anything:
   file is preserved and that no key appears in it.
 - The exact `export` line that will go into their shell profile, with the key redacted.
 
-`myterminal-onboard --write-config --provider <p> --model <m> --dry-run` prints the exact merged
+`node scripts/onboard.mjs --write-config --provider <p> --model <m> --dry-run` prints the exact merged
 file without touching disk. Prefer showing that over describing it.
 
 Let the user edit before you write.
@@ -133,7 +133,7 @@ Then have them reopen the shell and re-run the detector. Do not attempt the buil
 **Stage 2 — Install.** You can do this one:
 
 ```bash
-myterminal-onboard --install --install-dir <path>
+node scripts/onboard.mjs --install --install-dir <path>
 ```
 
 Clones (depth 1), runs `bun install`, and builds only when `dist/cli.js` is missing. Safe to
@@ -146,14 +146,14 @@ mints the connector credentials. Hand the user:
 cd <install-dir> && bun run dev
 ```
 
-Tell them to complete the setup screen and quit. Then re-run `myterminal-onboard --json` and
+Tell them to complete the setup screen and quit. Then re-run `node scripts/onboard.mjs --json` and
 check that `config.writability.ok` is now true. If it still is not, read the `guidance` field
 aloud rather than improvising.
 
 **Stage 4 — Subagent config.** You can do this one:
 
 ```bash
-myterminal-onboard --write-config --provider <p> --model <m>
+node scripts/onboard.mjs --write-config --provider <p> --model <m>
 ```
 
 It merges into the existing file, preserves every other setting, backs the file up first, and
@@ -164,7 +164,7 @@ send them to the URL from the table. Once they paste it to you, prefer stdin so 
 reaches shell history:
 
 ```bash
-printf '%s' '<KEY>' | myterminal-onboard --key - --provider <p> --write-profile
+printf '%s' '<KEY>' | node scripts/onboard.mjs --key - --provider <p> --write-profile
 ```
 
 This appends a marked block to their shell profile, backs it up, and is idempotent — running it
@@ -188,8 +188,8 @@ cd <install-dir> && bun start
 ```
 
 Mention that they can change provider or model later by re-running
-`myterminal-onboard --write-config`, and that the key lives in their shell profile inside the
-`# >>> myterminal-onboarding >>>` block if they ever need to rotate it.
+`node scripts/onboard.mjs --write-config`, and that the key lives in their shell profile inside the
+`# >>> node scripts/onboard.mjsing >>>` block if they ever need to rotate it.
 
 ## Reference
 
@@ -210,5 +210,5 @@ If the user has no checkout yet, the online copy of the setup document is at
 <https://github.com/epslkslsksndnsjs-lab/myterminal/blob/main/docs/SUBAGENT_SETUP.md>.
 
 The design rationale for this skill lives in the maintainer's ADR-0043
-(`docs/adr/0043-myterminal-onboarding-skill.md`). That directory is git-ignored, so it may be
+(`docs/adr/0043-node scripts/onboard.mjsing-skill.md`). That directory is git-ignored, so it may be
 absent from a fresh clone — do not treat a missing file there as an error.

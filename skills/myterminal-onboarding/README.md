@@ -8,36 +8,23 @@ everything a script is allowed to do, and hand you the exact command for the few
 
 ## Install
 
+This skill is just a folder. Copy it into your agent's skills directory:
+
 ```bash
-./install.sh                      # -> ~/.workbuddy/skills, plus the myterminal-onboard command
-./install.sh --target claude      # -> ~/.claude/skills
-./install.sh --all                # -> every agent skills directory found on this machine
-./install.sh --dry-run            # show what would happen, change nothing
+cp -R myterminal-onboarding ~/.workbuddy/skills/myterminal-onboarding
 ```
 
-Windows (PowerShell):
-
-```powershell
-.\install.ps1
-```
-
-The installer also puts a `myterminal-onboard` command in `~/.local/bin` (a `.cmd` shim on
-Windows), so the trigger is identical across agents. If that directory is not on your `PATH`, the
-installer tells you what to add.
+(Replace `~/.workbuddy/skills` with `~/.claude/skills`, `~/.codex/skills`, or a project's
+`.cursor/skills` as needed.) No installer, no global command — the agent runs
+`node scripts/onboard.mjs` directly from the skill folder.
 
 ## Use
 
-```bash
-myterminal-onboard
-```
-
-That is the whole trigger. It prints an environment report and **writes nothing**. Show the output
-to your agent — the skill takes it from there.
-
-Machine-readable version for agents:
+Ask your agent for MyTerminal onboarding. It runs the detector and prints a report — **writes
+nothing** unless you ask it to:
 
 ```bash
-myterminal-onboard --json
+node scripts/onboard.mjs --json
 ```
 
 ## What it automates, and what it cannot
@@ -82,8 +69,7 @@ myterminal-onboard --json
 ```
 myterminal-onboarding/
   SKILL.md                              the agent-facing instructions
-  install.sh / install.ps1              installer + myterminal-onboard command
-  scripts/onboard.mjs                   the command itself
+  scripts/onboard.mjs                   the onboarding script (run with node)
   templates/subagent-config.template.json   shape of the subagent block (a fragment, not a config)
 ```
 
