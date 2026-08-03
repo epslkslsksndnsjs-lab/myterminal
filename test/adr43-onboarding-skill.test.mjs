@@ -42,7 +42,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -63,6 +63,7 @@ import {
   MODEL_PREFIXES,
   lookupInstallDir,
   INSTALL_CANDIDATE_DIRS,
+  shouldRebuild,
   detect,
   REQUIRED_CONFIG_FIELDS,
   PROFILE_MARKER_BEGIN,
@@ -801,6 +802,90 @@ describe('[LOCK-43-13] 安装目录扫描扩展（P1-4）', () => {
       assert.equal(report.myterminal.installed, true);
       assert.equal(report.myterminal.installDir, found);
       assert.equal(report.myterminal.suggestedInstallDir, found, 'suggestedInstallDir 应指向已找到的真实目录');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-14] 构建完整性检查 + --force（P2-5）
+//
+// 为什么这把锁必须存在（用户评审 P2）：
+//   原 doInstall 只看 dist/cli.js 是否存在就跳过 build；若上次构建半成品损坏
+//   （cli.js 在但 node_modules 废了，或产物比源码旧），它不重建，app 后面崩得莫名其妙。
+//   shouldRebuild 必须：force→重建、cli 缺失→重建、node_modules 缺失→重建、产物过期→重建。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-14] 构建完整性检查 + --force（P2-5）', () => {
+  function setMtime(file, ms) {
+    utimesSync(file, new Date(ms), new Date(ms));
+  }
+
+  function freshLayout(root) {
+    mkdirSync(path.join(root, 'dist'), { recursive: true });
+    mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+    mkdirSync(path.join(root, 'src'), { recursive: true });
+    writeFileSync(path.join(root, 'package.json'), '{}');
+    writeFileSync(path.join(root, 'dist', 'cli.js'), '// built');
+    return root;
+  }
+
+  test('force=true → 必然重建', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-build-'));
+    try {
+      freshLayout(root);
+      assert.equal(shouldRebuild(root, { force: true }), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('dist/cli.js 缺失 → 重建', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-build-'));
+    try {
+      mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+      writeFileSync(path.join(root, 'package.json'), '{}');
+      assert.equal(shouldRebuild(root, {}), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('node_modules 缺失（cli.js 在）→ 重建（修半坏构建）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-build-'));
+    try {
+      mkdirSync(path.join(root, 'dist'), { recursive: true });
+      writeFileSync(path.join(root, 'dist', 'cli.js'), '// built');
+      assert.equal(shouldRebuild(root, {}), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cli.js 比 package.json 旧（产物过期）→ 重建', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-build-'));
+    try {
+      freshLayout(root);
+      const base = 1_700_000_000_000;
+      setMtime(path.join(root, 'src'), base);                    // 旧
+      setMtime(path.join(root, 'dist', 'cli.js'), base);          // 旧
+      setMtime(path.join(root, 'package.json'), base + 60_000);   // 新
+      assert.equal(shouldRebuild(root, {}), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('cli.js 比 package.json 新且 node_modules 在 → 不重建', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-build-'));
+    try {
+      freshLayout(root);
+      const base = 1_700_000_000_000;
+      setMtime(path.join(root, 'src'), base);                    // 旧
+      setMtime(path.join(root, 'package.json'), base);            // 旧
+      setMtime(path.join(root, 'dist', 'cli.js'), base + 60_000); // 新
+      assert.equal(shouldRebuild(root, {}), false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -632,7 +632,25 @@ function printReport(report) {
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
-function doInstall(report, { installDir, dryRun }) {
+/**
+ * Decide whether `bun run build` must run. Pure (reads the target dir only).
+ * A present dist/cli.js is not enough — a half-broken build (cli.js there but
+ * node_modules gone, or the artifact older than the manifest/src) would otherwise
+ * let the app crash later. `--force` overrides everything (review gap P2-5).
+ */
+export function shouldRebuild(target, { force = false } = {}) {
+  if (force) return true;
+  const cli = path.join(target, 'dist', 'cli.js');
+  if (!fs.existsSync(cli)) return true;
+  if (!fs.existsSync(path.join(target, 'node_modules'))) return true;
+  const cliMtime = fs.statSync(cli).mtimeMs;
+  for (const probe of [path.join(target, 'package.json'), path.join(target, 'src')]) {
+    if (fs.existsSync(probe) && fs.statSync(probe).mtimeMs > cliMtime) return true;
+  }
+  return false;
+}
+
+function doInstall(report, { installDir, dryRun, force } = {}) {
   const target = installDir ?? report.myterminal.suggestedInstallDir;
 
   if (!report.bun.satisfiesMinimum) {
@@ -660,11 +678,11 @@ function doInstall(report, { installDir, dryRun }) {
   process.stdout.write('Installing dependencies (bun install)...\n');
   execFileSync('bun', ['install'], { cwd: target, stdio: 'inherit' });
 
-  if (!fs.existsSync(path.join(target, 'dist', 'cli.js'))) {
+  if (shouldRebuild(target, { force })) {
     process.stdout.write('Building (bun run build)...\n');
     execFileSync('bun', ['run', 'build'], { cwd: target, stdio: 'inherit' });
   } else {
-    process.stdout.write('dist/cli.js already built, skipping build.\n');
+    process.stdout.write('dist/cli.js present and build looks intact, skipping build.\n');
   }
 
   process.stdout.write(`Done. Run it with: bun run ${path.join(target, 'dist', 'cli.js')}\n`);
@@ -801,6 +819,8 @@ OPTIONS
   --verify               Prove the key works: make a real 1-token API call to the provider.
                          Reads the key from the provider env var (or --key). Network call; opt-in.
   --test-call            Alias for --verify.
+  --force                Force a rebuild even if dist/cli.js already exists (use after a
+                         half-broken build — e.g. node_modules was wiped).
   --dry-run              Show what would change; write nothing.
   --help                 This text.
 
@@ -874,7 +894,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (args.install) {
-    const target = doInstall(report, { installDir, dryRun });
+    const target = doInstall(report, { installDir, dryRun, force: Boolean(args.force) });
     report = detect({ installDir: target });
   }
 
