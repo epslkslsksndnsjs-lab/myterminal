@@ -6,7 +6,7 @@ import type { Translate } from '../../copy/i18n.js';
  * 按页面生成快捷键提示（复刻 Footer.hints，但用新 8 页索引）。
  * 追加输入栏提示：Normal 时显示 `i 输入`。
  */
-function hints(tab: number, detail: Detail | undefined, t: Translate, mouseEnabled: boolean, inputEditing: boolean): string {
+export function hints(tab: number, detail: Detail | undefined, t: Translate, mouseEnabled: boolean, inputEditing: boolean): string {
   const scroll = mouseEnabled ? (t('wheel/↑↓ scroll', '滚轮/↑↓ 滚动')) : (t('↑↓ scroll', '↑↓ 滚动'));
   const inputHint = inputEditing ? '' : (t(' i input', ' i 输入'));
 
@@ -18,7 +18,9 @@ function hints(tab: number, detail: Detail | undefined, t: Translate, mouseEnabl
   if (tab === 4) return t(`${scroll}   PgUp/PgDn page   r refresh   q quit${inputHint}`, `${scroll}   PgUp/PgDn 翻页   r 刷新   q 退出${inputHint}`);
   if (tab === 5) return t('↑↓/j k select   PgUp/PgDn jump   e add   x remove   q quit' + inputHint, '↑↓/j k 选择   PgUp/PgDn 跳转   e 新增   x 删除   q 退出' + inputHint);
   if (tab === 6) return t(`${scroll}   c configure   hold v to reveal   k rotate   u update   q quit${inputHint}`, `${scroll}   c 修改配置   按住 v 显示凭据   k 轮换凭据   u 更新   q 退出${inputHint}`);
-  // tab === 7 (Logs)
+  // tab === 7 (Logs) 走下方默认分支；#89 修复：tab === 8 (Subagents) 须提前拦截，否则误显示 Logs 提示
+  if (tab === 8) return t(`${scroll}   Tab page   q quit${inputHint}`, `${scroll}   Tab 翻页   q 退出${inputHint}`);
+  // tab === 7 (Logs) 默认分支
   return t(`${scroll}   PgUp/PgDn page   a call details on/off   q quit${inputHint}`, `${scroll}   PgUp/PgDn 翻页   a 调用详情 开/关   q 退出${inputHint}`);
 }
 
