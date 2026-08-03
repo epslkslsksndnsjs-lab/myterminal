@@ -51,6 +51,9 @@ import {
   resolveConfigPath,
   detectShellProfile,
   buildExportLine,
+  buildBaseUrlLine,
+  BASE_URL_ENV,
+  doKey,
   mergeSubagentConfig,
   appendProfileBlock,
   parseBunVersion,
@@ -982,5 +985,63 @@ describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () =>
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-16] qwen/glm 可选 base URL（P2-7）
+//
+// 为什么这把锁必须存在（用户评审 P2）：
+//   qwen 的 DASHSCOPE_BASE_URL、glm 的 OPENAI_BASE_URL 在 provider note 里写了，但 doKey
+//   只写 API key 那一个 env var，自定义端点设不了。现在 buildBaseUrlLine 多输出一行。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-16] qwen/glm 可选 base URL（P2-7）', () => {
+  test('BASE_URL_ENV 只为 qwen/glm 定义', () => {
+    assert.equal(BASE_URL_ENV.qwen, 'DASHSCOPE_BASE_URL');
+    assert.equal(BASE_URL_ENV.glm, 'OPENAI_BASE_URL');
+    assert.equal(BASE_URL_ENV.openai, undefined);
+  });
+
+  test('qwen + base-url → 输出 DASHSCOPE_BASE_URL 行', () => {
+    const line = buildBaseUrlLine('qwen', 'https://my-endpoint/v1', 'bash');
+    assert.equal(line, 'export DASHSCOPE_BASE_URL="https://my-endpoint/v1"');
+  });
+
+  test('glm + base-url → 输出 OPENAI_BASE_URL 行', () => {
+    const line = buildBaseUrlLine('glm', 'https://open.bigmodel.cn/api/paas/v4', 'bash');
+    assert.equal(line, 'export OPENAI_BASE_URL="https://open.bigmodel.cn/api/paas/v4"');
+  });
+
+  test('fish shell → base URL 行也用 set -gx', () => {
+    const line = buildBaseUrlLine('qwen', 'https://x/v1', 'fish');
+    assert.equal(line, 'set -gx DASHSCOPE_BASE_URL "https://x/v1"');
+  });
+
+  test('openai 传 base-url → 忽略（返回 null，不伪造未支持的环境变量）', () => {
+    assert.equal(buildBaseUrlLine('openai', 'https://x', 'bash'), null);
+  });
+
+  test('不传 base-url → 返回 null（默认行为不变）', () => {
+    assert.equal(buildBaseUrlLine('qwen', '', 'bash'), null);
+    assert.equal(buildBaseUrlLine('qwen', undefined, 'bash'), null);
+  });
+
+  test('doKey 非写 profile 路径同时打印 key 行与 base URL 行（qwen）', () => {
+    const report = {
+      shell: { kind: 'zsh', profilePath: '/tmp/profile', manual: false, manualHint: null },
+      config: { subagent: null },
+    };
+    const chunks = [];
+    const orig = process.stdout.write;
+    process.stdout.write = (s) => { chunks.push(s); return true; };
+    try {
+      doKey(report, { provider: 'qwen', key: 'sk-test', baseUrl: 'https://my/v1', writeProfile: false, dryRun: false });
+    } finally {
+      process.stdout.write = orig;
+    }
+    const out = chunks.join('');
+    assert.match(out, /DASHSCOPE_API_KEY/);
+    assert.match(out, /DASHSCOPE_BASE_URL/);
   });
 });

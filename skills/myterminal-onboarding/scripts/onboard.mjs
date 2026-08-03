@@ -183,6 +183,26 @@ export function buildExportLine(provider, key, shellKind = 'bash') {
   return shellKind === 'fish' ? `set -gx ${name} "${value}"` : `export ${name}="${value}"`;
 }
 
+/** Providers that accept an optional base URL override, and the env var that carries it. */
+export const BASE_URL_ENV = {
+  qwen: 'DASHSCOPE_BASE_URL',
+  glm: 'OPENAI_BASE_URL',
+};
+
+/**
+ * Render the optional base-URL export line. Returns null when the provider does not support a
+ * base URL or none was given (review gap P2-7). Only qwen (DASHSCOPE_BASE_URL) and glm
+ * (OPENAI_BASE_URL, because it speaks OpenAI-compatible) honor it.
+ */
+export function buildBaseUrlLine(provider, baseUrl, shellKind = 'bash') {
+  const check = validateProvider(provider);
+  if (!check.ok) return null;
+  const envVar = BASE_URL_ENV[check.entry.provider];
+  if (!envVar || !baseUrl) return null;
+  const value = escapeForDoubleQuotes(baseUrl);
+  return shellKind === 'fish' ? `set -gx ${envVar} "${value}"` : `export ${envVar}="${value}"`;
+}
+
 function stripSecrets(obj) {
   const clean = { ...obj };
   for (const secret of SECRET_KEYS) delete clean[secret];
@@ -768,11 +788,17 @@ function doWriteConfig(report, { provider, model, dryRun }) {
   return merged;
 }
 
-function doKey(report, { provider, key, writeProfile, dryRun }) {
+export function doKey(report, { provider, key, baseUrl, writeProfile, dryRun }) {
   const check = validateProvider(provider);
   if (!check.ok) throw new Error(check.message);
 
-  const line = buildExportLine(check.entry.provider, key, report.shell.kind);
+  const keyLine = buildExportLine(check.entry.provider, key, report.shell.kind);
+  const baseLine = buildBaseUrlLine(check.entry.provider, baseUrl, report.shell.kind);
+  const lines = [keyLine, baseLine].filter(Boolean);
+
+  if (baseUrl && !baseLine) {
+    process.stdout.write(`Note: a base URL is only honored for qwen/glm; ignored for ${check.entry.provider}.\n`);
+  }
 
   if (report.shell.manual) {
     process.stdout.write(
@@ -783,14 +809,14 @@ function doKey(report, { provider, key, writeProfile, dryRun }) {
   }
 
   if (!writeProfile) {
-    process.stdout.write(`Add this line to ${report.shell.profilePath}, then restart your terminal:\n\n  ${line}\n\n`);
+    process.stdout.write(`Add this${baseLine ? ' (and the base URL line)' : ''} to ${report.shell.profilePath}, then restart your terminal:\n\n  ${lines.join('\n  ')}\n\n`);
     process.stdout.write(`Verify with: echo $${check.entry.envVar}\n`);
     return;
   }
 
   const profilePath = report.shell.profilePath;
   const current = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, 'utf8') : '';
-  const result = appendProfileBlock(current, [line]);
+  const result = appendProfileBlock(current, lines);
 
   if (dryRun) {
     process.stdout.write(`[dry-run] would ${result.changed ? 'update' : 'leave unchanged'} ${profilePath}\n`);
@@ -866,6 +892,8 @@ OPTIONS
   --repair               Back up and remove a broken config.json so the first-run setup
                          screen can re-mint one (use when the file is corrupt or credentials
                          were lost). Safe: a healthy config is left untouched.
+  --base-url <url>       Optional base URL. Only honored for qwen (DASHSCOPE_BASE_URL) and
+                         glm (OPENAI_BASE_URL); written as an extra export line alongside the key.
   --dry-run              Show what would change; write nothing.
   --help                 This text.
 
@@ -885,7 +913,7 @@ function parseArgs(argv) {
       continue;
     }
     const name = token.slice(2);
-    const valueFlags = ['install-dir', 'provider', 'model', 'key'];
+    const valueFlags = ['install-dir', 'provider', 'model', 'key', 'base-url'];
     if (valueFlags.includes(name)) {
       args[name] = argv[i + 1];
       i += 1;
@@ -959,7 +987,7 @@ async function main(argv = process.argv.slice(2)) {
     if (args.key !== '-') {
       process.stderr.write('Warning: the key was passed on the command line and may be stored in your shell history. Use "--key -" to pipe it via stdin instead.\n');
     }
-    doKey(report, { provider: args.provider, key, writeProfile: Boolean(args['write-profile']), dryRun });
+    doKey(report, { provider: args.provider, key, baseUrl: args['base-url'], writeProfile: Boolean(args['write-profile']), dryRun });
   }
 
   return 0;
