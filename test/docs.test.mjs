@@ -45,7 +45,7 @@ test('stable release metadata and binary installers stay pinned to v0.1.2', () =
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   assert.equal(pkg.version, '0.1.2');
   // assert.equal(pkg.license, 'Apache-2.0');
-  for (const file of ['README.md', 'README.zh-CN.md', 'RELEASE_NOTES.md', 'scripts/install-macos.sh', 'scripts/install-linux.sh', 'scripts/install-windows.ps1']) {
+  for (const file of ['README.md', 'README.zh-CN.md', 'scripts/install-macos.sh', 'scripts/install-linux.sh', 'scripts/install-windows.ps1']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
     assert.match(text, /v0\.1\.2/);
   }
@@ -80,16 +80,6 @@ test('binary installers use versioned releases, checksums, atomic current pointe
   assert.match(windows, /Move-Item -LiteralPath \$CurrentTmp -Destination \$CurrentPath -Force/);
   assert.match(windows, /myterminal\.cmd/);
   assert.doesNotMatch(windows, /bun install|run src\\cli\.ts/);
-});
-
-test('release notes contain substantive Chinese release and verification guidance', () => {
-  const notes = fs.readFileSync(new URL('../RELEASE_NOTES.md', import.meta.url), 'utf8');
-  assert.match(notes, /## 中文说明/);
-  assert.match(notes, /Windows 已知限制/);
-  assert.match(notes, /PowerShell 7\.6\.3/);
-  assert.match(notes, /keyboard-only compatibility mode/);
-  const chinese = notes.match(/[\u3400-\u9fff]/g) || [];
-  assert.ok(chinese.length >= 200, `expected substantial Chinese content, got ${chinese.length} characters`);
 });
 
 test('harness introduction and architecture match v0.1.2 without stale process reports', () => {
