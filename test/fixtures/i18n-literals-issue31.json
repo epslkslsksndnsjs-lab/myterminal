@@ -450,6 +450,8 @@
     "${scroll}   PgUp/PgDn 翻页   Esc 返回   q 退出${inputHint}",
     "${scroll}   PgUp/PgDn 翻页   a 调用详情 开/关   q 退出${inputHint}",
     "${scroll}   PgUp/PgDn 翻页   r 刷新   q 退出${inputHint}",
+    "${scroll}   Tab page   q quit${inputHint}",
+    "${scroll}   Tab 翻页   q 退出${inputHint}",
     "${scroll}   c configure   hold v to reveal   k rotate   u update   q quit${inputHint}",
     "${scroll}   c 修改配置   按住 v 显示凭据   k 轮换凭据   u 更新   q 退出${inputHint}",
     "${scroll}   r timeline   q quit${inputHint}",

@@ -90,7 +90,7 @@ describe('#31 i18n seam', () => {
     }
     assert.equal(Object.keys(baseline).length, 55, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 1758, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 1760, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───
