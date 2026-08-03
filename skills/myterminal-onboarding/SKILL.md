@@ -171,11 +171,16 @@ rather than improvising; do not hand-write a config.json.
 **Stage 4 — Subagent config.** You can do this one:
 
 ```bash
-node scripts/onboard.mjs --write-config --provider <p> --model <m>
+node scripts/onboard.mjs --write-config --provider <p> --model <m> [--fallback-model <f>]
 ```
 
 It merges into the existing file, preserves every other setting, backs the file up first, and
 keeps `0600` permissions. If it refuses, see Non-negotiable 3.
+
+`--fallback-model <f>` is optional and writes `subagent.fallbackModel` (types.ts:194, the 529
+overload-degradation model). Same-provider family recommended. Omit to leave it unset. The value
+is passed through verbatim — no provider validation is applied to it (the app doesn't validate it
+either), so a typo there fails later at runtime, not at write time.
 
 **Stage 5 — API key.** The user has to fetch the key from the provider console themselves —
 send them to the URL from the table. Once they paste it to you, prefer stdin so the key never

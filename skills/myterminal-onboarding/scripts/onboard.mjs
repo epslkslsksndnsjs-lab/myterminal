@@ -303,6 +303,12 @@ export function mergeSubagentConfig(existing, patch) {
     timeoutSec: preserved.timeoutSec ?? SUBAGENT_DEFAULTS.timeoutSec,
     maxParallel: preserved.maxParallel ?? SUBAGENT_DEFAULTS.maxParallel,
   };
+  // fallbackModel (types.ts:194, ADR-0007 决策 21) — optional overload-degradation model.
+  // Pass-through verbatim; the repo does not validate it, so we mirror that to avoid false kills.
+  // Only set the key when it has a real value; empty string / undefined both mean "unset" and are
+  // omitted so the JSON stays clean (and existing LOCK-43-5 deepEqual on the base shape holds).
+  const fallbackModel = (patch.fallbackModel ?? preserved.fallbackModel) || undefined;
+  if (fallbackModel) subagent.fallbackModel = fallbackModel;
 
   return { ...cloned, subagent };
 }
@@ -788,7 +794,7 @@ function doInstall(report, { installDir, dryRun, force } = {}) {
   return target;
 }
 
-function doWriteConfig(report, { provider, model, dryRun }) {
+function doWriteConfig(report, { provider, model, fallbackModel, dryRun }) {
   const check = validateProvider(provider);
   if (!check.ok) throw new Error(check.message);
 
@@ -805,7 +811,7 @@ function doWriteConfig(report, { provider, model, dryRun }) {
     throw new Error(`Cannot write ${configPath} (${writability.reason}).\n\n${writability.guidance}`);
   }
 
-  const merged = mergeSubagentConfig(existing, { provider: check.entry.provider, model: modelId });
+  const merged = mergeSubagentConfig(existing, { provider: check.entry.provider, model: modelId, fallbackModel });
   const serialized = `${JSON.stringify(merged, null, 2)}\n`;
 
   if (dryRun) {
@@ -819,7 +825,7 @@ function doWriteConfig(report, { provider, model, dryRun }) {
   fs.copyFileSync(configPath, `${configPath}.myterminal-backup`);
   fs.writeFileSync(configPath, serialized, { encoding: 'utf8', mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
-  process.stdout.write(`Wrote ${configPath} (backup: ${configPath}.myterminal-backup)\n  subagent.provider = ${merged.subagent.provider}\n  subagent.model    = ${merged.subagent.model}\n`);
+  process.stdout.write(`Wrote ${configPath} (backup: ${configPath}.myterminal-backup)\n  subagent.provider     = ${merged.subagent.provider}\n  subagent.model        = ${merged.subagent.model}\n  subagent.fallbackModel = ${merged.subagent.fallbackModel ?? '(unset)'}\n`);
   process.stdout.write('The API key is deliberately NOT stored here — it is read from the environment.\n');
   if (modelCheck.warning) process.stdout.write(`Warning: ${modelCheck.warning}\n`);
   return merged;
@@ -919,7 +925,7 @@ USAGE
   node scripts/onboard.mjs                    Detect and report. Read-only, writes nothing.
   node scripts/onboard.mjs --json             Same report as JSON (for AI agents to parse).
   node scripts/onboard.mjs --install          Clone + bun install + bun run build.
-  node scripts/onboard.mjs --write-config --provider <p> [--model <m>]
+  node scripts/onboard.mjs --write-config --provider <p> [--model <m>] [--fallback-model <f>]
                                               Write subagent settings to config.json.
   node scripts/onboard.mjs --key <API_KEY> --provider <p> [--write-profile]
                                               Print (or append) the export line for the key.
@@ -934,6 +940,8 @@ OPTIONS
   --install-dir <path>   Where to clone MyTerminal. Default: ~/myterminal
   --provider <name>      One of: ${SUPPORTED_PROVIDERS.map((p) => p.provider).join(', ')}
   --model <name>         Model id. Defaults to the provider's recommended model.
+  --fallback-model <m>   Optional overload-degradation model (subagent.fallbackModel, types.ts:194).
+                        Same provider family recommended. Omit to leave it unset.
   --key <value>          API key. Use "--key -" to read it from stdin instead
                          (avoids leaving the key in your shell history).
   --write-profile        Append the export line to your shell profile (idempotent, backed up).
@@ -970,7 +978,7 @@ function parseArgs(argv) {
       continue;
     }
     const name = token.slice(2);
-    const valueFlags = ['install-dir', 'provider', 'model', 'key', 'base-url', 'host', 'port'];
+    const valueFlags = ['install-dir', 'provider', 'model', 'key', 'base-url', 'host', 'port', 'fallback-model'];
     if (valueFlags.includes(name)) {
       args[name] = argv[i + 1];
       i += 1;
@@ -1045,7 +1053,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (args['write-config']) {
-    doWriteConfig(report, { provider: args.provider, model: args.model, dryRun });
+    doWriteConfig(report, { provider: args.provider, model: args.model, fallbackModel: args['fallback-model'], dryRun });
   }
 
   if (args.key) {
@@ -1094,4 +1102,4 @@ if (isInvokedDirectly()) {
   })();
 }
 
-export { detect, main, doHealthCheck };
+export { detect, main, doHealthCheck, doWriteConfig };

@@ -55,6 +55,7 @@ import {
   BASE_URL_ENV,
   doKey,
   mergeSubagentConfig,
+  doWriteConfig,
   appendProfileBlock,
   parseBunVersion,
   satisfiesMinVersion,
@@ -1128,5 +1129,60 @@ describe('[LOCK-43-17] 健康检查 --healthcheck（P2-8）', () => {
     };
     await checkHealth({ fetchImpl: recFetch });
     assert.equal(captured, 'http://127.0.0.1:3210/health');
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-18] fallbackModel 可配置（用户比对挖出的真缺口 #1）
+//   真值：src/types.ts:194 SubagentSettings.fallbackModel?: string（529 过载降级模型，可选）。
+//   技能此前既无 --fallback-model 参数、mergeSubagentConfig 也不能新增该字段。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-18] fallbackModel 可配置（比对缺口 #1）', () => {
+  test('patch.fallbackModel 设值 → subagent.fallbackModel 写入', () => {
+    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini' });
+    assert.equal(out.subagent.fallbackModel, 'gpt-4o-mini');
+  });
+
+  test('patch.fallbackModel 覆盖已有的 fallbackModel', () => {
+    const existing = { subagent: { provider: 'glm', model: 'glm-4', fallbackModel: 'glm-4-flash' } };
+    const out = mergeSubagentConfig(existing, { provider: 'openai', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini' });
+    assert.equal(out.subagent.fallbackModel, 'gpt-4o-mini');
+  });
+
+  test('patch.fallbackModel 为空串 → 视为未设（字段省略，不写空串）', () => {
+    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o', fallbackModel: '' });
+    assert.equal('fallbackModel' in out.subagent, false);
+  });
+
+  test('不传 fallbackModel 且原 config 无 → 字段省略', () => {
+    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o' });
+    assert.equal('fallbackModel' in out.subagent, false);
+  });
+
+  test('不传 fallbackModel 但原 config 有 → 保留（不被清掉）', () => {
+    const existing = { subagent: { provider: 'glm', model: 'glm-4', fallbackModel: 'glm-4-flash' } };
+    const out = mergeSubagentConfig(existing, { provider: 'openai', model: 'gpt-4o' });
+    assert.equal(out.subagent.fallbackModel, 'glm-4-flash');
+  });
+
+  test('doWriteConfig --fallback-model 真正落盘到 config 文件', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr43-fb-'));
+    const cfgPath = path.join(dir, 'config.json');
+    writeFileSync(cfgPath, JSON.stringify(validBaseConfig(), 'utf8'));
+    const report = {
+      shell: { kind: 'bash', profilePath: null, manual: false, manualHint: null },
+      config: { path: cfgPath, exists: true, parseError: null, subagent: null, writability: { ok: true } },
+    };
+    const orig = process.stdout.write;
+    process.stdout.write = () => true;
+    try {
+      doWriteConfig(report, { provider: 'openai', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini', dryRun: false });
+    } finally {
+      process.stdout.write = orig;
+    }
+    const written = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    assert.equal(written.subagent.fallbackModel, 'gpt-4o-mini');
+    rmSync(dir, { recursive: true, force: true });
   });
 });
