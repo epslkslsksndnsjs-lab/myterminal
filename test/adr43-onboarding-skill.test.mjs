@@ -58,6 +58,8 @@ import {
   assessConfigWritability,
   verifyProviderKey,
   VERIFY_ENDPOINTS,
+  FIRST_RUN_FIELDS,
+  REQUIRED_CONFIG_FIELDS,
   PROFILE_MARKER_BEGIN,
   PROFILE_MARKER_END,
 } from '../skills/myterminal-onboarding/scripts/onboard.mjs';
@@ -638,5 +640,30 @@ describe('[LOCK-43-10] provider key 真实验证（P0-1）', () => {
     const { calls, impl } = fakeFetch(200);
     await verifyProviderKey('qwen', 'k', { baseUrl: 'https://private/v1', fetchImpl: impl });
     assert.match(calls[0].url, /^https:\/\/private\/v1\/chat\/completions$/);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-11] 首次运行设置界面引导（P0-2）
+//
+// 为什么这把锁必须存在（用户评审 P0）：
+//   旧 FIRST_RUN_GUIDANCE 只说"run bun run dev"，首次使用者面对空屏不知填啥。
+//   这 8 个字段就是 validateSettings 的必填清单，必须显式列出来且和
+//   REQUIRED_CONFIG_FIELDS 逐字一致——少一个、错一个名字，引导就骗人。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-43-11] 首次运行设置界面引导（P0-2）', () => {
+  test('FIRST_RUN_FIELDS 正好是 8 个，与 REQUIRED_CONFIG_FIELDS 逐字一致', () => {
+    assert.equal(FIRST_RUN_FIELDS.length, 8);
+    const names = FIRST_RUN_FIELDS.map((f) => f.field).sort();
+    const required = [...REQUIRED_CONFIG_FIELDS].sort();
+    assert.deepEqual(names, required, '首跑引导字段必须与 validateSettings 必填清单完全一致');
+  });
+
+  test('每个字段都带人类可读说明（不能只甩个变量名）', () => {
+    for (const f of FIRST_RUN_FIELDS) {
+      assert.equal(typeof f.field, 'string');
+      assert.ok(f.what && f.what.length > 4, `字段 ${f.field} 缺少可读说明`);
+    }
   });
 });

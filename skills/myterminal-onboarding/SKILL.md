@@ -147,9 +147,24 @@ mints the connector credentials. Hand the user:
 cd <install-dir> && bun run dev
 ```
 
-Tell them to complete the setup screen and quit. Then re-run `node scripts/onboard.mjs --json` and
-check that `config.writability.ok` is now true. If it still is not, read the `guidance` field
-aloud rather than improvising.
+The first-run screen asks for **all eight** of these (fill every one — leaving any blank makes
+MyTerminal reject the config on startup):
+
+| Field | What to put |
+| --- | --- |
+| `workspaceDir` | a directory MyTerminal stores projects & state in |
+| `host` | usually `127.0.0.1` |
+| `port` | a free port |
+| `publicBaseUrl` | publicly reachable base URL (connector callbacks use it) |
+| `connectorKey` | **leave to the screen** — it generates a 24+ char secret |
+| `actionsToken` | **leave to the screen** — it generates a 24+ char token |
+| `maxOutputChars` | max characters per command output |
+| `commandTimeoutSec` | command timeout in seconds |
+
+Success looks like: the screen writes `config.json` with `schemaVersion: 1` and all eight fields
+present, then you quit. **Verify before moving on** — re-run `node scripts/onboard.mjs --json` and
+check that `config.writability.ok` is now `true`. If it is not, read the `guidance` field aloud
+rather than improvising; do not hand-write a config.json.
 
 **Stage 4 — Subagent config.** You can do this one:
 

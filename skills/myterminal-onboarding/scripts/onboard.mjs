@@ -264,14 +264,36 @@ export const REQUIRED_CONFIG_FIELDS = [
   'commandTimeoutSec',
 ];
 
+/**
+ * The eight fields MyTerminal's first-run setup screen mints / asks for.
+ * Mirrors REQUIRED_CONFIG_FIELDS (src/config.ts validateSettings). Surfaced verbatim
+ * in FIRST_RUN_GUIDANCE so a first-time user knows what the blank screen expects and
+ * what "done" looks like — the old flow just said "run bun run dev" and left them
+ * staring at an empty prompt (review gap P0-2).
+ */
+export const FIRST_RUN_FIELDS = [
+  { field: 'workspaceDir', what: 'working directory MyTerminal stores projects & state in' },
+  { field: 'host', what: 'address the server binds to (usually 127.0.0.1)' },
+  { field: 'port', what: 'port the server listens on' },
+  { field: 'publicBaseUrl', what: 'publicly reachable base URL (used for connector callbacks)' },
+  { field: 'connectorKey', what: 'connector secret — randomly generated on first run, 24+ chars' },
+  { field: 'actionsToken', what: 'Actions API token — randomly generated on first run, 24+ chars' },
+  { field: 'maxOutputChars', what: 'max characters per command output' },
+  { field: 'commandTimeoutSec', what: 'command timeout in seconds' },
+];
+
 const FIRST_RUN_GUIDANCE =
   'MyTerminal has no valid config yet, and this script must not invent one.\n' +
   'The base config carries randomly generated connector credentials ' +
   '(connectorKey / actionsToken, 24+ chars each) that only MyTerminal itself may mint. ' +
   'Writing a partial file here would make startup throw and lock you out of the setup screen ' +
   '(src/cli.ts refuses to fall back to defaults when the config is invalid, to avoid ' +
-  'silently replacing stable credentials).\n' +
-  'Do this instead:\n' +
+  'silently replacing stable credentials).\n\n' +
+  'First-run setup screen asks for (fill every one):\n' +
+  FIRST_RUN_FIELDS.map((f) => `  - ${f.field}: ${f.what}`).join('\n') + '\n' +
+  '\nSuccess looks like: config.json written with schemaVersion: 1 and all eight fields above ' +
+  'present. Verify with: node scripts/onboard.mjs --json  (look for "config.writability.ok": true).\n\n' +
+  'Do this:\n' +
   '  1. cd <your MyTerminal checkout>\n' +
   '  2. bun run dev            # complete the first-run setup screen once\n' +
   '  3. re-run: node scripts/onboard.mjs --write-config --provider <p> [--model <m>]';
