@@ -1,13 +1,14 @@
 ---
-name: node scripts/onboard.mjsing
+name: myterminal-onboarding
 description: Install MyTerminal on this machine and configure its subagent LLM provider, model and API key, step by step. Run once per machine.
 license: MIT
 disable: false
 ---
 
-> **Invocation:** Run `node scripts/onboard.mjs` from this skill's directory whenever the user asks
-> to install or configure MyTerminal (or its subagent LLM). Do not auto-run it just because
-> MyTerminal was mentioned in passing.
+> **Invocation:** User-invoked only. Do not auto-trigger this skill; run it only when the user
+> explicitly requests it by name (`myterminal-onboarding`), or asks to install or configure
+> MyTerminal (or its subagent LLM). When triggered, run `node scripts/onboard.mjs` from this
+> skill's directory.
 
 # MyTerminal Onboarding
 
