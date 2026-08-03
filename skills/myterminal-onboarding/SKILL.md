@@ -10,6 +10,26 @@ disable: false
 > MyTerminal (or its subagent LLM). When triggered, run `node scripts/onboard.mjs` from this
 > skill's directory.
 
+## Install
+
+This skill is a plain folder — no `npm install`, no build step. Install it by copying the
+folder into your agent's skills directory. The bundled installer does exactly that copy and
+then runs the self-test so you know the copy is healthy:
+
+```bash
+node scripts/install.mjs
+```
+
+- **Idempotent** — re-running just overwrites with the current copy, so run it again after any
+  update to the skill. No duplicates, no stale leftovers.
+- **Where** — copies into `~/.workbuddy/skills/myterminal-onboarding/` (user-level).
+- **Live immediately** — no restart needed once it prints `✓ Installed` and the self-test passes.
+- **Uninstall** — delete `~/.workbuddy/skills/myterminal-onboarding`.
+
+This mirrors the reference skill's model: a skill is a folder the agent loads, not a package
+you register. (The reference uses `npx skills add` to copy it from a registry; this installer
+is the same copy, done locally so the skill need not be published anywhere.)
+
 # MyTerminal Onboarding
 
 Get a user from "nothing installed" to "MyTerminal running with a working subagent LLM":
