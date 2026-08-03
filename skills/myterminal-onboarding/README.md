@@ -1,79 +1,67 @@
 # myterminal-onboarding
 
-An agent skill that installs [MyTerminal](https://github.com/epslkslsksndnsjs-lab/myterminal) on a
-machine and configures its subagent LLM — provider, model and API key — one step at a time.
+一个**自包含的安装 / 验证工具**（agent 技能）：把 MyTerminal 装到机器上，并一步步配置它的 subagent 大模型——provider、model、API key。
 
-Give this skill to your coding agent (Claude Code, WorkBuddy, Cursor, Codex, ...) and it will do
-everything a script is allowed to do, and hand you the exact command for the few things it is not.
+它本身是一套**测试 / 验证工具**，独立于 MyTerminal 系统代码（`src/` 等），可以单独删除而不影响 MyTerminal 本体。删除整个技能目录不会逼你改动 `src/` 任何文件。
 
-## Install
+## 用法
 
-This skill is just a folder. Copy it into your agent's skills directory:
+**1. 安装技能**（就是个文件夹，拷进 agent 的 skills 目录即可，或用一条命令安装器）：
 
 ```bash
-cp -R myterminal-onboarding ~/.workbuddy/skills/myterminal-onboarding
+node skills/myterminal-onboarding/scripts/install.mjs
+# 或手动：
+cp -R skills/myterminal-onboarding ~/.workbuddy/skills/myterminal-onboarding
 ```
 
-(Replace `~/.workbuddy/skills` with `~/.claude/skills`, `~/.codex/skills`, or a project's
-`.cursor/skills` as needed.) No installer, no global command — the agent runs
-`node scripts/onboard.mjs` directly from the skill folder.
-
-## Use
-
-Ask your agent for MyTerminal onboarding. It runs the detector and prints a report — **writes
-nothing** unless you ask it to:
+**2. 跑 onboarding，或直接自检这份技能副本是否完整：**
 
 ```bash
-node scripts/onboard.mjs --json
+node scripts/onboard.mjs --json          # 只读检测报告，什么都不写
+node scripts/onboard.mjs --self-test     # 自检：确认这份技能副本的所有导出/flag 都在
 ```
 
-## What it automates, and what it cannot
+其它用法（写配置 / 装 key / 健康检查 / 修损坏 config 等）见 `SKILL.md`。
 
-| Step | Who does it |
+## 它能自动做的 vs 你要做的
+
+| 步骤 | 谁做 |
 | --- | --- |
-| Detect OS, shell, bun, existing install, existing config | script |
-| Install bun | **you** — one command, printed for you |
-| Clone + `bun install` + `bun run build` | script (`--install`) |
-| First-run setup screen | **you** — it is interactive, and it mints the connector credentials |
-| Write `subagent` provider/model into `config.json` | script (`--write-config`) |
-| Fetch an API key from the provider console | **you** |
-| Put the key in your shell profile | script (`--key - --write-profile`) |
-| Restart the terminal | **you** |
+| 检测 OS / shell / bun / 已有安装 / 已有配置 | 脚本 |
+| 安装 bun | **你**（一行命令，脚本会打印给你） |
+| clone + `bun install` + `bun run build` | 脚本（`--install`） |
+| 首次运行设置屏 | **你**（交互式，且它生成 connector 凭证） |
+| 把 subagent provider/model 写入 `config.json` | 脚本（`--write-config`） |
+| 从 provider 控制台取 API key | **你** |
+| 把 key 写进 shell profile | 脚本（`--key - --write-profile`） |
+| 重启终端 | **你** |
 
-## Honest limits
+## 诚实的边界
 
-- **Five providers, no more:** `openai`, `anthropic`, `deepseek`, `glm`, `qwen`. The list is
-  compiled into `createAdapter`. Gemini, Mistral, Ollama, OpenRouter, llama.cpp and every other
-  "OpenAI-compatible" endpoint need a code change — a new adapter subclass plus a factory case.
-  There is no `baseUrl` setting that would let you point an existing provider elsewhere.
-- **bun >= 1.3.0 is mandatory.** MyTerminal builds with bun; there is no npm fallback.
-- **The script never invents a `config.json`.** The base config carries randomly generated
-  connector credentials. Writing a partial file would make MyTerminal throw on startup *and* lock
-  you out of the setup screen, so the script refuses and tells you to run `bun run dev` once.
-- **The API key never lands in `config.json`.** Environment variables only. Key-like fields are
-  stripped during the merge.
-- **Native Windows gets manual steps.** The script prints `setx` instructions rather than editing
-  your environment. WSL is the smoother path.
+- **只支持 5 个 provider**：`openai` / `anthropic` / `deepseek` / `glm` / `qwen`（`createAdapter` 硬编码的闭列表，非 any-model）。
+- **bun >= 1.3.0 是硬前置**，无 npm 兜底。
+- **脚本绝不伪造 `config.json`**：基础 config 含随机生成的 connector 凭证，写残缺文件会让 MyTerminal 启动即崩，所以脚本拒绝并让你先跑一次 `bun run dev`。
+- **API key 永不进 `config.json`**，只用环境变量。类 key 字段在 merge 时被剥离。
+- **原生 Windows 走手动步骤**（脚本打印 `setx`，WSL 更顺）。
 
-## Safety
+## 安全
 
-- No flags = read-only. `--dry-run` on any write command shows the result without touching disk.
-- Config and profile writes are backed up to `<file>.myterminal-backup` first.
-- Profile edits live in a marked block and are idempotent — re-running with the same key is a
-  no-op, a new key replaces the old line in place instead of stacking a second one.
-- `config.json` keeps `0600` permissions, matching what the app itself writes.
-- Prefer `--key -` (stdin) over `--key <value>` so the key never enters shell history.
+- 不加任何 flag = 只读。`--dry-run` 在任何写命令上只显示结果不落盘。
+- config / profile 写入前先备份为 `<file>.myterminal-backup`。
+- profile 编辑在标记块内、幂等——同 key 重跑是 no-op，新 key 原地替换不堆叠。
+- `config.json` 保持 `0600` 权限。
+- 优先 `--key -`（stdin）而非 `--key <value>`，避免 key 进 shell 历史。
 
-## Layout
+## 结构
 
 ```
 myterminal-onboarding/
-  SKILL.md                              the agent-facing instructions
-  scripts/onboard.mjs                   the onboarding script (run with node)
-  templates/subagent-config.template.json   shape of the subagent block (a fragment, not a config)
+  SKILL.md                                  agent 面向的说明
+  scripts/onboard.mjs                       生产脚本（跑安装/配置逻辑，不含测试代码）
+  scripts/self-test.mjs                     ⚠ 唯一的测试代码：--self-test 自检，独立文件
+  scripts/check-provider-sync.mjs           CI 护栏：比对主仓 provider 列表
+  scripts/install.mjs                       一条命令安装器
+  templates/subagent-config.template.json   subagent 块形状（片段，非完整 config）
 ```
 
-Behaviour is locked by `test/adr43-onboarding-skill.test.mjs` in the MyTerminal repo (51 tests
-covering the provider list, config-path resolution, shell detection, config merge, profile
-idempotency and the symlink entrypoint). Design rationale lives in the maintainer's ADR-0043,
-which is git-ignored and may be absent from a fresh clone.
+> 唯一与系统代码的单向耦合：`check-provider-sync.mjs` 会读 `src/types.ts`（技能 → 系统，CI 护栏用）。`onboard.mjs` 与 `self-test.mjs` 不依赖任何 `src/` 代码。
