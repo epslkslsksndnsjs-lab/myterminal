@@ -69,6 +69,8 @@ import {
   shouldRebuild,
   repairConfig,
   detect,
+  checkHealth,
+  doHealthCheck,
   REQUIRED_CONFIG_FIELDS,
   PROFILE_MARKER_BEGIN,
   PROFILE_MARKER_END,
@@ -1043,5 +1045,88 @@ describe('[LOCK-43-16] qwen/glm 可选 base URL（P2-7）', () => {
     const out = chunks.join('');
     assert.match(out, /DASHSCOPE_API_KEY/);
     assert.match(out, /DASHSCOPE_BASE_URL/);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-43-17] 健康检查 --healthcheck（P2-8）
+//   真值：src/server.ts:549 健康端点返回 200 + {product:'myterminal'}；
+//        src/config.ts:170 握手同样认 product==='myterminal'；默认 host=127.0.0.1 port=3210。
+//   纯函数 checkHealth 不碰网络/文件系统，fetchImpl 注入 mock。
+// ═══════════════════════════════════════════════
+
+function mockHealthFetch(body, { status = 200, throwErr = null } = {}) {
+  return async (_url, _opts) => {
+    if (throwErr) throw throwErr;
+    return {
+      status,
+      ok: status >= 200 && status < 300,
+      json: async () => body,
+    };
+  };
+}
+
+describe('[LOCK-43-17] 健康检查 --healthcheck（P2-8）', () => {
+  test('200 + product=myterminal → ok:true / reachable:true', async () => {
+    const r = await checkHealth({ fetchImpl: mockHealthFetch({ product: 'myterminal', ok: true }) });
+    assert.equal(r.ok, true);
+    assert.equal(r.reachable, true);
+    assert.equal(r.status, 200);
+    assert.equal(r.product, 'myterminal');
+  });
+
+  test('503 + product=myterminal → ok:false 但 reachable:true（运行中但降级）', async () => {
+    const r = await checkHealth({ fetchImpl: mockHealthFetch({ product: 'myterminal', ok: false }, { status: 503 }) });
+    assert.equal(r.ok, false);
+    assert.equal(r.reachable, true);
+    assert.equal(r.status, 503);
+  });
+
+  test('200 + product 不是 myterminal → ok:false / reachable:false（不是本服务）', async () => {
+    const r = await checkHealth({ fetchImpl: mockHealthFetch({ product: 'some-other-app' }) });
+    assert.equal(r.ok, false);
+    assert.equal(r.reachable, false);
+    assert.equal(r.product, 'some-other-app');
+  });
+
+  test('非 JSON 响应（json() 抛错）→ reachable:false / product:null / ok:false', async () => {
+    const brokenFetch = async () => ({
+      status: 200,
+      ok: true,
+      json: async () => { throw new Error('not json'); },
+    });
+    const r = await checkHealth({ fetchImpl: brokenFetch });
+    assert.equal(r.ok, false);
+    assert.equal(r.reachable, false);
+    assert.equal(r.product, null);
+  });
+
+  test('网络错误（fetchImpl 抛错）→ ok:false / reachable:false / status:0', async () => {
+    const r = await checkHealth({ fetchImpl: mockHealthFetch(null, { throwErr: new Error('ECONNREFUSED') }) });
+    assert.equal(r.ok, false);
+    assert.equal(r.reachable, false);
+    assert.equal(r.status, 0);
+    assert.match(r.message, /Cannot reach/);
+  });
+
+  test('自定义 host/port 拼出正确 URL（http://<host>:<port>/health）', async () => {
+    let captured = null;
+    const recFetch = async (url) => {
+      captured = url;
+      return { status: 200, ok: true, json: async () => ({ product: 'myterminal' }) };
+    };
+    const r = await checkHealth({ host: 'example.local', port: 9999, fetchImpl: recFetch });
+    assert.equal(captured, 'http://example.local:9999/health');
+    assert.equal(r.ok, true);
+  });
+
+  test('不传参数 → 默认 http://127.0.0.1:3210/health', async () => {
+    let captured = null;
+    const recFetch = async (url) => {
+      captured = url;
+      return { status: 200, ok: true, json: async () => ({ product: 'myterminal' }) };
+    };
+    await checkHealth({ fetchImpl: recFetch });
+    assert.equal(captured, 'http://127.0.0.1:3210/health');
   });
 });

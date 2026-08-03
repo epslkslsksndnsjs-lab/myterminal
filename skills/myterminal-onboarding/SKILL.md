@@ -203,11 +203,18 @@ Tell them to restart the terminal (or `source` the profile), then verify:
 ```bash
 echo $<ENV_VAR>          # should print the key
 cd <install-dir> && bun start
+# confirm the service is actually up (not just "started without crashing"):
+node scripts/onboard.mjs --healthcheck     # expect: ✓ PASS  MyTerminal is healthy at http://127.0.0.1:3210/health
 ```
+
+The `--healthcheck` makes a real `GET /health` call and requires `200 + product:'myterminal'`
+(matches the app's own health contract in `src/server.ts:549`). If it reports `✗ FAIL`, the service
+isn't listening — usually a wrong port or a crashed `bun start`; re-check before telling them it works.
+Custom host/port: `node scripts/onboard.mjs --healthcheck --host <h> --port <p>`.
 
 Mention that they can change provider or model later by re-running
 `node scripts/onboard.mjs --write-config`, and that the key lives in their shell profile inside the
-`# >>> node scripts/onboard.mjsing >>>` block if they ever need to rotate it.
+`# >>> myterminal-onboarding >>>` block if they ever need to rotate it.
 
 ## Reference
 

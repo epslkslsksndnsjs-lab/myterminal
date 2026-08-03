@@ -545,6 +545,43 @@ export async function verifyProviderKey(provider, key, { model, baseUrl, fetchIm
   }
 }
 
+/**
+ * Confirm a running MyTerminal instance answers its health endpoint.
+ * Contract mirrors the app itself: a healthy server returns HTTP 200 with a JSON body
+ * whose `product` field equals 'myterminal' (see src/server.ts:549 and the handshake in
+ * src/config.ts:170). Returns { ok, reachable, status, product, message } — never throws.
+ *
+ * `ok`   = fully healthy (200 + product marker)
+ * `reachable` = the process is listening and identifies as myterminal (any status)
+ * This split lets the CLI tell "service not running" apart from "running but degraded".
+ *
+ * `fetchImpl` must match the global fetch signature: (url, opts) => Promise<Response>.
+ */
+export async function checkHealth({ host = '127.0.0.1', port = 3210, fetchImpl = fetch, timeoutMs = 2000 } = {}) {
+  const url = `http://${host}:${port}/health`;
+  let res;
+  try {
+    res = await fetchImpl(url, { method: 'GET', signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    return { ok: false, reachable: false, status: 0, product: null, message: `Cannot reach ${url}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  let product = null;
+  try {
+    const body = await res.json();
+    product = body && body.product ? String(body.product) : null;
+  } catch {
+    product = null;
+  }
+  const reachable = product === 'myterminal';
+  const healthy = res.status === 200 && reachable;
+  const message = healthy
+    ? `MyTerminal is healthy at ${url} (product=${product}).`
+    : reachable
+      ? `MyTerminal is reachable at ${url} but degraded (HTTP ${res.status}) — give it a moment, then re-run --healthcheck.`
+      : `No MyTerminal instance at ${url} (HTTP ${res.status}${product ? `, product=${product}` : ', no product marker'}). Is the service running? Try 'bun start'.`;
+  return { ok: healthy, reachable, status: res.status, product, message };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Side effects (CLI only)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -863,6 +900,19 @@ async function doVerify(report, { provider, model, key, dryRun } = {}) {
   return result;
 }
 
+async function doHealthCheck(report, { host, port, fetchImpl, dryRun } = {}) {
+  const targetHost = host || '127.0.0.1';
+  const targetPort = port || 3210;
+  if (dryRun) {
+    process.stdout.write(`[dry-run] would check http://${targetHost}:${targetPort}/health\n`);
+    return { ok: null, reachable: null, status: 0, product: null, message: 'dry-run', dryRun: true };
+  }
+  process.stdout.write(`Checking MyTerminal health at http://${targetHost}:${targetPort}/health...\n`);
+  const result = await checkHealth({ host: targetHost, port: targetPort, fetchImpl });
+  process.stdout.write(`${result.ok ? '✓ PASS' : (result.reachable ? '⚠ DEGRADED' : '✗ FAIL')} ${result.message}\n`);
+  return result;
+}
+
 const HELP = `onboard.mjs — install MyTerminal and configure its subagent LLM
 
 USAGE
@@ -876,6 +926,9 @@ USAGE
   node scripts/onboard.mjs --verify [--provider <p>] [--model <m>] [--key <k>]
                                               Prove the key works: real 1-token API call to the provider.
   node scripts/onboard.mjs --test-call        Alias for --verify.
+  node scripts/onboard.mjs --healthcheck [--host <h>] [--port <p>]
+                                              Confirm the running service answers GET /health
+                                              (HTTP 200 + product:'myterminal'). Use after 'bun start'.
 
 OPTIONS
   --install-dir <path>   Where to clone MyTerminal. Default: ~/myterminal
@@ -887,6 +940,10 @@ OPTIONS
   --verify               Prove the key works: make a real 1-token API call to the provider.
                          Reads the key from the provider env var (or --key). Network call; opt-in.
   --test-call            Alias for --verify.
+  --healthcheck          Probe the local service: GET http://<host>:<port>/health and expect
+                         200 + product:'myterminal'. Defaults host=127.0.0.1 port=3210.
+  --host <host>          Health-check host (with --healthcheck). Default 127.0.0.1.
+  --port <port>          Health-check port (with --healthcheck). Default 3210.
   --force                Force a rebuild even if dist/cli.js already exists (use after a
                          half-broken build — e.g. node_modules was wiped).
   --repair               Back up and remove a broken config.json so the first-run setup
@@ -913,7 +970,7 @@ function parseArgs(argv) {
       continue;
     }
     const name = token.slice(2);
-    const valueFlags = ['install-dir', 'provider', 'model', 'key', 'base-url'];
+    const valueFlags = ['install-dir', 'provider', 'model', 'key', 'base-url', 'host', 'port'];
     if (valueFlags.includes(name)) {
       args[name] = argv[i + 1];
       i += 1;
@@ -953,6 +1010,16 @@ async function main(argv = process.argv.slice(2)) {
     const result = repairConfig(report.config.path, { dryRun });
     process.stdout.write(`${result.ok ? '✓' : '•'} ${result.message}\n`);
     return 0;
+  }
+
+  if (args.healthcheck) {
+    const portArg = args.port ? Number(args.port) : undefined;
+    if (args.port && Number.isNaN(portArg)) {
+      throw new Error(`Invalid --port value: ${args.port}. Expected a number.`);
+    }
+    const result = await doHealthCheck(report, { host: args.host, port: portArg, dryRun });
+    if (dryRun) return 0;
+    return result.ok === false ? 1 : 0;
   }
 
   if (args.verify || args['test-call']) {
@@ -1027,4 +1094,4 @@ if (isInvokedDirectly()) {
   })();
 }
 
-export { detect, main };
+export { detect, main, doHealthCheck };
