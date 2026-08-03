@@ -186,7 +186,7 @@ bun run start -- --headless
 
 ## Updates
 
-MyTerminal checks the latest GitHub release when the TUI starts. The Settings tab shows the installed and latest versions; press `U` to install an available release. The updater downloads the precompiled executable and SHA-256 file for the current platform, installs it into a new version directory, and atomically switches the `current` pointer. The old version remains available for rollback. Git source checkouts are never overwritten by one-click update. See the [v0.1.2 release notes](RELEASE_NOTES.md) for migration and future-update details.
+MyTerminal checks the latest GitHub release when the TUI starts. The Settings tab shows the installed and latest versions; press `U` to install an available release. The updater downloads the precompiled executable and SHA-256 file for the current platform, installs it into a new version directory, and atomically switches the `current` pointer. The old version remains available for rollback. Git source checkouts are never overwritten by one-click update. See the [v0.1.2 release notes](https://github.com/epslkslsksndnsjs-lab/myterminal/releases) for migration and future-update details.
 
 Workspace state migration is additive and idempotent: existing target state, legacy global state, `state.migrated`, and the workspace `.myterminal` directory are merged by stable IDs, while session history files are deduplicated and retained.
 ## Shared ports and workspace routing

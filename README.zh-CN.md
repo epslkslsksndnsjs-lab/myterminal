@@ -186,7 +186,7 @@ bun run start -- --headless
 
 ## 更新
 
-MyTerminal 会在 TUI 启动时检查 GitHub 最新发行版。设置页会显示当前版本和最新版本；有新版本时按 `U` 可一键安装。更新器下载当前平台的预编译二进制与 SHA-256，安装到新的版本目录，再原子切换 `current` 指针；失败时保留原版本并自动回滚。Git 源码工作区不会被一键更新覆盖。完整迁移和后续更新说明见 [v0.1.2 发布说明](RELEASE_NOTES.md)。
+MyTerminal 会在 TUI 启动时检查 GitHub 最新发行版。设置页会显示当前版本和最新版本；有新版本时按 `U` 可一键安装。更新器下载当前平台的预编译二进制与 SHA-256，安装到新的版本目录，再原子切换 `current` 指针；失败时保留原版本并自动回滚。Git 源码工作区不会被一键更新覆盖。完整迁移和后续更新说明见 [v0.1.2 发布说明](https://github.com/epslkslsksndnsjs-lab/myterminal/releases)。
 
 工作区状态迁移采用可重复执行的增量合并：现有目标状态、旧全局状态、`state.migrated` 和工作区 `.myterminal` 会按稳定 ID 合并，session 历史文件会去重并完整保留。
 ## 共享端口与工作区路由
