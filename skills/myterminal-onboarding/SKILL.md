@@ -255,5 +255,5 @@ If the user has no checkout yet, the online copy of the setup document is at
 <https://github.com/epslkslsksndnsjs-lab/myterminal/blob/main/docs/SUBAGENT_SETUP.md>.
 
 The design rationale for this skill lives in the maintainer's ADR-0043
-(`docs/adr/0043-node scripts/onboard.mjsing-skill.md`). That directory is git-ignored, so it may be
+(`docs/adr/0043-myterminal-onboarding-skill.md`). That directory is git-ignored, so it may be
 absent from a fresh clone — do not treat a missing file there as an error.
