@@ -5,7 +5,7 @@
 // 变异体清单：
 //   M1 mode 缺省值被改成 'fork'        → 用例 02 杀
 //   M2 maxTurns 上限 200 改成 201      → 用例 07 杀
-//   M3 provider 白名单校验被删         → 用例 06 杀
+//   M3 provider 白名单校验被删         → 用例 06 杀（ADR-0045 D10 已退役：删 provider 覆盖是预期行为，非回归）
 //   M4 数字字符串 coerce 被删          → 用例 05 杀（'30' 不再是 number 30）
 //   M5 全局覆盖项目级优先级反转        → 用例 12 杀
 //   M6 readOnly 'true' 解析反转        → 用例 05 杀
@@ -91,12 +91,10 @@ test('03: 非法 mode 值 → loadSkill 返回 null', () => {
 // 用例 04-09：forkOptions 解析与校验（决策 6/11）
 // ══════════════════════════════════════════════════════
 
-test('04: forkOptions 全字段正确解析', () => {
+test('04: forkOptions 工程参数正确解析（provider/model 不再被解析）', () => {
   const { root, configDir, workspaceDir } = tempDirs();
   const fm = `mode: fork
 forkOptions:
-  provider: deepseek
-  model: deepseek-chat
   maxTurns: 30
   timeoutSec: 600
   readOnly: true
@@ -109,8 +107,6 @@ forkOptions:
   assert.ok(record);
   assert.equal(record.mode, 'fork');
   assert.deepEqual(record.forkOptions, {
-    provider: 'deepseek',
-    model: 'deepseek-chat',
     maxTurns: 30,
     timeoutSec: 600,
     readOnly: true,
@@ -140,43 +136,25 @@ forkOptions:
   cleanup(root);
 });
 
-test('06: forkOptions.provider 非法 → null（杀 M3）', () => {
+test('06: forkOptions 含 provider/model → 静默忽略，技能照常加载，工程参数仍生效（ADR-0045 D10）', () => {
   const { root, configDir, workspaceDir } = tempDirs();
   const fm = `mode: fork
 forkOptions:
-  provider: moonshot
+  provider: deepseek
+  model: deepseek-chat
+  maxTurns: 30
+  readOnly: true
 `;
-  writeProjectSkill(workspaceDir, 'bad-provider', VALID_HEADER('bad-provider', fm) + '\nWork.\n');
-  assert.equal(loadSkill(configDir, workspaceDir, 'bad-provider'), null);
-  cleanup(root);
-});
-
-test('06b: forkOptions.provider qwen 合法 → 正常解析（#61 红灯）', () => {
-  const { root, configDir, workspaceDir } = tempDirs();
-  const fm = `mode: fork
-forkOptions:
-  provider: qwen
-`;
-  writeProjectSkill(workspaceDir, 'qwen-fork', VALID_HEADER('qwen-fork', fm) + '\nWork.\n');
-  const record = loadSkill(configDir, workspaceDir, 'qwen-fork');
-  assert.ok(record, 'provider: qwen must be accepted by the skills fork path');
-  assert.equal(record.forkOptions.provider, 'qwen');
-  cleanup(root);
-});
-
-test('06c: FORK_PROVIDERS 派生自 types.ts 单源——联合类型全员被 fork 路径接受（#61 防漂移）', async () => {
-  // G6：期望值来自独立真相源 types.ts（SUBAGENT_PROVIDERS），而非 skills.ts 自身
-  const { SUBAGENT_PROVIDERS } = await import('../dist/types.js');
-  assert.ok(Array.isArray(SUBAGENT_PROVIDERS) && SUBAGENT_PROVIDERS.length >= 5, 'types.ts 必须导出运行时单源 SUBAGENT_PROVIDERS');
-  const { root, configDir, workspaceDir } = tempDirs();
-  for (const provider of SUBAGENT_PROVIDERS) {
-    const name = `sp-${provider}`;
-    const fm = `mode: fork\nforkOptions:\n  provider: ${provider}\n`;
-    writeProjectSkill(workspaceDir, name, VALID_HEADER(name, fm) + '\nWork.\n');
-    const record = loadSkill(configDir, workspaceDir, name);
-    assert.ok(record, `provider=${provider} 必须被 fork 路径接受（新增 provider 只改 types.ts 一处）`);
-    assert.equal(record.forkOptions.provider, provider);
-  }
+  writeProjectSkill(workspaceDir, 'ignored-override', VALID_HEADER('ignored-override', fm) + '\nWork.\n');
+  const record = loadSkill(configDir, workspaceDir, 'ignored-override');
+  assert.ok(record, '含 provider/model 的 SKILL.md 必须照常加载（不告警、不报错、不拒载）');
+  assert.equal(record.mode, 'fork');
+  // 白名单解析器天然丢弃未知 key——provider/model 不进入 forkOptions
+  assert.equal(record.forkOptions.provider, undefined);
+  assert.equal(record.forkOptions.model, undefined);
+  // 工程覆盖仍生效
+  assert.equal(record.forkOptions.maxTurns, 30);
+  assert.equal(record.forkOptions.readOnly, true);
   cleanup(root);
 });
 

@@ -17,7 +17,7 @@ import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
 import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
 import { ResiliencePolicy, MAX_SERVER_RETRIES } from './resilience-policy.js';
 import type { NormalizedMessage, TokenUsage } from './token-counter.js';
-import { estimateMessageTokens, getAutoCompactThreshold, getModelContextWindow } from './token-counter.js';
+import { estimateMessageTokens } from './token-counter.js';
 import { CostTracker } from './cost-tracker.js';
 import { getSubagent, updateSubagentStatus, updateSubagentCost, createSubagent, countRunning } from './store.js';
 import { clearFileState } from './file-state.js';
@@ -393,7 +393,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
       messages = microCompact(messages);
 
       // ── compact 第 2 层：autocompact（估算超阈值）──
-      const threshold = getAutoCompactThreshold(currentModel);
+      // ADR-0045 D5：阈值由 settings 直供（默认 80000），不再按模型名查表
+      const threshold = settings.compactThreshold ?? 80_000;
       if (estimateMessageTokens(messages) > threshold) {
         try {
           messages = await autoCompact(messages, adapter, currentModel, (e) => emit(e));
@@ -424,7 +425,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             system,
             messages,
             tools: toolSchemas,
-            maxTokens: getModelContextWindow(currentModel).maxOutput,
+            // ADR-0045 D5：maxTokens 由 settings 直供（默认 32000），不再按模型名查表
+            maxTokens: settings.maxOutput ?? 32_000,
           },
           signal,
           onChunk: (chunk: StreamChunk) => {

@@ -11,3 +11,8 @@ coverage/
 AGENT.md
 deliverables/
 docs/adr/
+
+# Local-only / AI-internal scratch — never commit or push
+.scratch/
+tool-returns/
+_release-assets/

@@ -1051,19 +1051,6 @@
           },
           "maxItems": 20
         },
-        "provider": {
-          "type": "string",
-          "enum": [
-            "openai",
-            "anthropic",
-            "deepseek",
-            "glm",
-            "qwen"
-          ]
-        },
-        "model": {
-          "type": "string"
-        },
         "maxTurns": {
           "type": "integer",
           "minimum": 1,

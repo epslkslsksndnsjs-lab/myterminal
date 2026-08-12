@@ -1,8 +1,7 @@
-// M6 决策 29：Token 计数与 Context Window 检测
-// 简单估算——不调 API，零成本；估算用于"预防"，精确值用于"校准"
+// M6 决策 29：Token 估算（零成本、用于"预防"；精确值由 LLM 回传 usage 校准）
+// 上下文窗口 / 压缩阈值不再按模型名查表——改由 SubagentSettings 直供（ADR-0045 D5）。
 
 import type { JsonObject } from '../types.js';
-import { MODELS } from '../models/registry.js';
 
 // ── 共享消息类型（llm-adapter 与 M7 共用）──
 
@@ -54,34 +53,3 @@ export function estimateMessageTokens(messages: NormalizedMessage[]): number {
   return total;
 }
 
-// ── Provider 上下文窗口表（决策 29；G9 ADR-0031 单一来源为 MODELS）──
-
-/**
- * 获取模型上下文窗口（决策 29）
- * 策略：精确匹配 → 前缀匹配（支持 gpt-4o-2024-08-06 等带日期后缀） → 未知默认 64K
- */
-export function getModelContextWindow(model: string): { window: number; maxOutput: number } {
-  // 精确匹配
-  const exact = MODELS[model];
-  if (exact) return exact.contextWindow;
-
-  // 前缀匹配（支持 gpt-4o-2024-08-06 等变体）
-  const knownModels = Object.keys(MODELS);
-  const prefix = knownModels.find(k => model.startsWith(k));
-  if (prefix) return MODELS[prefix].contextWindow;
-
-  // 未知模型——保守默认 64K
-  console.warn(`Unknown model "${model}", defaulting to 64K context window`);
-  return { window: 64_000, maxOutput: 8_192 };
-}
-
-/**
- * autocompact 触发阈值（决策 29）
- * effectiveWindow = contextWindow - min(maxOutput, 20_000)
- * threshold = effectiveWindow - 13_000（13K 缓冲留给 compact API 调用 + 新消息）
- */
-export function getAutoCompactThreshold(model: string): number {
-  const { window, maxOutput } = getModelContextWindow(model);
-  const effectiveWindow = window - Math.min(maxOutput, 20_000);
-  return effectiveWindow - 13_000;
-}

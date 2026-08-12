@@ -1,7 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { SUBAGENT_PROVIDERS } from './types.js';
-import type { SubagentProvider } from './types.js';
 
 const SKILL_FILE = 'SKILL.md';
 const MAX_SKILL_BYTES = 100_000; // 100KB
@@ -12,8 +10,6 @@ const DESCRIPTION_MAX = 800;
 const WHEN_TO_USE_MAX = 2000;
 
 const SKILL_MODES = ['inline', 'fork'] as const;
-// ADR-0031（#61）：派生自 types.ts 单源 SUBAGENT_PROVIDERS，禁止在此手抄 provider 列表
-const FORK_PROVIDERS = SUBAGENT_PROVIDERS;
 const MAX_TURNS_MIN = 1;
 const MAX_TURNS_MAX = 200;
 const TIMEOUT_SEC_MIN = 30;
@@ -26,8 +22,6 @@ export type SkillForkOptions = {
   deliverables?: string[];
   acceptanceCriteria?: string[];
   constraints?: string[];
-  provider?: SubagentProvider;
-  model?: string;
   maxTurns?: number;
   timeoutSec?: number;
   readOnly?: boolean;
@@ -110,7 +104,7 @@ function parseFrontmatter(markdown: string): ParsedMarkdown {
     const isIndented = /^\s+\S/.test(line);
 
     if (isIndented && nestedKey !== null && nested !== null) {
-      // 嵌套字段（forkOptions 下的 provider/maxTurns/...）
+      // 嵌套字段（forkOptions 下的 maxTurns/timeoutSec/...）
       nested[key] = parseValue(value);
       continue;
     }
@@ -182,22 +176,6 @@ function validateSkillManifest(frontmatter: Record<string, unknown>, sourcePath:
         }
         parsed[key] = raw[key] as string[];
       }
-    }
-
-    if (raw.provider !== undefined) {
-      if (typeof raw.provider !== 'string' || !(FORK_PROVIDERS as readonly string[]).includes(raw.provider)) {
-        console.warn(`[skills] "forkOptions.provider" must be one of ${FORK_PROVIDERS.join('/')} in ${sourcePath}`);
-        return null;
-      }
-      parsed.provider = raw.provider as SkillForkOptions['provider'];
-    }
-
-    if (raw.model !== undefined) {
-      if (typeof raw.model !== 'string' || !raw.model.trim()) {
-        console.warn(`[skills] "forkOptions.model" must be a non-empty string in ${sourcePath}`);
-        return null;
-      }
-      parsed.model = raw.model;
     }
 
     for (const key of ['maxTurns', 'timeoutSec'] as const) {

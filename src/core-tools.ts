@@ -599,8 +599,6 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
         deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
         acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
         constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
-        provider: asOptionalString(input.provider) as 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'qwen' | undefined,
-        model: asOptionalString(input.model),
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
         readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,
