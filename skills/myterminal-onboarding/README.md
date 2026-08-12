@@ -1,6 +1,6 @@
 # myterminal-onboarding
 
-一个**自包含的安装 / 验证工具**（agent 技能）：把 MyTerminal 装到机器上，并一步步配置它的 subagent 大模型——provider、model、API key。
+一个**自包含的安装 / 验证工具**（agent 技能）：把 MyTerminal 装到机器上，并一步步配置它的 subagent 大模型——endpoint（base URL）、model、API key。
 
 它本身是一套**测试 / 验证工具**，独立于 MyTerminal 系统代码（`src/` 等），可以单独删除而不影响 MyTerminal 本体。删除整个技能目录不会逼你改动 `src/` 任何文件。
 
@@ -31,14 +31,14 @@ node scripts/onboard.mjs --self-test     # 自检：确认这份技能副本的�
 | 安装 bun | **你**（一行命令，脚本会打印给你） |
 | clone + `bun install` + `bun run build` | 脚本（`--install`） |
 | 首次运行设置屏 | **你**（交互式，且它生成 connector 凭证） |
-| 把 subagent provider/model 写入 `config.json` | 脚本（`--write-config`） |
-| 从 provider 控制台取 API key | **你** |
+| 把 subagent endpoint/model/key 写入 `config.json` | 脚本（`--write-config`） |
+| 从模型服务商控制台取 API key | **你** |
 | 把 key 写进 shell profile | 脚本（`--key - --write-profile`） |
 | 重启终端 | **你** |
 
 ## 诚实的边界
 
-- **只支持 5 个 provider**：`openai` / `anthropic` / `deepseek` / `glm` / `qwen`（`createAdapter` 硬编码的闭列表，非 any-model）。
+- **单一 Anthropic 兼容协议，无 provider 选择**：填 endpoint（base URL）+ model + key 三项即可（`createAdapter` 的 provider 闭列表已由 ADR-0045 删除，非 any-model）。
 - **bun >= 1.3.0 是硬前置**，无 npm 兜底。
 - **脚本绝不伪造 `config.json`**：基础 config 含随机生成的 connector 凭证，写残缺文件会让 MyTerminal 启动即崩，所以脚本拒绝并让你先跑一次 `bun run dev`。
 - **API key 永不进 `config.json`**，只用环境变量。类 key 字段在 merge 时被剥离。
@@ -59,9 +59,8 @@ myterminal-onboarding/
   SKILL.md                                  agent 面向的说明
   scripts/onboard.mjs                       生产脚本（跑安装/配置逻辑，不含测试代码）
   scripts/self-test.mjs                     ⚠ 唯一的测试代码：--self-test 自检，独立文件
-  scripts/check-provider-sync.mjs           CI 护栏：比对主仓 provider 列表
   scripts/install.mjs                       一条命令安装器
   templates/subagent-config.template.json   subagent 块形状（片段，非完整 config）
 ```
 
-> 唯一与系统代码的单向耦合：`check-provider-sync.mjs` 会读 `src/types.ts`（技能 → 系统，CI 护栏用）。`onboard.mjs` 与 `self-test.mjs` 不依赖任何 `src/` 代码。
+> 技能不依赖任何 `src/` 代码（`onboard.mjs` 与 `self-test.mjs` 均不读主仓源码）。原比对 provider 列表的 CI 护栏 `check-provider-sync.mjs` 已随 ADR-0045 删除 provider 概念而移除。

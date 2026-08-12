@@ -165,7 +165,7 @@ DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to yo
 
 调用方可以在单次 `subagent_start` 中覆盖 `provider`、`model`、`maxTurns`、`timeoutSec`。这适合把一次性任务路由到更强的模型而不改全局设置。覆盖不修改 `config.json`，只对该 subagent 生效。对应的 provider 环境变量仍必须已 export。
 
-`skill` 工具的 `fork` 模式也接受 `forkOptions`，可以为 skill 派生的 subagent 覆盖这些字段。
+`skill` 工具的 `fork` 模式也接受 `forkOptions`，但只能设置**工程**参数（`maxTurns`、`timeoutSec`、`readOnly`、`deliverables`、`acceptanceCriteria`、`constraints`）。`model` 与 `provider` 由全局配置唯一决定，技能**不可**覆盖。
 
 ## 7. 成本追踪
 

@@ -202,6 +202,20 @@ test('[CONTRACT-3] task_poll 的 schema 与 extension_discover 目录里公布�
   assert.equal(TASK_POLL_TOOL.inputSchema, BUILTIN_INPUT_SCHEMAS.task_poll, 'task_poll schema 未同源');
 });
 
+test('[CONTRACT-4] #04：subagent_start 契约不再含 provider/model 键（全局配置是唯一模型真相源）', async () => {
+  const { BUILTIN_INPUT_SCHEMAS } = await import('../dist/tool-schemas.js');
+  const props = BUILTIN_INPUT_SCHEMAS.subagent_start.properties ?? {};
+  assert.ok(!('provider' in props), 'subagent_start 不应再暴露 provider 键');
+  assert.ok(!('model' in props), 'subagent_start 不应再暴露 model 键');
+
+  // OpenAPI 共享属性池同步移除
+  const { buildOpenApi } = await import('../dist/openapi.js');
+  const toolInput = buildOpenApi({ publicBaseUrl: 'http://127.0.0.1:0' }).components.schemas.ExtensionToolInput;
+  const tprops = toolInput.properties ?? {};
+  assert.ok(!('provider' in tprops), 'OpenAPI toolInput 不应再含 provider');
+  assert.ok(!('model' in tprops), 'OpenAPI toolInput 不应再含 model');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // [NEGATIVE] ② 非法输入必须被拒；派生器不得静默放行
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,7 +252,7 @@ test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/
     [of('workspace_info'), {}],
     [of('blob_create'), { content: 'x', encoding: 'base64' }],
     [of('session_history'), { offset: 0, limit: 500, includeAncestors: false }],
-    [of('subagent_start'), { objective: 'o', provider: 'qwen', maxTurns: 3 }],
+    [of('subagent_start'), { objective: 'o', maxTurns: 3 }],
     [of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o', background: 'b', deliverables: ['d'], acceptanceCriteria: ['a'], constraints: ['c'] } }],
     // strip 模式（匹配 main 基线）：未知字段被静默接受，不拒绝
     [of('find_files'), { query: 'a', nope: 1 }],

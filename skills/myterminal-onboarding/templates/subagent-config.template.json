@@ -1,9 +1,14 @@
 {
   "enabled": true,
-  "provider": "openai",
-  "model": "gpt-4o",
+  "model": "",
+  "baseUrl": "",
+  "apiKey": "",
   "maxTurns": 50,
   "timeoutSec": 300,
   "maxParallel": 2,
-  "fallbackModel": ""
+  "contextWindow": 120000,
+  "maxOutput": 32000,
+  "compactThreshold": 80000,
+  "fallbackModel": "",
+  "_note": "baseUrl 是厂商的 Anthropic 兼容 base URL，不含 /v1 与 /messages，代码统一补 /v1/messages。例如 Anthropic 原生填 https://api.anthropic.com；中国网关填各自文档的 ANTHROPIC_BASE_URL（如 https://api.moonshot.cn/anthropic、https://dashscope.aliyuncs.com/apps/anthropic）。不要自己加 /v1 或 /messages。"
 }

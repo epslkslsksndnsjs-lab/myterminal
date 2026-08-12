@@ -6,7 +6,7 @@ import { describePortOwner, portOwner, upsertWorkspaceRecord, workspaceId, works
 import { migrateWorkspaceState } from './migration.js';
 import os from 'node:os';
 import path from 'node:path';
-import type { MyTerminalConfig, MyTerminalSettings } from './types.js';
+import type { MyTerminalConfig, MyTerminalSettings, SubagentSettings } from './types.js';
 
 const WORKSPACE_PLACEHOLDERS = new Set(['/absolute/path/to/project']);
 const PUBLIC_URL_PLACEHOLDERS = new Set(['https://replace-with-your-tunnel.example']);
@@ -98,17 +98,26 @@ export function createDefaultSettings(workspaceDir = defaultWorkspaceForCwd()): 
     passiveLockEnabled: false,
     actionsContinuationMode: 'off',
     nonBlockingTasksEnabled: false,
-    subagent: {
-      enabled: true,
-      provider: 'openai',
-      model: 'gpt-4o',
-      maxTurns: 50,
-      timeoutSec: 300,
-      maxParallel: 2,
-    },
   };
 }
 
+
+// ADR-0045（spine）：subagent 可选字段默认值集中施加。
+// validateSettings（校验/保存归一化）与 server 运行时加载路径（server.ts 重读 settings、
+// 不经 validateSettings）共用同一实现；否则最小配置（只填 model/baseUrl/apiKey）下
+// maxTurns/timeoutSec 等为 undefined → executor 在 AbortSignal.timeout(undefined*1000)
+// 抛 RangeError、while(turns<undefined) 永不循环，subagent 静默崩溃（code-review S#5，合并阻断）。
+export function applySubagentDefaults(sub: SubagentSettings): SubagentSettings {
+  return {
+    ...sub,
+    maxTurns: boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 50, 1, 200),
+    timeoutSec: boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 300, 30, 3600),
+    maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4),
+    contextWindow: boundedInteger(sub.contextWindow != null ? String(sub.contextWindow) : undefined, 120_000, 1_000, 1_000_000),
+    maxOutput: boundedInteger(sub.maxOutput != null ? String(sub.maxOutput) : undefined, 32_000, 1_000, 200_000),
+    compactThreshold: boundedInteger(sub.compactThreshold != null ? String(sub.compactThreshold) : undefined, 80_000, 1_000, 500_000),
+  };
+}
 
 export function validateSettings(settings: MyTerminalSettings): string[] {
   const errors: string[] = [];
@@ -125,29 +134,36 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
   if (!['off', 'adaptive', 'next-call', 'lookahead-3'].includes(settings.actionsContinuationMode)) errors.push('Actions continuation mode must be off, adaptive, next-call, or lookahead-3.');
   if (typeof settings.nonBlockingTasksEnabled !== 'boolean') errors.push('Non-blocking tasks enabled must be boolean.');
 
-  // ADR-0009 决策 11/12/14：subagent 配置校验（只在字段存在时校验，向后兼容）
+  // ADR-0045（spine）：subagent 配置校验——零默认、缺配即拒。
   if (settings.subagent) {
     const sub = settings.subagent;
+    // 遗留 `provider` 配置：provider 概念已废弃，整段静默忽略（不报错、不启用），
+    // 交由后续迁移工单转换为新契约（model/baseUrl/apiKey）。见 ticket 01 项 14。
+    const legacyProvider = (sub as { provider?: string }).provider;
+    if (legacyProvider === undefined) {
+      if (typeof sub.enabled !== 'boolean') {
+        if (sub.enabled !== undefined) errors.push('Subagent enabled must be boolean.');
+        sub.enabled = true;
+      }
+      // 三必填：model / baseUrl / apiKey 缺任一即报错（零默认铁律，代码永不猜）
+      if (typeof sub.model !== 'string' || !sub.model.trim()) {
+        errors.push('Subagent model is required.');
+      }
+      if (typeof sub.baseUrl !== 'string' || !sub.baseUrl.trim()) {
+        errors.push('Subagent baseUrl is required.');
+      }
+      if (typeof sub.apiKey !== 'string' || !sub.apiKey.trim()) {
+        errors.push('Subagent apiKey is required.');
+      }
+      // 三可选：带默认（有配置用配置，无配置用默认）
+      // 默认值集中由 applySubagentDefaults 施加（见下方函数），validateSettings 与
+      // server 运行时加载路径共用同一实现，避免 server 重读 settings 漏默认值（code-review S#5）。
+      Object.assign(sub, applySubagentDefaults(sub));
 
-    if (typeof sub.enabled !== 'boolean') {
-      if (sub.enabled !== undefined) errors.push('Subagent enabled must be boolean.');
-      sub.enabled = true;
-    }
-    const VALID_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'];
-    if (typeof sub.provider !== 'string' || !VALID_PROVIDERS.includes(sub.provider)) {
-      if (sub.provider !== undefined) errors.push('Subagent provider must be openai, anthropic, deepseek, glm, or qwen.');
-      sub.provider = 'openai';
-    }
-    if (typeof sub.model !== 'string' || !sub.model.trim()) {
-      if (sub.model !== undefined) errors.push('Subagent model cannot be empty.');
-      sub.model = 'gpt-4o';
-    }
-    sub.maxTurns = boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 50, 1, 200);
-    sub.timeoutSec = boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 300, 30, 3600);
-    sub.maxParallel = boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4);
-
-    if (sub.fallbackModel !== undefined && (typeof sub.fallbackModel !== 'string' || !sub.fallbackModel.trim())) {
-      delete sub.fallbackModel;
+      // fallbackModel 可选，默认无；空串视为未设置
+      if (sub.fallbackModel !== undefined && (typeof sub.fallbackModel !== 'string' || !sub.fallbackModel.trim())) {
+        delete sub.fallbackModel;
+      }
     }
   }
 
@@ -258,6 +274,13 @@ export function settingsWithEnvironment(settings: MyTerminalSettings, env: NodeJ
     nonBlockingTasksEnabled: env.MYTERMINAL_NON_BLOCKING_TASKS === undefined
       ? settings.nonBlockingTasksEnabled
       : /^(1|true|yes|on)$/i.test(env.MYTERMINAL_NON_BLOCKING_TASKS),
+    // ADR-0045（spine）：fallbackModel 支持 env 覆盖配置文件（默认无，env 可临时切换）
+    subagent: settings.subagent
+      ? {
+          ...settings.subagent,
+          fallbackModel: optionalEnv(env.MYTERMINAL_SUBAGENT_FALLBACK_MODEL) ?? settings.subagent.fallbackModel,
+        }
+      : undefined,
   };
 }
 

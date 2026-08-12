@@ -10,14 +10,10 @@ import assert from 'node:assert/strict';
 import {
   estimateTokens,
   estimateMessageTokens,
-  getModelContextWindow,
-  getAutoCompactThreshold,
 } from '../dist/subagent/token-counter.js';
 
 import {
-  OpenAIAdapter,
   AnthropicAdapter,
-  DeepSeekAdapter,
   LlmError,
   collectStream,
   createAdapter,
@@ -164,38 +160,9 @@ test('estimateMessageTokens — 含 image block', () => {
   assert.ok(tokens >= 2000, `Expected >= 2000, got ${tokens}`);
 });
 
-// ── 用例 3：getModelContextWindow + getAutoCompactThreshold ──
-
-test('getModelContextWindow — 精确匹配', () => {
-  const result = getModelContextWindow('gpt-4o');
-  assert.equal(result.window, 128_000);
-  assert.equal(result.maxOutput, 16_384);
-});
-
-test('getModelContextWindow — 前缀匹配（带日期后缀）', () => {
-  const result = getModelContextWindow('gpt-4o-2024-08-06');
-  assert.equal(result.window, 128_000);
-});
-
-test('getModelContextWindow — 未知模型默认 64K', () => {
-  const result = getModelContextWindow('unknown-model-v1');
-  assert.equal(result.window, 64_000);
-  assert.equal(result.maxOutput, 8_192);
-});
-
-test('getAutoCompactThreshold — gpt-4o', () => {
-  // window=128000, maxOutput=16384 → effective=128000-16384=111616 → threshold=111616-13000=98616
-  const threshold = getAutoCompactThreshold('gpt-4o');
-  assert.equal(threshold, 128_000 - Math.min(16_384, 20_000) - 13_000);
-  assert.equal(threshold, 98_616);  // 128000-16384-13000 = 98616
-});
-
-test('getAutoCompactThreshold — deepseek-chat (小窗口)', () => {
-  // window=64000, maxOutput=8192 → effective=64000-8192=55808 → threshold=55808-13000=42808
-  const threshold = getAutoCompactThreshold('deepseek-chat');
-  assert.ok(threshold > 40_000);
-  assert.ok(threshold < 60_000);
-});
+// ── 用例 3（已移除）：getModelContextWindow / getAutoCompactThreshold ──
+// ADR-0045 D5：上下文窗口与压缩阈值改由 SubagentSettings 直供，不再按模型名查表；
+// 这两个函数已从 token-counter 删除，相关用例随之移除。
 
 // ═══════════════════════════════════════════════
 // 第二部分：normalizeMessages 测试（决策 24）
@@ -265,175 +232,19 @@ test('normalizeMessages — tool_result 保持配对', () => {
 });
 
 // ═══════════════════════════════════════════════
-// 第三部分：OpenAIAdapter 测试（决策 2 + 24 + 27）
-// ═══════════════════════════════════════════════
 
-// ── 用例 6：请求体转换 ──
-
-test('OpenAIAdapter — 请求体转换正确', async () => {
-  let capturedBody;
-  const fakeFetch = async (url, init) => {
-    capturedBody = JSON.parse(init.body);
-    // 返回一个简单的 SSE 流来终止
-    return sseFakeResponse(
-      'data: {"id":"1","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
-    );
-  };
-
-  const adapter = new OpenAIAdapter('sk-test-key', fakeFetch);
-  const params = makeChatParams({
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Hello' },
-          { type: 'tool_result', tool_use_id: 'call_1', content: 'result', is_error: false },
-        ],
-      },
-      {
-        role: 'assistant',
-        content: [
-          { type: 'tool_use', id: 'call_2', name: 'read', input: { path: '/tmp' } },
-        ],
-      },
-    ],
-    tools: [{ name: 'read', description: 'Read file', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }],
-  });
-
-  const chunks = [];
-  for await (const chunk of adapter.stream(params, new AbortController().signal)) {
-    chunks.push(chunk);
-  }
-
-  // 验证请求体
-  assert.ok(capturedBody, 'Should have captured request body');
-  assert.equal(capturedBody.model, 'gpt-4o');
-  assert.equal(capturedBody.stream, true);
-  assert.ok(capturedBody.stream_options?.include_usage, 'Should include usage');
-
-  // 验证 messages 格式（user → text + tool）
-  const msgs = capturedBody.messages;
-  assert.ok(msgs.length >= 3); // system + user(tool_result:"tool") + assistant
-
-  // 验证 tools 格式
-  assert.equal(capturedBody.tools.length, 1);
-  assert.equal(capturedBody.tools[0].type, 'function');
-  assert.equal(capturedBody.tools[0].function.name, 'read');
-
-  // 验证有响应
-  assert.ok(chunks.length > 0);
-});
 
 // ── 用例 7：SSE 文本流 ──
 
-test('OpenAIAdapter — SSE 文本流解析', async () => {
-  const sse =
-    'data: {"id":"1","choices":[{"delta":{"content":"Hello"}}]}\n\n' +
-    'data: {"id":"2","choices":[{"delta":{"content":" world"}}]}\n\n' +
-    'data: {"id":"3","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}\n\n' +
-    'data: [DONE]\n\n';
-
-  const adapter = new OpenAIAdapter('sk-test', fakeFetchOnce(sseFakeResponse(sse)));
-  const chunks = [];
-  for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
-    chunks.push(chunk);
-  }
-
-  const textChunks = chunks.filter(c => c.type === 'text_delta');
-  assert.equal(textChunks.length, 2);
-  assert.equal(textChunks[0].text, 'Hello');
-  assert.equal(textChunks[1].text, ' world');
-
-  const endChunk = chunks.find(c => c.type === 'message_end');
-  assert.ok(endChunk);
-  assert.equal(endChunk.usage.input_tokens, 10);
-  assert.equal(endChunk.usage.output_tokens, 3);
-  assert.equal(endChunk.stopReason, 'stop');
-});
 
 // ── 用例 8：SSE tool_calls 流 ──
 
-test('OpenAIAdapter — SSE tool_calls 流解析', async () => {
-  // 注意：Bun 下 JSON 内嵌 JSON 转义与 Node 行为不一致，用简单值避免
-  const sse =
-    'data: {"id":"1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read"}}]}}]}\n\n' +
-    'data: {"id":"2","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"arg1"}}]}}]}\n\n' +
-    'data: {"id":"3","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"arg2"}}]}}]}\n\n' +
-    'data: {"id":"4","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":15}}\n\n' +
-    'data: [DONE]\n\n';
-
-  const adapter = new OpenAIAdapter('sk-test', fakeFetchOnce(sseFakeResponse(sse)));
-  const chunks = [];
-  for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
-    chunks.push(chunk);
-  }
-
-  const startChunks = chunks.filter(c => c.type === 'tool_call_start');
-  assert.equal(startChunks.length, 1);
-  assert.equal(startChunks[0].name, 'read');
-  assert.equal(startChunks[0].id, 'call_1');
-
-  const deltaChunks = chunks.filter(c => c.type === 'tool_call_delta');
-  assert.equal(deltaChunks.length, 2);
-  assert.equal(deltaChunks[0].jsonFragment, 'arg1');
-  assert.equal(deltaChunks[1].jsonFragment, 'arg2');
-
-  const endChunks = chunks.filter(c => c.type === 'tool_call_end');
-  assert.equal(endChunks.length, 1);
-
-  const msgEnd = chunks.find(c => c.type === 'message_end');
-  assert.ok(msgEnd);
-});
 
 // ── 用例 9：include_usage 验证 ──
 
-test('OpenAIAdapter — include_usage 已带上且 usage 进入 message_end', async () => {
-  let capturedBody;
-  const fakeFetch = async (url, init) => {
-    capturedBody = JSON.parse(init.body);
-    return sseFakeResponse(
-      'data: {"id":"1","choices":[{"delta":{"content":"x"}}]}\n\n' +
-      'data: {"id":"2","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n' +
-      'data: [DONE]\n\n',
-    );
-  };
-
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
-  const chunks = [];
-  for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
-    chunks.push(chunk);
-  }
-
-  assert.ok(capturedBody.stream_options?.include_usage, 'include_usage should be set');
-  const end = chunks.find(c => c.type === 'message_end');
-  assert.ok(end);
-  assert.ok(end.usage.input_tokens > 0);
-});
 
 // ── 用例 10：content 检测（不看 stop_reason） ──
 
-test('OpenAIAdapter — content 检测（stopReason=stop 但有 tool_call）', async () => {
-  const sse =
-    'data: {"id":"1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}\n\n' +
-    'data: {"id":"2","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}\n\n' +
-    'data: {"id":"3","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n\n' +
-    'data: [DONE]\n\n';
-
-  const adapter = new OpenAIAdapter('sk-test', fakeFetchOnce(sseFakeResponse(sse)));
-  const params = makeChatParams();
-  const result = await collectStream({
-    adapter,
-    chatParams: params,
-    signal: new AbortController().signal,
-    onChunk: () => {}, // 无操作，只验证最终结果
-    idleTimeoutMs: 0,  // 禁用 Watchdog 便于测试
-  });
-
-  // stopReason='stop'，但因为 content 有 tool_use，hadToolCalls=true
-  assert.equal(result.hadToolCalls, true);
-  const toolUses = result.message.content.filter(b => b.type === 'tool_use');
-  assert.equal(toolUses.length, 1);
-});
 
 // ═══════════════════════════════════════════════
 // 第四部分：AnthropicAdapter 测试
@@ -521,7 +332,7 @@ test('错误分类 — 429 + Retry-After → rate_limit', async () => {
     headers: { 'Retry-After': '3' },
   });
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   try {
     const chunks = [];
     for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
@@ -541,7 +352,7 @@ test('错误分类 — 429 + Retry-After → rate_limit', async () => {
 test('错误分类 — 401 → auth（消息含 API key 指引）', async () => {
   const fakeFetch = async () => new Response('Unauthorized', { status: 401 });
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   try {
     const chunks = [];
     for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
@@ -560,7 +371,7 @@ test('错误分类 — 401 → auth（消息含 API key 指引）', async () => 
 test('错误分类 — 529 → server_overload', async () => {
   const fakeFetch = async () => new Response('Overloaded', { status: 529 });
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   try {
     const chunks = [];
     for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
@@ -581,7 +392,7 @@ test('错误分类 — 400 含 context_length → prompt_too_long', async () => 
     { status: 400 },
   );
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   try {
     const chunks = [];
     for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
@@ -599,7 +410,7 @@ test('错误分类 — 400 含 context_length → prompt_too_long', async () => 
 test('错误分类 — fetch reject (TypeError) → connection', async () => {
   const fakeFetch = async () => { throw new TypeError('fetch failed'); };
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   try {
     const chunks = [];
     for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
@@ -615,16 +426,12 @@ test('错误分类 — fetch reject (TypeError) → connection', async () => {
 // ── 用例 18：abort 不被包装 ──
 
 test('错误分类 — signal.abort() → AbortError 原样抛出', async () => {
-  // 当 fetch 因为 abort signal 而失败时，会抛 DOMException(AbortError)
-  let callCount = 0;
-  const fakeFetch = async (url, init) => {
-    callCount++;
-    // 模拟 fetch 因 abort 抛出 AbortError
+  const fakeFetch = async () => {
     throw new DOMException('The operation was aborted', 'AbortError');
   };
 
   const controller = new AbortController();
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
 
   try {
     const chunks = [];
@@ -662,7 +469,7 @@ test('Watchdog — 流挂起后超时→connection 错误', async () => {
     throw new TypeError('Network error');
   };
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   try {
     await collectStream({
       adapter,
@@ -683,32 +490,22 @@ test('Watchdog — 流挂起后超时→connection 错误', async () => {
 
 test('回退 — 已产出完整 tool_call_end 则不回退', async () => {
   let callCount = 0;
-  const fakeFetch = async (url, init) => {
+  const sse =
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":10}}}\n\n' +
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}\n\n' +
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/tmp\\"}"}}\n\n' +
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+  const fakeFetch = async () => {
     callCount++;
-    if (callCount === 1) {
-      // 第一次：流式——发 tool_call 然后模拟网络断
-      const encoder = new TextEncoder();
-      const sse =
-        'data: {"id":"1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}\n\n' +
-        'data: {"id":"2","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}\n\n' +
-        'data: {"id":"3","choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n';
-      const chunks = [encoder.encode(sse)];
-      let i = 0;
-      const stream = new ReadableStream({
-        pull(controller) {
-          if (i < chunks.length) {
-            controller.enqueue(chunks[i++]);
-            controller.close(); // 发完后关闭——模拟 tool_call_end 正常发生
-          }
-        }
-      });
-      return new Response(stream, { status: 200 });
-    }
-    // 不应该被调用第二遍（因为 tool_call 已产出，不回退）
-    return jsonFakeResponse({ choices: [{ message: { content: 'fallback' } }] });
+    if (callCount === 1) return sseFakeResponse(sse);
+    // 不应被调用第二遍（tool_call_end 已发生 = 已产出完整结果）
+    return jsonFakeResponse({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'fallback' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
   };
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   const result = await collectStream({
     adapter,
     chatParams: makeChatParams({
@@ -719,35 +516,33 @@ test('回退 — 已产出完整 tool_call_end 则不回退', async () => {
     idleTimeoutMs: 0,
   });
 
-  // 应该正常完成，tool_call 被解析
+  // 流正常完成，tool_call 已产出——不应回退到 create()
+  assert.equal(callCount, 1, 'create() 不应被调用（tool_call_end 已发生）');
   assert.ok(result.hadToolCalls || result.message.content.some(b => b.type === 'tool_use'),
     'Should have tool calls');
-  // create 不应被调用（因为 tool_call_end 已经发生 = 已产出完整结果）
-  // 这里我们只验证流式正常完成
 });
 
 // ── 用例 21：流式失败回退到 create() ──
 
 test('回退 — 流式开头失败 → 自动回退 create()', async () => {
   let callCount = 0;
-  const fakeFetch = async (url, init) => {
+  const fakeFetch = async () => {
     callCount++;
     if (callCount === 1) {
-      // 第一次：流式失败（401 网络错误类）
+      // 第一次：流式失败（网络错误类）
       throw new TypeError('fetch failed');
     }
-    // 第二次：非流式成功
+    // 第二次：非流式成功（Anthropic 形状）
     return jsonFakeResponse({
-      id: 'chatcmpl-1',
-      choices: [{
-        message: { role: 'assistant', content: 'Fallback response' },
-        finish_reason: 'stop',
-      }],
-      usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Fallback response' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 5, output_tokens: 2 },
     });
   };
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
   const result = await collectStream({
     adapter,
     chatParams: makeChatParams(),
@@ -769,27 +564,33 @@ test('回退 — 流式开头失败 → 自动回退 create()', async () => {
 
 test('集成 — 两轮对话（tool_call + tool_result + 最终文本）', async () => {
   let callCount = 0;
-  const fakeFetch = async (url, init) => {
+  const fakeFetch = async () => {
     callCount++;
     if (callCount === 1) {
-      // 第 1 轮：LLM 流式返回 tool_call
+      // 第 1 轮：LLM 流式返回 text + tool_call（Anthropic SSE）
       return sseFakeResponse(
-        'data: {"id":"r1","choices":[{"delta":{"content":"Let me check that."}}]}\n\n' +
-        'data: {"id":"r1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}\n\n' +
-        'data: {"id":"r1","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":\\"/tmp/test\\"}"}}]}}]}\n\n' +
-        'data: {"id":"r1","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":15,"completion_tokens":12}}\n\n' +
-        'data: [DONE]\n\n',
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"r1","usage":{"input_tokens":15}}}\n\n' +
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check that."}}\n\n' +
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}\n\n' +
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/tmp/test\\"}"}}\n\n' +
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n' +
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":12}}\n\n' +
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
       );
     }
-    // 第 2 轮：LLM 流式返回纯文本
+    // 第 2 轮：LLM 流式返回纯文本（Anthropic SSE）
     return sseFakeResponse(
-      'data: {"id":"r2","choices":[{"delta":{"content":"File contents: hello"}}]}\n\n' +
-      'data: {"id":"r2","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5}}\n\n' +
-      'data: [DONE]\n\n',
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"r2","usage":{"input_tokens":20}}}\n\n' +
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"File contents: hello"}}\n\n' +
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
     );
   };
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
 
   // 第 1 轮
   const round1 = await collectStream({
@@ -814,7 +615,7 @@ test('集成 — 两轮对话（tool_call + tool_result + 最终文本）', asyn
       role: 'user',
       content: [{
         type: 'tool_result',
-        tool_use_id: 'c1',
+        tool_use_id: 'toolu_1',
         content: 'hello',
         is_error: false,
       }],
@@ -836,69 +637,97 @@ test('集成 — 两轮对话（tool_call + tool_result + 最终文本）', asyn
   assert.ok(text.includes('hello'));
 });
 
+
 // ═══════════════════════════════════════════════
 // 第八部分：createAdapter 工厂（决策 14）
 // ═══════════════════════════════════════════════
 
-// ── 用例 23：createAdapter 按 provider 创建 ──
+// ── 用例 23：createAdapter 按 settings 创建（ADR-0045 spine：单适配器，配置即端点）──
 
-test('createAdapter — openai', () => {
-  const adapter = createAdapter(
-    { enabled: true, provider: 'openai', model: 'gpt-4o', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-    { OPENAI_API_KEY: 'sk-test' },
-  );
-  assert.equal(adapter.provider, 'openai');
-  assert.ok(adapter instanceof OpenAIAdapter);
-});
-
-test('createAdapter — 缺少 API key 抛错', () => {
-  assert.throws(() => {
-    createAdapter(
-      { enabled: true, provider: 'openai', model: 'gpt-4o', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-      {}, // 无 OPENAI_API_KEY
-    );
-  }, /OPENAI_API_KEY/);
-});
-
-test('createAdapter — deepseek', () => {
-  const adapter = createAdapter(
-    { enabled: true, provider: 'deepseek', model: 'deepseek-chat', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-    { DEEPSEEK_API_KEY: 'sk-ds-test' },
-  );
-  assert.equal(adapter.provider, 'deepseek');
-  assert.ok(adapter instanceof DeepSeekAdapter);
-});
-
-test('createAdapter — anthropic', () => {
-  const adapter = createAdapter(
-    { enabled: true, provider: 'anthropic', model: 'claude-sonnet-4', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-    { ANTHROPIC_API_KEY: 'sk-ant-test' },
-  );
+test('createAdapter — returns AnthropicAdapter from settings.apiKey/baseUrl', () => {
+  const adapter = createAdapter({
+    enabled: true,
+    model: 'claude-sonnet-4-20250514',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-test',
+    maxTurns: 50,
+    timeoutSec: 300,
+    maxParallel: 2,
+  });
   assert.equal(adapter.provider, 'anthropic');
   assert.ok(adapter instanceof AnthropicAdapter);
+});
+
+test('createAdapter — 缺少 apiKey/baseUrl/model 抛错', () => {
+  assert.throws(() => {
+    createAdapter({
+      enabled: true,
+      model: '',
+      baseUrl: '',
+      apiKey: '',
+      maxTurns: 50,
+      timeoutSec: 300,
+      maxParallel: 2,
+    });
+  }, /Subagent apiKey, baseUrl and model are required/);
+});
+
+// ── 用例 24（ADR-0045 D9 路径三：配置覆盖默认）──
+
+test('createAdapter — 配置 baseUrl/apiKey 覆盖默认，流入请求 URL 与 x-api-key 头', async () => {
+  let capturedUrl;
+  let capturedApiKey;
+  // createAdapter 写死用 globalThis.fetch（llm-adapter.ts:296），不接受注入；
+  // 因此在测试内临时替换全局 fetch 来捕获真实请求，验证配置覆盖了硬编码默认端点。
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    capturedUrl = url;
+    capturedApiKey = init.headers['x-api-key'];
+    return sseFakeResponse(
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":5}}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    );
+  };
+
+  try {
+    // 故意用非默认端点（中国网关）与特定 key——若回退到硬编码默认则断言失败
+    const configuredBaseUrl = 'https://api.moonshot.cn/anthropic';
+    const configuredApiKey = 'sk-custom-gateway-123';
+    const adapter = createAdapter({
+      enabled: true,
+      model: 'claude-sonnet-4-20250514',
+      baseUrl: configuredBaseUrl,
+      apiKey: configuredApiKey,
+      maxTurns: 50,
+      timeoutSec: 300,
+      maxParallel: 2,
+    });
+
+    assert.equal(adapter.provider, 'anthropic');
+    assert.ok(adapter instanceof AnthropicAdapter);
+
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams({ model: 'claude-sonnet-4-20250514' }), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+
+    // 配置覆盖默认：请求 URL 必须来自配置 baseUrl，而非硬编码默认 api.anthropic.com
+    assert.equal(capturedUrl, `${configuredBaseUrl}/v1/messages`);
+    assert.ok(!capturedUrl.includes('api.anthropic.com'), '不应回退到默认 anthropic 端点');
+    // 配置 apiKey 必须流入 x-api-key 头
+    assert.equal(capturedApiKey, configuredApiKey);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 // ═══════════════════════════════════════════════
 // 第九部分：deepseek 特定测试 + 补充覆盖
 // ═══════════════════════════════════════════════
 
-test('DeepSeekAdapter — 使用不同 baseUrl', async () => {
-  let capturedUrl;
-  const fakeFetch = async (url) => {
-    capturedUrl = url;
-    return sseFakeResponse(
-      'data: {"id":"1","choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
-    );
-  };
-
-  const adapter = new DeepSeekAdapter('sk-ds', fakeFetch);
-  const chunks = [];
-  for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
-    chunks.push(chunk);
-  }
-
-  assert.ok(capturedUrl.includes('deepseek.com'), `URL should contain deepseek.com, got ${capturedUrl}`);
-});
 
 test('STREAM_IDLE_TIMEOUT_MS 为 60_000', () => {
   assert.equal(STREAM_IDLE_TIMEOUT_MS, 60_000);
@@ -925,67 +754,19 @@ test('AnthropicAdapter — create() 非流式', async () => {
   assert.ok(result.usage.output_tokens > 0);
 });
 
-// ── 额外覆盖：OpenAIAdapter create() 含 tool_calls ──
-
-test('OpenAIAdapter — create() 含 tool_calls', async () => {
-  const fakeFetch = async () => jsonFakeResponse({
-    id: 'chatcmpl-1',
-    choices: [{
-      message: {
-        role: 'assistant',
-        content: null,
-        tool_calls: [{
-          id: 'call_1',
-          type: 'function',
-          function: { name: 'read', arguments: '{"path":"/tmp"}' },
-        }],
-      },
-      finish_reason: 'tool_calls',
-    }],
-    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
-  });
-
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
-  const result = await adapter.create(makeChatParams({
-    tools: [{ name: 'read', description: 'Read', input_schema: { type: 'object', properties: {} } }],
-  }), new AbortController().signal);
-
-  const toolUses = result.message.content.filter(b => b.type === 'tool_use');
-  assert.equal(toolUses.length, 1);
-  assert.equal(toolUses[0].name, 'read');
-  assert.deepStrictEqual(toolUses[0].input, { path: '/tmp' });
-});
-
-// ── 额外覆盖：OpenAIAdapter create() 无 message 错误 ──
-
-test('OpenAIAdapter — create() 无 message 字段抛 system 错误', async () => {
-  const fakeFetch = async () => jsonFakeResponse({
-    id: 'chatcmpl-1',
-    choices: [{ finish_reason: 'stop' }], // 无 message 字段
-    usage: { prompt_tokens: 1, completion_tokens: 0, total_tokens: 1 },
-  });
-
-  const adapter = new OpenAIAdapter('sk-test', fakeFetch);
-  try {
-    await adapter.create(makeChatParams(), new AbortController().signal);
-    assert.fail('Should have thrown');
-  } catch (err) {
-    assert.ok(err instanceof LlmError);
-    assert.equal(err.kind, 'system');
-    assert.ok(err.message.includes('no message'));
-  }
-});
 
 // ── 额外覆盖：collectStream 中 JSON 解析失败降级 ──
 
 test('collectStream — JSON 解析失败 → 文本降级', async () => {
   const sse =
-    'data: {"id":"1","choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bad"}}]}}]}\n\n' +
-    'data: {"id":"2","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"not valid json"}}]}}]}\n\n' +
-    'data: {"id":"3","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}\n\n' +
-    'data: [DONE]\n\n';
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":5}}}\n\n' +
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bad","input":{}}}\n\n' +
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"not valid json"}}\n\n' +
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
 
-  const adapter = new OpenAIAdapter('sk-test', fakeFetchOnce(sseFakeResponse(sse)));
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetchOnce(sseFakeResponse(sse)));
   const result = await collectStream({
     adapter,
     chatParams: makeChatParams(),
@@ -997,7 +778,7 @@ test('collectStream — JSON 解析失败 → 文本降级', async () => {
   // 即使 JSON 解析失败，也不应抛错——tool_use block 包含 _parse_error
   const toolUses = result.message.content.filter(b => b.type === 'tool_use');
   assert.equal(toolUses.length, 1);
-  assert.ok(toolUses[0].input._parse_error, 'Should have parse error flag');
+  assert.equal(toolUses[0].input._parse_error, true);
 });
 
 // ── 额外覆盖：AnthropicAdapter create() HTTP 错误 ──

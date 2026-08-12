@@ -181,19 +181,21 @@ export type StoredState = {
   harnessContract?: { mode: ActionsContinuationMode; revision: string; updatedAt: string };
 };
 
-// ADR-0031（#61）：provider 运行时单源——联合类型由此数组派生，新增 provider 只改这一处
-export const SUBAGENT_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'] as const;
-export type SubagentProvider = (typeof SUBAGENT_PROVIDERS)[number];
-
-// ADR-0009 决策 11/12/14 + ADR-0007 决策 21
+// ADR-0045（spine）：零默认、显式、代码永不猜。收敛为单一 Anthropic 协议入口，
+// 配置从"选 provider"改为"填端点"。provider 概念已由 ADR-0045 删除（含
+// 原 SUBAGENT_PROVIDERS 常量及其派生类型，以及 onboarding 技能的 check-provider-sync 护栏）。
 export type SubagentSettings = {
   enabled: boolean;
-  provider: SubagentProvider;
-  model: string;
+  model: string;          // 全局唯一模型（必填，零默认、缺配即拒）
+  baseUrl: string;        // Anthropic 协议端点（必填，可指向兼容网关）
+  apiKey: string;         // API 密钥（必填，落盘换取"填 3 项即用"）
   maxTurns: number;       // agent loop 轮次上限，默认 50
   timeoutSec: number;     // 整体超时秒数，默认 300
   maxParallel: number;    // 并发 subagent 上限，默认 2
-  fallbackModel?: string; // 529 过载降级模型（ADR-0007 决策 21），可选
+  contextWindow?: number; // 上下文窗口上限（可选，默认 120000；有配置用配置，代码不查表）
+  maxOutput?: number;     // 单次最大输出 token（可选，默认 32000）
+  compactThreshold?: number; // 压缩阈值（可选，默认 80000）
+  fallbackModel?: string; // 529 过载降级模型（可选，默认无；env MYTERMINAL_SUBAGENT_FALLBACK_MODEL 可覆盖）
 };
 
 export type MyTerminalSettings = {

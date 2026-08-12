@@ -530,8 +530,7 @@ interface MyTerminalMessage { id, from, to, source?: 'session'|'user', body, cre
 interface SessionEvent { id, recipientSessionId, sourceSessionId, kind: SessionEventKind, payload, createdAt, acknowledgedAt? }
 interface StoredState { schemaVersion:2, revision, sessions, messages, events, subscriptions, appBindings, extensions, harnessContract? }
 interface MyTerminalSettings { workspaceDir, host, port, connectorKey, actionsToken, publicBaseUrl, maxOutputChars, commandTimeoutSec, uiLanguage, uiTheme, passiveLockEnabled, actionsContinuationMode, nonBlockingTasksEnabled, subagent? }
-interface SubagentSettings { enabled, provider, model, maxTurns, timeoutSec, maxParallel, fallbackModel? }
-const SUBAGENT_PROVIDERS = ['openai','anthropic','deepseek','glm','qwen'] as const;
+interface SubagentSettings { enabled, model, baseUrl, apiKey, maxTurns, timeoutSec, maxParallel, contextWindow, maxOutput, compactThreshold, fallbackModel? }
 interface ToolDefinition { name, title, description, inputSchema, annotations, aliases?, invoke(input, context) }
 ```
 
@@ -830,7 +829,7 @@ zod ── mcp.ts, mcp-schema.ts (运行期校验)
 #### 8.4 单源纪律（禁止他处手抄）
 
 - `tool-schemas.ts`：工具输入形状（core-tools + mcp + discover 三处共用）
-- `types.ts:SUBAGENT_PROVIDERS`：provider 列表
+- `types.ts:SubagentSettings`：subagent 配置字段（单一 Anthropic 入口，无 provider 枚举）
 - `redact.ts`：脱敏
 - `lock-thresholds.ts`：锁阈值 `LOCK_STALE_THRESHOLD_MS = 30_000`
 - `models/registry.ts`：模型价格 + 上下文窗口

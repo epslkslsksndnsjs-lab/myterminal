@@ -271,306 +271,6 @@ export function emitAssembledMessage(
 }
 
 // ═══════════════════════════════════════════════
-// OpenAI 适配器（决策 2 + 24 + 27）
-// ═══════════════════════════════════════════════
-
-/** OpenAI 消息格式（API 请求用） */
-type OpenAIMessage =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: Array<{ type: 'text'; text: string }> }
-  | { role: 'assistant'; content: string | null; tool_calls?: OpenAIToolCall[] }
-  | { role: 'tool'; tool_call_id: string; content: string };
-
-type OpenAIToolCall = {
-  id: string;
-  type: 'function';
-  function: { name: string; arguments: string };
-};
-
-export class OpenAIAdapter implements LlmAdapter {
-  readonly provider: string = 'openai';
-  protected baseUrl: string;
-  private apiKey: string;
-  private fetchImpl: typeof fetch;
-
-  constructor(apiKey: string, fetchImpl?: typeof fetch) {
-    this.apiKey = apiKey;
-    this.baseUrl = 'https://api.openai.com/v1';
-    this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
-  }
-
-  // ── 请求转换：NormalizedMessage → OpenAI messages ──
-
-  private buildMessages(messages: NormalizedMessage[], system: string): OpenAIMessage[] {
-    const result: OpenAIMessage[] = [];
-
-    if (system) {
-      result.push({ role: 'system', content: system });
-    }
-
-    for (const msg of messages) {
-      if (msg.role === 'user') {
-        const textBlocks = msg.content.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text');
-        const toolResultBlocks = msg.content.filter((b): b is ContentBlock & { type: 'tool_result' } => b.type === 'tool_result');
-
-        if (textBlocks.length > 0) {
-          result.push({
-            role: 'user',
-            content: textBlocks.map(b => ({ type: 'text' as const, text: b.text })),
-          });
-        }
-
-        for (const tr of toolResultBlocks) {
-          result.push({
-            role: 'tool',
-            tool_call_id: tr.tool_use_id,
-            content: tr.content,
-          });
-        }
-      } else {
-        // assistant
-        const textBlocks = msg.content.filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text');
-        const toolUseBlocks = msg.content.filter((b): b is ContentBlock & { type: 'tool_use' } => b.type === 'tool_use');
-
-        const content = textBlocks.length > 0 ? textBlocks.map(b => b.text).join('') : null;
-        const toolCalls: OpenAIToolCall[] = toolUseBlocks.map(b => ({
-          id: b.id,
-          type: 'function' as const,
-          function: { name: b.name, arguments: JSON.stringify(b.input) },
-        }));
-
-        if (content !== null || toolCalls.length > 0) {
-          result.push({
-            role: 'assistant',
-            content,
-            ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-          });
-        }
-      }
-    }
-
-    return result;
-  }
-
-  // ── 工具格式转换：Subagent tools → OpenAI tools ──
-
-  private buildTools(tools: ChatParams['tools']): Array<{ type: 'function'; function: { name: string; description: string; parameters: JsonSchema } }> {
-    return tools.map(t => ({
-      type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.input_schema,
-      },
-    }));
-  }
-
-  // ── 流式请求 ──
-
-  async *stream(params: ChatParams, signal: AbortSignal): AsyncGenerator<StreamChunk> {
-    try {
-    const body: Record<string, unknown> = {
-      model: params.model,
-      messages: this.buildMessages(params.messages, params.system),
-      stream: true,
-      stream_options: { include_usage: true }, // 决策 27：获取 usage
-    };
-
-    if (params.tools.length > 0) {
-      body.tools = this.buildTools(params.tools);
-    }
-    if (params.maxTokens > 0) {
-      body.max_tokens = params.maxTokens;
-    }
-
-    const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      throw classifyHttpError(response.status, errorBody, response.headers as unknown as Headers);
-    }
-
-    // SSE 解析
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    const toolCalls = new Map<number, { id: string; name: string; json: string }>();
-    let usage: TokenUsage | undefined;
-    let stopReason: string | undefined;
-
-    try {
-      for await (const line of readSSELines(reader, decoder)) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6);
-        if (raw === '[DONE]') break;
-
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          continue;
-        }
-
-        const choices = parsed.choices as Array<Record<string, unknown>> | undefined;
-        const choice = choices?.[0];
-        if (!choice) {
-          if (parsed.usage) {
-            usage = {
-              input_tokens: (parsed.usage as Record<string, number>).prompt_tokens ?? 0,
-              output_tokens: (parsed.usage as Record<string, number>).completion_tokens ?? 0,
-            };
-          }
-          continue;
-        }
-
-        const delta = choice.delta as Record<string, unknown> | undefined;
-
-        if (delta?.content && typeof delta.content === 'string' && delta.content.length > 0) {
-          yield { type: 'text_delta', text: delta.content };
-        }
-
-        const toolCallsDelta = delta?.tool_calls as Array<Record<string, unknown>> | undefined;
-        if (toolCallsDelta) {
-          for (const tc of toolCallsDelta) {
-            const index = tc.index as number;
-            if (!toolCalls.has(index)) {
-              toolCalls.set(index, { id: '', name: '', json: '' });
-            }
-            const entry = toolCalls.get(index)!;
-
-            if (tc.id && typeof tc.id === 'string') entry.id = tc.id;
-
-            const func = tc.function as Record<string, unknown> | undefined;
-            if (func?.name && typeof func.name === 'string' && entry.name !== func.name) {
-              entry.name = func.name;
-              yield { type: 'tool_call_start', index, id: entry.id, name: entry.name };
-            }
-            if (func?.arguments && typeof func.arguments === 'string') {
-              entry.json += func.arguments;
-              yield { type: 'tool_call_delta', index, jsonFragment: func.arguments as string };
-            }
-          }
-        }
-
-        if (choice.finish_reason && typeof choice.finish_reason === 'string') {
-          stopReason = choice.finish_reason;
-          for (const [index, entry] of toolCalls) {
-            if (entry.name) {
-              yield { type: 'tool_call_end', index, id: entry.id };
-            }
-          }
-        }
-
-        if (parsed.usage) {
-          usage = {
-            input_tokens: (parsed.usage as Record<string, number>).prompt_tokens ?? 0,
-            output_tokens: (parsed.usage as Record<string, number>).completion_tokens ?? 0,
-          };
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    yield {
-      type: 'message_end',
-      usage: usage ?? { input_tokens: 0, output_tokens: 0 },
-      stopReason,
-    };
-    } catch (err) {
-      throw classifyNetworkError(err);
-    }
-  }
-
-  // ── 非流式请求（回退用，决策 27）──
-
-  async create(params: ChatParams, signal: AbortSignal): Promise<{ message: NormalizedMessage; usage: TokenUsage }> {
-    try {
-    const body: Record<string, unknown> = {
-      model: params.model,
-      messages: this.buildMessages(params.messages, params.system),
-    };
-
-    if (params.tools.length > 0) {
-      body.tools = this.buildTools(params.tools);
-    }
-    if (params.maxTokens > 0) {
-      body.max_tokens = params.maxTokens;
-    }
-
-    const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
-      throw classifyHttpError(response.status, errorBody, response.headers as unknown as Headers);
-    }
-
-    const data = await response.json() as Record<string, unknown>;
-    const choice = (data.choices as Array<Record<string, unknown>>)?.[0];
-    const msg = choice?.message as Record<string, unknown> | undefined;
-
-    if (!msg) {
-      throw new LlmError('system', 'Unexpected API response: no message in choices');
-    }
-
-    // 组装 NormalizedMessage（#66：走 assembleMessage 单源）
-    // OpenAI 响应形状本身就是 content(文本) 与 tool_calls 两个分离字段，
-    // 故到达顺序天然是「先 text 后 tools」，与 main 基线一致。
-    const parts: MessagePart[] = [];
-
-    if (msg.content && typeof msg.content === 'string' && msg.content.length > 0) {
-      parts.push({ kind: 'text', text: msg.content });
-    }
-
-    const toolCalls = msg.tool_calls as Array<Record<string, unknown>> | undefined;
-    if (toolCalls) {
-      for (const tc of toolCalls) {
-        const func = tc.function as Record<string, unknown> | undefined;
-        let input: JsonObject = {};
-        if (func?.arguments && typeof func.arguments === 'string') {
-          try {
-            input = JSON.parse(func.arguments) as JsonObject;
-          } catch {
-            input = { _parse_error: true, raw: func.arguments };
-          }
-        }
-        parts.push({ kind: 'tool', tool: {
-          id: tc.id as string,
-          name: func?.name as string ?? 'unknown',
-          input,
-        } });
-      }
-    }
-
-    const usage: TokenUsage = {
-      input_tokens: (data.usage as Record<string, number>)?.prompt_tokens ?? 0,
-      output_tokens: (data.usage as Record<string, number>)?.completion_tokens ?? 0,
-    };
-
-    const { message, usage: assembledUsage } = assembleMessage(parts, usage);
-    return { message, usage: assembledUsage };
-    } catch (err) {
-      throw classifyNetworkError(err);
-    }
-  }
-}
-
-// ═══════════════════════════════════════════════
 // Anthropic 适配器（决策 2 + 24 + 27）
 // ═══════════════════════════════════════════════
 
@@ -582,10 +282,17 @@ type AnthropicMessage = {
 export class AnthropicAdapter implements LlmAdapter {
   readonly provider: string = 'anthropic';
   private apiKey: string;
+  private baseUrl: string;
   private fetchImpl: typeof fetch;
 
-  constructor(apiKey: string, fetchImpl?: typeof fetch) {
+  // ADR-0045（spine）：baseUrl 是厂商的 Anthropic 兼容 base URL（如
+  // `https://api.anthropic.com` 或 `https://api.moonshot.cn/anthropic`），
+  // 不含 `/v1` 与 `/messages`；代码统一补 `/v1/messages`。归一化剥掉末尾
+  // 多余的 `/v1` 与 `/`，避免双 `/v1`（如旧默认 `.../v1`）或 `//`（如带尾斜杠）。
+  constructor(apiKey: string, fetchImpl?: typeof fetch, baseUrl?: string) {
     this.apiKey = apiKey;
+    const raw = (baseUrl ?? 'https://api.anthropic.com').trim().replace(/\/+$/, '');
+    this.baseUrl = raw.endsWith('/v1') ? raw.slice(0, -3) : raw;
     this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -654,7 +361,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }));
     }
 
-    const response = await this.fetchImpl('https://api.anthropic.com/v1/messages', {
+    const response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
@@ -801,7 +508,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }));
     }
 
-    const response = await this.fetchImpl('https://api.anthropic.com/v1/messages', {
+    const response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
@@ -854,45 +561,6 @@ export class AnthropicAdapter implements LlmAdapter {
     } catch (err) {
       throw classifyNetworkError(err);
     }
-  }
-}
-
-// ═══════════════════════════════════════════════
-// DeepSeek 适配器——OpenAI 兼容协议（决策 2）
-// ═══════════════════════════════════════════════
-
-export class DeepSeekAdapter extends OpenAIAdapter {
-  readonly provider: string = 'deepseek';
-
-  constructor(apiKey: string, fetchImpl?: typeof fetch) {
-    super(apiKey, fetchImpl);
-    this.baseUrl = 'https://api.deepseek.com/v1';
-  }
-}
-
-// ═══════════════════════════════════════════════
-// GLM 适配器——OpenAI 兼容协议（智谱开放平台 open.bigmodel.cn）
-// ═══════════════════════════════════════════════
-
-export class GlmAdapter extends OpenAIAdapter {
-  readonly provider: string = 'glm';
-
-  constructor(apiKey: string, fetchImpl?: typeof fetch) {
-    super(apiKey, fetchImpl);
-    this.baseUrl = 'https://open.bigmodel.cn/api/paas/v4';
-  }
-}
-
-// ═══════════════════════════════════════════════
-// Qwen 适配器——OpenAI 兼容协议（阿里云 DashScope / MaaS）
-// ═══════════════════════════════════════════════
-
-export class QwenAdapter extends OpenAIAdapter {
-  readonly provider: string = 'qwen';
-
-  constructor(apiKey: string, baseUrl: string, fetchImpl?: typeof fetch) {
-    super(apiKey, fetchImpl);
-    this.baseUrl = baseUrl;
   }
 }
 
@@ -1093,55 +761,18 @@ export async function collectStream(params: {
 // ═══════════════════════════════════════════════
 
 /**
- * 根据 settings 创建对应 provider 的适配器（决策 14）
- * API key 只从环境变量读，缺失时抛错消息写明 export 指引
+ * 根据 settings 创建适配器（ADR-0045 spine）。
+ * 配置契约：apiKey / baseUrl 为必填、由配置文件显式提供；
+ * 代码永不猜测模型 / 端点 / credential。零默认、单适配器（Anthropic Messages 协议）。
  */
-export function createAdapter(settings: SubagentSettings, env: NodeJS.ProcessEnv = process.env): LlmAdapter {
-  const { provider } = settings;
-
-  switch (provider) {
-    case 'openai': {
-      const key = env.OPENAI_API_KEY;
-      if (!key) {
-        throw new Error('OPENAI_API_KEY is not set. Please add "export OPENAI_API_KEY=sk-..." to your shell profile.');
-      }
-      return new OpenAIAdapter(key);
-    }
-
-    case 'anthropic': {
-      const key = env.ANTHROPIC_API_KEY;
-      if (!key) {
-        throw new Error('ANTHROPIC_API_KEY is not set. Please add "export ANTHROPIC_API_KEY=sk-ant-..." to your shell profile.');
-      }
-      return new AnthropicAdapter(key);
-    }
-
-    case 'deepseek': {
-      const key = env.DEEPSEEK_API_KEY;
-      if (!key) {
-        throw new Error('DEEPSEEK_API_KEY is not set. Please add "export DEEPSEEK_API_KEY=sk-..." to your shell profile.');
-      }
-      return new DeepSeekAdapter(key);
-    }
-
-    case 'glm': {
-      const key = env.GLM_API_KEY;
-      if (!key) {
-        throw new Error('GLM_API_KEY is not set. Please add "export GLM_API_KEY=..." to your shell profile.');
-      }
-      return new GlmAdapter(key);
-    }
-
-    case 'qwen': {
-      const key = env.DASHSCOPE_API_KEY;
-      if (!key) {
-        throw new Error('DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to your shell profile.');
-      }
-      const baseUrl = env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-      return new QwenAdapter(key, baseUrl);
-    }
-
-    default:
-      throw new Error(`Unknown provider: ${provider}. Supported: openai, anthropic, deepseek, glm, qwen.`);
+export function createAdapter(settings: SubagentSettings): LlmAdapter {
+  const key = settings.apiKey;
+  const baseUrl = settings.baseUrl;
+  const model = settings.model;
+  if (!key || !baseUrl || !model) {
+    throw new Error(
+      'Subagent apiKey, baseUrl and model are required. Provide them in the MyTerminal config file (subagent.apiKey / subagent.baseUrl / subagent.model).',
+    );
   }
+  return new AnthropicAdapter(key, undefined, baseUrl);
 }

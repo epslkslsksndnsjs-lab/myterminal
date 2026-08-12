@@ -275,7 +275,7 @@ test('M8-runner-06: abort is idempotent', () => {
   );
 });
 
-test('M8-runner-07: config merge — input.model overrides settings.model', () => {
+test('M8-runner-07: config merge — input.model no longer overrides settings.model (#04)', () => {
   clearAllSubagents();
   resetSubagentRunner();
 
@@ -297,10 +297,10 @@ test('M8-runner-07: config merge — input.model overrides settings.model', () =
   return new Promise((resolve) => {
     setTimeout(() => {
       assert.ok(capturedSettings);
-      assert.equal(capturedSettings.model, 'gpt-4o-mini');
+      // #04：input.model 不再合并进 settings——模型只来自全局配置（默认值 gpt-4o）
+      assert.equal(capturedSettings.model, 'gpt-4o', 'input.model 不应覆盖 settings.model（#04 已移除合并）');
+      // 工程参数 maxTurns 仍可覆盖
       assert.equal(capturedSettings.maxTurns, 20);
-      // settings 默认值作为后备
-      assert.equal(capturedSettings.provider, 'openai');
       resolve();
     }, 200);
   });
@@ -585,13 +585,13 @@ test('M8-schema-13: MCP and OpenAPI contain subagent tools', async () => {
   const mcp = createMcpServer(facade);
   assert.ok(mcp, 'MCP server should be created without error');
 
-  // OpenAPI: toolInput properties 应含新增的 subagent 字段
+  // OpenAPI: toolInput properties 应含 subagent 工程字段（provider/model 已由 ADR-0045 #04 移除）
   const openapi = buildOpenApi({ ...config, publicBaseUrl: 'http://127.0.0.1:0' });
   const toolInput = openapi.components.schemas.ExtensionToolInput;
   assert.ok(toolInput, 'ExtensionToolInput schema must exist');
   const props = toolInput.properties;
-  assert.ok(props.provider, 'provider field must exist in toolInput');
-  assert.ok(props.model, 'model field must exist in toolInput');
+  assert.ok(!('provider' in props), 'provider field must be removed from toolInput (#04)');
+  assert.ok(!('model' in props), 'model field must be removed from toolInput (#04)');
   assert.ok(props.maxTurns, 'maxTurns field must exist in toolInput');
   assert.ok(props.readOnly, 'readOnly field must exist in toolInput');
 

@@ -226,7 +226,7 @@ test('06-08: fork 成功——返回 taskId + objective 前缀 + forkOptions + o
   assert.match(input.objective, /^执行技能 "fork-skill" 的指令：\n\n/);
   assert.match(input.objective, /Do the fork work autonomously/);
   assert.equal(input.background, 'A fork test skill for unit tests.');
-  assert.equal(input.provider, 'deepseek');   // forkOptions 展开（杀 M4）
+  // ADR-0045 D10：forkOptions.provider 不再被解析（技能不可覆盖模型/provider），故不再断言 input.provider
   assert.equal(input.maxTurns, 30);
   assert.equal(input.readOnly, true);
   assert.deepEqual(origin, { type: 'skill', skillName: 'fork-skill' }); // 杀 M5

@@ -22,8 +22,6 @@ export type SubagentStartInput = {
   deliverables?: string[];
   acceptanceCriteria?: string[];
   constraints?: string[];
-  provider?: 'openai' | 'anthropic' | 'deepseek' | 'glm' | 'qwen';
-  model?: string;
   maxTurns?: number;
   timeoutSec?: number;
   readOnly?: boolean;
@@ -170,11 +168,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       const record = getSubagent(subagentId);
       if (record) record.sessionId = child.id;
 
-      // 合并运行时配置
+      // 合并运行时配置（ADR-0045 #04：provider/model 已移除——模型只来自全局配置 settings）
       const mergedSettings: SubagentSettings = {
         ...settings,
-        provider: input.provider ?? settings.provider,
-        model: input.model ?? settings.model,
         maxTurns: input.maxTurns ?? settings.maxTurns,
         timeoutSec: input.timeoutSec ?? settings.timeoutSec,
       };
