@@ -526,7 +526,7 @@ test('form option state submits the latest multi-select values and resets betwee
   assert.equal(nextTextValue('3000', '30001', true), '1');
   assert.equal(nextTextValue('3000', '3100', true), '3100');
   assert.equal(nextTextValue('3000', '30001', false), '30001');
-  assert.equal(workspaceOptionLabel('MyTerminal', '/Users/example/myterminal', 'active · 127.0.0.1:3000'), 'MyTerminal\n/Users/example/myterminal\nactive · 127.0.0.1:3000');
+  assert.equal(workspaceOptionLabel('MyTerminal', '/tmp/example/myterminal', 'active · 127.0.0.1:3000'), 'MyTerminal\n/tmp/example/myterminal\nactive · 127.0.0.1:3000');
   const manyWorkspaces = Array.from({ length: 40 }, (_, index) => ({ title: `Workspace ${index + 1}`, workspaceDir: `/tmp/workspace-${index + 1}`, status: index === 17 ? 'active · 127.0.0.1:3017' : 'inactive', active: index === 17 }));
   const workspaceQuestion = workspaceChoiceQuestion('Workspace', manyWorkspaces, 17);
   assert.equal(workspaceQuestion.optionsLayout, 'column');

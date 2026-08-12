@@ -7,10 +7,11 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-// 允许的用户名：macOS 系统账户、CI 夹具用的假用户名。
-// 真实本机用户名（如 apple、a）不在其中，会被拦截。
+// 允许的用户名：仅 macOS/Linux 系统账户。真实本机用户名（如 apple、a、runner）
+// 不在其中，会被拦截——这才是本守卫的目的。不要为"避免误报"而加真实用户名，
+// 那会制造假阴性（漏报）。
 const ALLOWED = new Set([
-  'Shared', 'Guest', 'tester', 'runner', 'example', 'admin', 'local', 'root',
+  'Shared', 'Guest', 'root',
 ]);
 
 const BINARY_EXT = new Set([
@@ -19,26 +20,27 @@ const BINARY_EXT = new Set([
   '.ttf', '.otf', '.eot', '.mp4', '.webm', '.ico', '.pdf', '.bin',
 ]);
 
+// 匹配本机家目录绝对路径的正则：macOS/Linux /Users/<user>、Windows 反斜杠
+// C:\Users\<user> 与正斜杠 C:/Users/<user> 两种形态。
+const HOME_PATTERNS = [
+  { re: /\/Users\/([^/\s'"]+)/g, fmt: (u) => `/Users/${u}` },
+  { re: /[A-Za-z]:\\Users\\([^\\/\s'"]+)/g, fmt: (u) => `...\\Users\\${u}` },
+  { re: /[A-Za-z]:\/Users\/([^/\s'"]+)/g, fmt: (u) => `.../Users/${u}` },
+];
+
 // 返回该行命中的本机家目录路径描述列表。
 function checkLine(file, lineNo, line) {
   const hits = [];
-  const reMac = /\/Users\/([^/\s'"]+)/g;
-  let m;
-  while ((m = reMac.exec(line))) {
-    const user = m[1];
-    if (!ALLOWED.has(user) && !user.startsWith('_')) {
-      hits.push(`/Users/${user}`);
+  for (const { re, fmt } of HOME_PATTERNS) {
+    let m;
+    while ((m = re.exec(line))) {
+      const user = m[1];
+      if (!ALLOWED.has(user) && !user.startsWith('_')) {
+        const h = fmt(user);
+        hits.push(h);
+        console.log(`[FAIL] ${file}:${lineNo} 本机家目录绝对路径: ${h}`);
+      }
     }
-  }
-  const reWin = /[A-Za-z]:\\Users\\([^\\/\s'"]+)/g;
-  while ((m = reWin.exec(line))) {
-    const user = m[1];
-    if (!ALLOWED.has(user) && !user.startsWith('_')) {
-      hits.push(`...\\Users\\${user}`);
-    }
-  }
-  for (const h of hits) {
-    console.log(`[FAIL] ${file}:${lineNo} 本机家目录绝对路径: ${h}`);
   }
   return hits.length;
 }
