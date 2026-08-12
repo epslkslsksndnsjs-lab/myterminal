@@ -28,6 +28,9 @@ jobs:
       - run: bun run build
       - run: bun test --timeout 300000 test/*.test.mjs
         shell: bash
+      - name: Performance regression check
+        shell: bash
+        run: node scripts/compare-perf.mjs
       - name: Skill — provider-list parity with repo (review-gap #4/B)
         shell: bash
         run: node skills/myterminal-onboarding/scripts/check-provider-sync.mjs
