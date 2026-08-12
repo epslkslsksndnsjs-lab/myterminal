@@ -576,9 +576,10 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     },
   });
 
-  // ── Subagent 工具（ADR-0009 决策 1/8/9/12）──
-  // ADR-0031/0032：provider 枚举经 BUILTIN_INPUT_SCHEMAS.subagent_start 引用
-  // SUBAGENT_PROVIDERS 单源，这里不再手抄。
+  // ── Subagent 工具（ADR-0009 决策 1/8/9/12；ADR-0045 spine 重塑）──
+  // ADR-0045 已删 provider 概念：subagent_start 不再暴露 provider/model 枚举，
+  // 适配器收敛为单一 Anthropic Messages 协议（baseUrl 可配）；模型只来自全局配置。
+  // 此处无 provider/SUBAGENT_PROVIDERS 引用（常量已由 ADR-0045 删除）。
   const SUBAGENT_ANNOTATIONS = { readOnlyHint: false, destructiveHint: false, openWorldHint: false, idempotentHint: false };
 
   add({
