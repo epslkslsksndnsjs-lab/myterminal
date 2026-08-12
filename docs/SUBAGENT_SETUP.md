@@ -165,7 +165,7 @@ If both are correct, `subagent_start` returns a `taskId` immediately. Poll `suba
 
 Callers may override the configured `provider`, `model`, `maxTurns`, and `timeoutSec` per `subagent_start` invocation. This is useful for routing a one-off task to a stronger model without changing global settings. The override does not change `config.json`; it only applies to that single subagent. The matching environment variable must still be exported.
 
-The `skill` tool in `fork` mode also accepts `forkOptions` that override these fields for the subagent spawned by a skill.
+The `skill` tool's `fork` mode also accepts `forkOptions`, but it can only set **engineering** parameters (`maxTurns`, `timeoutSec`, `readOnly`, `deliverables`, `acceptanceCriteria`, `constraints`) for the spawned subagent. The `model` and `provider` are fixed by global configuration and **cannot** be overridden by a skill.
 
 ## 7. Cost tracking
 
