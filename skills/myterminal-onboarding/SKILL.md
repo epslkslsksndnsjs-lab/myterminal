@@ -1,6 +1,6 @@
 ---
 name: myterminal-onboarding
-description: Install MyTerminal on this machine and configure its subagent LLM provider, model and API key, step by step. Run once per machine.
+description: Install MyTerminal on this machine and configure its subagent LLM — fill an Anthropic-compatible endpoint (base URL), a model id, and an API key. Run once per machine.
 license: MIT
 disable: false
 ---
@@ -40,7 +40,7 @@ Get a user from "nothing installed" to "MyTerminal running with a working subage
 - **Prerequisites** — bun >= 1.3.0 (hard requirement, the build needs it)
 - **The app** — clone + `bun install` + `bun run build`
 - **Base config** — the first-run setup screen, which mints the connector credentials
-- **Subagent LLM** — provider + model written into `config.json`
+- **Subagent LLM** — endpoint (base URL) + model + API key written into `config.json`
 - **API key** — exported from the shell profile, never stored in a file MyTerminal reads
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found,
@@ -53,12 +53,10 @@ perform, and hand them one at a time with the exact command to run.
 
 Read these before doing anything. Violating one of them breaks the user's machine or lies to them.
 
-1. **Only five providers exist.** `openai`, `anthropic`, `deepseek`, `glm`, `qwen`. This is a
-   closed list compiled into `createAdapter` (`src/subagent/llm-adapter.ts`). If the user asks
-   for Gemini, Mistral, Ollama, OpenRouter, llama.cpp or anything else — including
-   "OpenAI-compatible" endpoints — say plainly that it is not supported by this build and that
-   adding it requires a code change (a new adapter subclass plus a case in the factory).
-   Do not pretend a config field can enable it. There is no `baseUrl` setting.
+1. **One protocol, no provider picker.** MyTerminal now speaks a single Anthropic-compatible
+   protocol — ADR-0045 removed the `provider` concept. You fill three things: an **endpoint**
+   (base URL), a **model** id, and an **API key**. There is no provider selection; do not pretend
+   a config field enables a specific vendor. The app only reads `baseUrl` + `model` + `apiKey`.
 2. **Never write the API key into `config.json`.** Keys are read from environment variables only.
    The script strips key-like fields on merge; do not add them back by hand.
 3. **Never hand-write a fresh `config.json`.** A base config carries randomly generated
@@ -87,7 +85,7 @@ The JSON tells you everything you need:
 | `bun.satisfiesMinimum` | Whether the build can proceed at all |
 | `myterminal.installed` / `.built` | Whether to clone / build, and where it already lives |
 | `config.exists` / `config.writability` | Whether the first-run setup screen still has to happen |
-| `config.subagent` | The current provider/model, if any — use it as the default |
+| `config.subagent` | The current model / endpoint, if any — use it as the default |
 | `apiKeysPresent` | Booleans only. Which keys are already in this shell |
 | `shell.profilePath` / `shell.manual` | Where the export line goes, or that this is native Windows |
 
@@ -100,30 +98,31 @@ Summarise what is present and what is missing in a few lines. Then take the deci
 one decision, one answer, then the next. Lead each with the recommended answer so the user can
 accept it in a single word. Skip any decision that exploration already settled.
 
-**Decision A — Provider.** Skip if `config.subagent.provider` already exists and the user has not
-asked to change it; just confirm you are keeping it.
+**Decision A — Endpoint & model.** Skip if `config.subagent.model` already exists and the user has not
+asked to change it; just confirm you are keeping it. Lead with the recommended endpoint + model in
+the table below. **Note:** the current `onboard.mjs` build still takes a `--provider <p>` flag on
+its `--write-config` / `--key` commands — that flag is legacy and inert (the app ignores the
+`provider` field; it only reads endpoint + model + key). A later cleanup drops it.
 
-Recommend `openai` for a fresh install. Present the full list honestly:
+Recommend Anthropic native (`https://api.anthropic.com` + `claude-3-5-sonnet-20241022`) for a fresh install, or a Chinese gateway if the user is in China. Present the options honestly:
 
-| Provider | Env var | Recommended model | Console |
-| --- | --- | --- | --- |
-| `openai` | `OPENAI_API_KEY` | `gpt-4o` | platform.openai.com/api-keys |
-| `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` | console.anthropic.com |
-| `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` | platform.deepseek.com |
-| `glm` | `GLM_API_KEY` | `glm-4` (`glm-4-flash` is the cheap tier) | open.bigmodel.cn |
-| `qwen` | `DASHSCOPE_API_KEY` | `qwen-max` | dashscope.console.aliyun.com |
+| Endpoint (base URL) | Recommended model | Notes |
+| --- | --- | --- |
+| `https://api.anthropic.com` | `claude-3-5-sonnet-20241022` | Anthropic native |
+| Chinese gateways (Moonshot / Qwen / …) | vendor model id | use the gateway's `ANTHROPIC_BASE_URL`; the base URL already carries the vendor |
 
-If `apiKeysPresent` already shows a key for one of them, lead with that provider — the user
+The API key is read from the environment (see Stage 5); there is no provider field to pick.
+
+If `apiKeysPresent` already shows a key for one of them, lead with that endpoint/model — the user
 clearly has an account there.
 
-If the user names anything outside the table, apply Non-negotiable 1. Offer the closest
-supported alternative and let them choose from the five.
+If the user names a model or endpoint outside the table, apply Non-negotiable 1. Offer the
+closest supported alternative (a different Anthropic-compatible endpoint or model).
 
-**Decision B — Model.** Recommend the model from the table for the chosen provider. The script
-**enforces** model↔provider consistency: a model that clearly belongs to another provider
-(e.g. `qwen3.7-plus` under `openai`) is rejected with an error, not silently written. Unknown
-prefixes are allowed but flagged with a warning. If the user names a model from another provider's
-row, switch `--provider` to match it.
+**Decision B — Model.** Recommend a model for the chosen endpoint (see the table in Decision A).
+The script keeps a light model-prefix sanity check; an unknown prefix is allowed with a warning.
+If the user names a model that clearly belongs to a different vendor's endpoint, suggest the
+matching endpoint instead of a provider flag.
 
 **Decision C — Install location.** Skip if `myterminal.installed` is true; say where it was found.
 Otherwise recommend `~/myterminal` and accept any path.
@@ -134,7 +133,7 @@ Show a draft before writing anything:
 
 - The `subagent` block that will be merged into `config.json` — use
   [subagent-config.template.json](./templates/subagent-config.template.json) as the shape, and
-  show it filled in with the chosen provider and model. Point out that everything else in the
+  show it filled in with the chosen endpoint and model. Point out that everything else in the
   file is preserved and that no key appears in it.
 - The exact `export` line that will go into their shell profile, with the key redacted.
 
@@ -205,7 +204,7 @@ overload-degradation model). Same-provider family recommended. Omit to leave it 
 is passed through verbatim — no provider validation is applied to it (the app doesn't validate it
 either), so a typo there fails later at runtime, not at write time.
 
-**Stage 5 — API key.** The user has to fetch the key from the provider console themselves —
+**Stage 5 — API key.** The user has to fetch the key from their model provider's console themselves —
 send them to the URL from the table. Once they paste it to you, prefer stdin so the key never
 reaches shell history:
 
@@ -240,14 +239,14 @@ The `--healthcheck` makes a real `GET /health` call and requires `200 + product:
 isn't listening — usually a wrong port or a crashed `bun start`; re-check before telling them it works.
 Custom host/port: `node scripts/onboard.mjs --healthcheck --host <h> --port <p>`.
 
-Mention that they can change provider or model later by re-running
+Mention that they can change endpoint or model later by re-running
 `node scripts/onboard.mjs --write-config`, and that the key lives in their shell profile inside the
 `# >>> myterminal-onboarding >>>` block if they ever need to rotate it.
 
 ### 6. Keep the copy current (self-check)
 
 This skill is a *copy* of the one in the MyTerminal repo. A stale copy won't error at import —
-it just silently rejects a provider the repo now supports, or lacks a flag you expect. After install
+it just silently rejects a model the repo now supports, or lacks a flag you expect. After install
 (or any time you suspect drift), run the built-in self-test:
 
 ```bash
@@ -256,8 +255,9 @@ node scripts/onboard.mjs --self-test    # expect: SELF-TEST PASSED: N checks OK
 
 It checks that every critical export and CLI flag (`--verify`, `--base-url`, `--healthcheck`,
 `--fallback-model`) is present — no repo, no network. Non-zero exit means the copy is stale;
-re-sync it from the MyTerminal repo. Repo-level provider-list parity is enforced separately by
-CI (`scripts/check-provider-sync.mjs`), which the deployed copy can't run on its own.
+re-sync it from the MyTerminal repo. Repo-level provider-list parity is no longer enforced —
+the `scripts/check-provider-sync.mjs` guard was removed with ADR-0045 (the `provider` concept was
+deleted). Keep your copy current by re-running `--self-test` and pulling updates from the repo.
 
 ## Reference
 
@@ -268,8 +268,8 @@ checkout* — read them only once you know where that checkout is (the detector 
 
 | Path in the checkout | What it settles |
 | --- | --- |
-| `docs/SUBAGENT_SETUP.md` / `docs/SUBAGENT_SETUP.zh-CN.md` | The full manual setup document — provider table, every config field, troubleshooting |
-| `src/subagent/llm-adapter.ts` | `createAdapter` — the closed provider list, and the env var each one reads |
+| `docs/SUBAGENT_SETUP.md` / `docs/SUBAGENT_SETUP.zh-CN.md` | The full manual setup document — endpoint/model/key fields, every config field, troubleshooting |
+| `src/subagent/llm-adapter.ts` | `createAdapter` — the single Anthropic-compatible adapter; reads `apiKey`/`baseUrl` from settings |
 | `src/config.ts` | `settingsPath`, `createDefaultSettings`, `validateSettings` — why a partial config is fatal |
 | `src/types.ts` | `SubagentSettings` — the authoritative field list (single Anthropic entry; no provider enum) |
 | `test/adr43-onboarding-skill.test.mjs` | The locks on this skill's own logic; read it if you suspect a behaviour changed |
