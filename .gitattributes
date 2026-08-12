@@ -1,4 +1,0 @@
-# GitHub linguist overrides
-# 产品代码为 TypeScript（src/ 全 .ts/.tsx）；.mjs 是测试与构建脚本，
-# 以 JS 语法编写仅供 node/bun 直接执行。统归 TypeScript，避免语言栏误标 JavaScript。
-*.mjs linguist-language=TypeScript
