@@ -178,8 +178,106 @@ describe('issue66 assembly contract — AnthropicAdapter.create', () => {
 // ═══════════════════════════════════════════════
 
 describe('issue66 assembly contract — collectStream normal path', () => {
-  
-  
+  test('纯文本流 → message shape + hadToolCalls=false', async () => {
+    const sse = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n') + '\n';
+
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => sseFakeResponse(sse));
+
+    const chunks = [];
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: (c) => chunks.push(c),
+    });
+
+    assert.equal(result.message.role, 'assistant');
+    assert.deepEqual(result.message.content, [{ type: 'text', text: 'Hello world' }]);
+    assert.equal(result.hadToolCalls, false);
+    assert.equal(result.usage.input_tokens, 10);
+    assert.equal(result.usage.output_tokens, 5);
+  });
+
+  test('工具调用流 → message shape + hadToolCalls=true', async () => {
+    const sse = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":20}}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"bash"}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"cmd\\""}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\\"ls\\"}"}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":15}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n') + '\n';
+
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => sseFakeResponse(sse));
+
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: () => {},
+    });
+
+    assert.equal(result.message.role, 'assistant');
+    assert.equal(result.hadToolCalls, true);
+    assert.equal(result.message.content.length, 1);
+    assert.deepEqual(result.message.content[0], {
+      type: 'tool_use', id: 'call_1', name: 'bash', input: { cmd: 'ls' },
+    });
+  });
+
+  test('空流 → 空 content + hadToolCalls=false', async () => {
+    const sse = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n') + '\n';
+
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => sseFakeResponse(sse));
+
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: () => {},
+    });
+
+    assert.deepEqual(result.message.content, []);
+    assert.equal(result.hadToolCalls, false);
+  });
+
+  test('工具 JSON 解析失败 → _parse_error 降级', async () => {
+    const sse = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_x","name":"bash"}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{bad"}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n') + '\n';
+
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => sseFakeResponse(sse));
+
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: () => {},
+    });
+
+    assert.deepEqual(result.message.content[0], {
+      type: 'tool_use', id: 'call_x', name: 'bash',
+      input: { _parse_error: true, raw: '{bad' },
+    });
+  });
 });
 
 // ═══════════════════════════════════════════════
@@ -187,6 +285,88 @@ describe('issue66 assembly contract — collectStream normal path', () => {
 // ═══════════════════════════════════════════════
 
 describe('issue66 assembly contract — collectStream fallback path', () => {
-  
-  
+  test('流失败 + 无完整 tool_call → 回退非流式 + re-emit 事件', async () => {
+    let callCount = 0;
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => {
+      callCount++;
+      if (callCount === 1) {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          pull(controller) {
+            controller.enqueue(encoder.encode('data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n'));
+            controller.error(new Error('network disconnect'));
+          }
+        });
+        return new Response(stream, { status: 200 });
+      }
+      return jsonFakeResponse({
+        content: [{ type: 'text', text: 'Fallback response' }],
+        usage: { input_tokens: 8, output_tokens: 4 },
+      });
+    });
+
+    const chunks = [];
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: (c) => chunks.push(c),
+    });
+
+    // 回退结果形状
+    assert.equal(result.message.role, 'assistant');
+    assert.deepEqual(result.message.content, [{ type: 'text', text: 'Fallback response' }]);
+    assert.equal(result.hadToolCalls, false);
+    assert.equal(result.usage.input_tokens, 8);
+    assert.equal(result.usage.output_tokens, 4);
+
+    // re-emit 事件序列：text_delta + message_end
+    const textDeltas = chunks.filter(c => c.type === 'text_delta');
+    const messageEnds = chunks.filter(c => c.type === 'message_end');
+    assert.ok(textDeltas.length >= 1, 'should re-emit text_delta');
+    assert.equal(textDeltas[textDeltas.length - 1].text, 'Fallback response');
+    assert.ok(messageEnds.length >= 1, 'should re-emit message_end');
+    assert.equal(messageEnds[messageEnds.length - 1].usage.input_tokens, 8);
+    assert.equal(messageEnds[messageEnds.length - 1].usage.output_tokens, 4);
+  });
+
+  test('回退非流式含工具 → hadToolCalls=true + 无 text_delta', async () => {
+    let callCount = 0;
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => {
+      callCount++;
+      if (callCount === 1) {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          pull(controller) {
+            controller.enqueue(encoder.encode('data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_f","name":"bash"}}\n'));
+            controller.error(new Error('connection reset'));
+          }
+        });
+        return new Response(stream, { status: 200 });
+      }
+      return jsonFakeResponse({
+        content: [{ type: 'tool_use', id: 'call_f', name: 'bash', input: { cmd: 'pwd' } }],
+        usage: { input_tokens: 10, output_tokens: 10 },
+      });
+    });
+
+    const chunks = [];
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: (c) => chunks.push(c),
+    });
+
+    assert.equal(result.hadToolCalls, true);
+    assert.deepEqual(result.message.content[0], {
+      type: 'tool_use', id: 'call_f', name: 'bash', input: { cmd: 'pwd' },
+    });
+
+    // 无文本 → 不应有 text_delta（只有 message_end）
+    const textDeltas = chunks.filter(c => c.type === 'text_delta');
+    assert.equal(textDeltas.length, 0);
+    const messageEnds = chunks.filter(c => c.type === 'message_end');
+    assert.ok(messageEnds.length >= 1);
+  });
 });

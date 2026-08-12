@@ -326,21 +326,125 @@ test('AnthropicAdapter — tool_use content_block 事件流转', async () => {
 
 // ── 用例 13：429 rate_limit + Retry-After ──
 
+test('错误分类 — 429 + Retry-After → rate_limit', async () => {
+  const fakeFetch = async () => new Response('Rate limited', {
+    status: 429,
+    headers: { 'Retry-After': '3' },
+  });
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  try {
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.ok(err instanceof LlmError);
+    assert.equal(err.kind, 'rate_limit');
+    assert.equal(err.retryAfterMs, 3000);
+    assert.equal(err.status, 429);
+  }
+});
 
 // ── 用例 14：401 auth → 不重试 ──
 
+test('错误分类 — 401 → auth（消息含 API key 指引）', async () => {
+  const fakeFetch = async () => new Response('Unauthorized', { status: 401 });
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  try {
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.ok(err instanceof LlmError);
+    assert.equal(err.kind, 'auth');
+    assert.ok(err.message.toLowerCase().includes('api key'));
+  }
+});
 
 // ── 用例 15：529 server_overload ──
 
+test('错误分类 — 529 → server_overload', async () => {
+  const fakeFetch = async () => new Response('Overloaded', { status: 529 });
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  try {
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.ok(err instanceof LlmError);
+    assert.equal(err.kind, 'server_overload');
+  }
+});
 
 // ── 用例 16：400 prompt_too_long ──
 
+test('错误分类 — 400 含 context_length → prompt_too_long', async () => {
+  const fakeFetch = async () => new Response(
+    '{"error":{"message":"This model maximum context length is 128000 tokens"}}',
+    { status: 400 },
+  );
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  try {
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.ok(err instanceof LlmError);
+    assert.equal(err.kind, 'prompt_too_long');
+  }
+});
 
 // ── 用例 17：网络错误 → connection ──
 
+test('错误分类 — fetch reject (TypeError) → connection', async () => {
+  const fakeFetch = async () => { throw new TypeError('fetch failed'); };
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  try {
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams(), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.ok(err instanceof LlmError);
+    assert.equal(err.kind, 'connection');
+  }
+});
 
 // ── 用例 18：abort 不被包装 ──
 
+test('错误分类 — signal.abort() → AbortError 原样抛出', async () => {
+  const fakeFetch = async () => {
+    throw new DOMException('The operation was aborted', 'AbortError');
+  };
+
+  const controller = new AbortController();
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+
+  try {
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams(), controller.signal)) {
+      chunks.push(chunk);
+    }
+    assert.fail('Should have thrown');
+  } catch (err) {
+    // AbortError 应该原样抛出，不被包装成 LlmError
+    assert.ok(err instanceof DOMException);
+    assert.equal(err.name, 'AbortError');
+  }
+});
 
 // ═══════════════════════════════════════════════
 // 第六部分：Watchdog + 回退测试（决策 27）
@@ -348,18 +452,190 @@ test('AnthropicAdapter — tool_use content_block 事件流转', async () => {
 
 // ── 用例 19：Watchdog 超时 ──
 
+test('Watchdog — 流挂起后超时→connection 错误', async () => {
+  let callCount = 0;
+  // 第一次调用 stream 永远挂起（等待 signal abort），第二次调用 create 立即失败
+  const fakeFetch = async (url, init) => {
+    callCount++;
+    if (callCount === 1) {
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+        });
+        // 不 resolve——模拟挂起，直到 watchdog 触发 abort
+      });
+    }
+    // fallback create() 也失败
+    throw new TypeError('Network error');
+  };
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  try {
+    await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: new AbortController().signal,
+      onChunk: () => {},
+      idleTimeoutMs: 100,
+    });
+    assert.fail('Should have thrown');
+  } catch (err) {
+    assert.equal(callCount, 2, 'Should call stream + fallback create');
+    assert.ok(err instanceof LlmError, `Expected LlmError, got ${err?.constructor?.name}`);
+    assert.equal(err.kind, 'connection');
+  }
+});
 
 // ── 用例 20：不因已产出 tool_call 回退 ──
 
+test('回退 — 已产出完整 tool_call_end 则不回退', async () => {
+  let callCount = 0;
+  const sse =
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":10}}}\n\n' +
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}\n\n' +
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/tmp\\"}"}}\n\n' +
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+  const fakeFetch = async () => {
+    callCount++;
+    if (callCount === 1) return sseFakeResponse(sse);
+    // 不应被调用第二遍（tool_call_end 已发生 = 已产出完整结果）
+    return jsonFakeResponse({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'fallback' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } });
+  };
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  const result = await collectStream({
+    adapter,
+    chatParams: makeChatParams({
+      tools: [{ name: 'read', description: 'Read', input_schema: { type: 'object', properties: {} } }],
+    }),
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    idleTimeoutMs: 0,
+  });
+
+  // 流正常完成，tool_call 已产出——不应回退到 create()
+  assert.equal(callCount, 1, 'create() 不应被调用（tool_call_end 已发生）');
+  assert.ok(result.hadToolCalls || result.message.content.some(b => b.type === 'tool_use'),
+    'Should have tool calls');
+});
 
 // ── 用例 21：流式失败回退到 create() ──
 
+test('回退 — 流式开头失败 → 自动回退 create()', async () => {
+  let callCount = 0;
+  const fakeFetch = async () => {
+    callCount++;
+    if (callCount === 1) {
+      // 第一次：流式失败（网络错误类）
+      throw new TypeError('fetch failed');
+    }
+    // 第二次：非流式成功（Anthropic 形状）
+    return jsonFakeResponse({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Fallback response' }],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+  };
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+  const result = await collectStream({
+    adapter,
+    chatParams: makeChatParams(),
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    idleTimeoutMs: 0,
+  });
+
+  assert.equal(callCount, 2, 'Should have called fetch twice (stream + fallback)');
+  assert.equal(result.hadToolCalls, false);
+  assert.ok(result.message.content.some(b => b.type === 'text' && b.text.includes('Fallback')));
+});
 
 // ═══════════════════════════════════════════════
 // 第七部分：集成测试（决策 24 + 27）
 // ═══════════════════════════════════════════════
 
 // ── 用例 22：两轮对话集成 ──
+
+test('集成 — 两轮对话（tool_call + tool_result + 最终文本）', async () => {
+  let callCount = 0;
+  const fakeFetch = async () => {
+    callCount++;
+    if (callCount === 1) {
+      // 第 1 轮：LLM 流式返回 text + tool_call（Anthropic SSE）
+      return sseFakeResponse(
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"r1","usage":{"input_tokens":15}}}\n\n' +
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check that."}}\n\n' +
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read","input":{}}}\n\n' +
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"/tmp/test\\"}"}}\n\n' +
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n' +
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":12}}\n\n' +
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      );
+    }
+    // 第 2 轮：LLM 流式返回纯文本（Anthropic SSE）
+    return sseFakeResponse(
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"r2","usage":{"input_tokens":20}}}\n\n' +
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"File contents: hello"}}\n\n' +
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    );
+  };
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetch);
+
+  // 第 1 轮
+  const round1 = await collectStream({
+    adapter,
+    chatParams: makeChatParams({
+      tools: [{ name: 'read', description: 'Read', input_schema: { type: 'object', properties: { path: { type: 'string' } } } }],
+    }),
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    idleTimeoutMs: 0,
+  });
+
+  assert.equal(callCount, 1);
+  assert.equal(round1.hadToolCalls, true);
+  assert.ok(round1.usage.input_tokens > 0);
+
+  // 构建 tool_result 后，第 2 轮
+  const round2Messages = [
+    ...makeChatParams().messages,
+    round1.message,
+    {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'toolu_1',
+        content: 'hello',
+        is_error: false,
+      }],
+    },
+  ];
+
+  const round2 = await collectStream({
+    adapter,
+    chatParams: makeChatParams({ messages: round2Messages, tools: [] }),
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    idleTimeoutMs: 0,
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(round2.hadToolCalls, false);
+  assert.ok(round2.usage.input_tokens > 0);
+  const text = round2.message.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  assert.ok(text.includes('hello'));
+});
 
 
 // ═══════════════════════════════════════════════
@@ -429,6 +705,29 @@ test('AnthropicAdapter — create() 非流式', async () => {
 
 // ── 额外覆盖：collectStream 中 JSON 解析失败降级 ──
 
+test('collectStream — JSON 解析失败 → 文本降级', async () => {
+  const sse =
+    'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":5}}}\n\n' +
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"bad","input":{}}}\n\n' +
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"not valid json"}}\n\n' +
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}\n\n' +
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+  const adapter = new AnthropicAdapter('sk-ant', fakeFetchOnce(sseFakeResponse(sse)));
+  const result = await collectStream({
+    adapter,
+    chatParams: makeChatParams(),
+    signal: new AbortController().signal,
+    onChunk: () => {},
+    idleTimeoutMs: 0,
+  });
+
+  // 即使 JSON 解析失败，也不应抛错——tool_use block 包含 _parse_error
+  const toolUses = result.message.content.filter(b => b.type === 'tool_use');
+  assert.equal(toolUses.length, 1);
+  assert.equal(toolUses[0].input._parse_error, true);
+});
 
 // ── 额外覆盖：AnthropicAdapter create() HTTP 错误 ──
 
