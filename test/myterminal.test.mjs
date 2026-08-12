@@ -1561,7 +1561,7 @@ test('message composer does not open when no active recipient exists', () => {
 });
 
 test('project copy constraints forbid exposing implementation requirements as UI copy', () => {
-  const constraints = fs.readFileSync(new URL('../AI_RULES.md', import.meta.url), 'utf8');
+  const constraints = fs.readFileSync(new URL('../DEVELOPMENT.md', import.meta.url), 'utf8');
   assert.match(constraints, /must not be shown as user-facing UI copy/);
 });
 
