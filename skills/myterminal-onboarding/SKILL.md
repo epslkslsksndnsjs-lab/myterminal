@@ -271,7 +271,7 @@ checkout* — read them only once you know where that checkout is (the detector 
 | `docs/SUBAGENT_SETUP.md` / `docs/SUBAGENT_SETUP.zh-CN.md` | The full manual setup document — provider table, every config field, troubleshooting |
 | `src/subagent/llm-adapter.ts` | `createAdapter` — the closed provider list, and the env var each one reads |
 | `src/config.ts` | `settingsPath`, `createDefaultSettings`, `validateSettings` — why a partial config is fatal |
-| `src/types.ts` | `SUBAGENT_PROVIDERS`, `SubagentSettings` — the authoritative field list |
+| `src/types.ts` | `SubagentSettings` — the authoritative field list (single Anthropic entry; no provider enum) |
 | `test/adr43-onboarding-skill.test.mjs` | The locks on this skill's own logic; read it if you suspect a behaviour changed |
 
 If the user has no checkout yet, the online copy of the setup document is at

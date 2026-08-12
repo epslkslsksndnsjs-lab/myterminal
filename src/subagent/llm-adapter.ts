@@ -285,10 +285,14 @@ export class AnthropicAdapter implements LlmAdapter {
   private baseUrl: string;
   private fetchImpl: typeof fetch;
 
-  // ADR-0045（spine）：baseUrl 可配（配置即端点，可指向 Anthropic 兼容网关）
+  // ADR-0045（spine）：baseUrl 是厂商的 Anthropic 兼容 base URL（如
+  // `https://api.anthropic.com` 或 `https://api.moonshot.cn/anthropic`），
+  // 不含 `/v1` 与 `/messages`；代码统一补 `/v1/messages`。归一化剥掉末尾
+  // 多余的 `/v1` 与 `/`，避免双 `/v1`（如旧默认 `.../v1`）或 `//`（如带尾斜杠）。
   constructor(apiKey: string, fetchImpl?: typeof fetch, baseUrl?: string) {
     this.apiKey = apiKey;
-    this.baseUrl = baseUrl || 'https://api.anthropic.com/v1';
+    const raw = (baseUrl ?? 'https://api.anthropic.com').trim().replace(/\/+$/, '');
+    this.baseUrl = raw.endsWith('/v1') ? raw.slice(0, -3) : raw;
     this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -357,7 +361,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }));
     }
 
-    const response = await this.fetchImpl(`${this.baseUrl}/messages`, {
+    const response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
@@ -504,7 +508,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }));
     }
 
-    const response = await this.fetchImpl(`${this.baseUrl}/messages`, {
+    const response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,

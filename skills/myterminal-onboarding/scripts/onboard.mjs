@@ -26,8 +26,7 @@ import { doSelfTest } from './self-test.mjs'; // --self-test logic lives in its 
 // ─────────────────────────────────────────────────────────────────────────────
 // Facts mirrored from the main repo. If the repo changes, these must change too
 // (test/adr43-onboarding-skill.test.mjs locks them).
-//   src/types.ts:185                       — SUBAGENT_PROVIDERS (closed list of 5)
-//   src/subagent/llm-adapter.ts:1099-1147  — env var name per provider
+//   src/subagent/llm-adapter.ts            — single Anthropic adapter (ADR-0045)
 //   src/config.ts:24-30                    — settingsPath fallback chain
 //   src/config.ts:101-108                  — subagent defaults
 // ─────────────────────────────────────────────────────────────────────────────

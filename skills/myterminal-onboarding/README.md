@@ -59,9 +59,8 @@ myterminal-onboarding/
   SKILL.md                                  agent 面向的说明
   scripts/onboard.mjs                       生产脚本（跑安装/配置逻辑，不含测试代码）
   scripts/self-test.mjs                     ⚠ 唯一的测试代码：--self-test 自检，独立文件
-  scripts/check-provider-sync.mjs           CI 护栏：比对主仓 provider 列表
   scripts/install.mjs                       一条命令安装器
   templates/subagent-config.template.json   subagent 块形状（片段，非完整 config）
 ```
 
-> 唯一与系统代码的单向耦合：`check-provider-sync.mjs` 会读 `src/types.ts`（技能 → 系统，CI 护栏用）。`onboard.mjs` 与 `self-test.mjs` 不依赖任何 `src/` 代码。
+> 技能不依赖任何 `src/` 代码（`onboard.mjs` 与 `self-test.mjs` 均不读主仓源码）。原比对 provider 列表的 CI 护栏 `check-provider-sync.mjs` 已随 ADR-0045 删除 provider 概念而移除。

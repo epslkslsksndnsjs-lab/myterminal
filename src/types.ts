@@ -181,12 +181,9 @@ export type StoredState = {
   harnessContract?: { mode: ActionsContinuationMode; revision: string; updatedAt: string };
 };
 
-// ADR-0031（#61）：provider 运行时单源——联合类型由此数组派生，新增 provider 只改这一处
-export const SUBAGENT_PROVIDERS = ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'] as const;
-export type SubagentProvider = (typeof SUBAGENT_PROVIDERS)[number];
-
 // ADR-0045（spine）：零默认、显式、代码永不猜。收敛为单一 Anthropic 协议入口，
-// 配置从"选 provider"改为"填端点"。provider 概念由 ADR-0045 后续工单删除。
+// 配置从"选 provider"改为"填端点"。provider 概念已由 ADR-0045 删除（含
+// 原 SUBAGENT_PROVIDERS 常量及其派生类型，以及 onboarding 技能的 check-provider-sync 护栏）。
 export type SubagentSettings = {
   enabled: boolean;
   model: string;          // 全局唯一模型（必填，零默认、缺配即拒）
