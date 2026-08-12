@@ -45,10 +45,11 @@ function tempDir() {
 /**
  * 健壮删除临时目录：Windows 不允许删除仍被句柄锁定的目录
  * （例如 abort 后子进程尚未释放 cwd/管道），直接 rmSync 会抛 EBUSY/EPERM。
- * 这里对这类错误做短暂重试，避免在 Windows CI 上偶发红。
+ * 这里对这类错误做重试；耗尽次数后 best-effort 放弃（临时目录位于 os.tmpdir()，
+ * 由操作系统回收），避免在 Windows CI 上偶发红。
  * 仅影响测试清理，不改变任何产品行为或断言。
  */
-function rmDirRobust(dir, attempts = 10) {
+function rmDirRobust(dir, attempts = 30, intervalMs = 200) {
   for (let i = 0; i < attempts; i++) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -58,11 +59,13 @@ function rmDirRobust(dir, attempts = 10) {
       const retryable = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY';
       if (i < attempts - 1 && retryable) {
         // 等子进程/句柄释放后重试（同步短睡，跨平台可靠）
-        const end = Date.now() + 50;
+        const end = Date.now() + intervalMs;
         while (Date.now() < end) { /* spin */ }
         continue;
       }
-      throw err;
+      // 非可重试错误直接抛出；可重试但耗尽次数则 best-effort 放弃
+      if (!retryable) throw err;
+      return;
     }
   }
 }
