@@ -17,7 +17,7 @@ disable: false
 
 ```bash
 # 一条命令，从任意目录直接运行（把路径换成你机器上 MyTerminal 的实际位置）
-node ~/Desktop/myterminal/skills/myterminal-onboarding/scripts/install.mjs
+node <myterminal-path>/skills/myterminal-onboarding/scripts/install.mjs
 ```
 
 > ⚠️ 必须用**绝对路径**（或 `~/...` 这种 home 展开路径）。不要写 `node skills/.../install.mjs` 这种相对路径——
@@ -27,7 +27,7 @@ node ~/Desktop/myterminal/skills/myterminal-onboarding/scripts/install.mjs
 - **幂等**：重复运行只会用当前副本覆盖，更新技能后随时再跑一次，不会重复或残留。
 - **目标目录**：默认装到 `~/.workbuddy/skills/myterminal-onboarding/`（检测到其他 Agent 也会一起装）。
 - **立即生效**：装完无需重启，Agent 里输入 `/myterminal-onboarding` 即可开始配置。
-- **无交互模式**：`node ~/Desktop/myterminal/skills/myterminal-onboarding/scripts/install.mjs --yes` 直接装；`--target claude` 只装指定 Agent。
+- **无交互模式**：`node <myterminal-path>/skills/myterminal-onboarding/scripts/install.mjs --yes` 直接装；`--target claude` 只装指定 Agent。
 - **卸载**：删除 `~/.workbuddy/skills/myterminal-onboarding` 即可。
 
 这与参考技能（mattpocock/skills）的设计哲学一致：技能是被 Agent 加载的文件夹，而不是要注册的包。
