@@ -20,6 +20,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+      - name: Guard — 禁止本机家目录绝对路径进库
+        shell: bash
+        run: node scripts/check-no-absolute-paths.mjs
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run build
