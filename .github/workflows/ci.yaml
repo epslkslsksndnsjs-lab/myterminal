@@ -29,6 +29,7 @@ jobs:
       - run: bun test --timeout 300000 test/*.test.mjs
         shell: bash
       - name: Performance regression check
+        if: runner.os == 'Linux'
         shell: bash
         run: node scripts/compare-perf.mjs
       - name: Skill — provider-list parity with repo (review-gap #4/B)

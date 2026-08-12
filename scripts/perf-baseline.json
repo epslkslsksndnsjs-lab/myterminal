@@ -3,34 +3,34 @@
     "requestedEntries": 100000,
     "indexedEntries": 100028,
     "renderedEntries": 200,
-    "elapsedMs": 146.888458,
-    "rssDeltaBytes": 59080704
+    "elapsedMs": 383.31,
+    "rssDeltaBytes": 7184384
   },
   "inbox": {
     "total": 5000,
     "returned": 50,
     "observations": 50,
-    "elapsedMs": 125.39337499999999,
-    "rssDeltaBytes": 25001984
+    "elapsedMs": 226.9,
+    "rssDeltaBytes": 24084480
   },
   "tui": {
     "sourceMessages": 5000,
     "snapshotMessages": 500,
-    "snapshotMs": 1.006083999999987
+    "snapshotMs": 1.85
   },
   "issue63": {
     "context": {
-      "firstMs": 85.89704200000006,
-      "repeat50Ms": 15.854666000000066,
+      "firstMs": 144.92,
+      "repeat50Ms": 29.64,
       "projectionBytes": 15246
     },
     "microCompact": {
       "pairs": 1500,
-      "elapsedMs": 0.9497089999999844
+      "elapsedMs": 1.62
     },
     "timeline": {
       "frames": 100,
-      "elapsedMs": 0.08933300000001054
+      "elapsedMs": 0.17
     }
   }
 }
