@@ -672,6 +672,58 @@ test('createAdapter — 缺少 apiKey/baseUrl/model 抛错', () => {
   }, /Subagent apiKey, baseUrl and model are required/);
 });
 
+// ── 用例 24（ADR-0045 D9 路径三：配置覆盖默认）──
+
+test('createAdapter — 配置 baseUrl/apiKey 覆盖默认，流入请求 URL 与 x-api-key 头', async () => {
+  let capturedUrl;
+  let capturedApiKey;
+  // createAdapter 写死用 globalThis.fetch（llm-adapter.ts:296），不接受注入；
+  // 因此在测试内临时替换全局 fetch 来捕获真实请求，验证配置覆盖了硬编码默认端点。
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    capturedUrl = url;
+    capturedApiKey = init.headers['x-api-key'];
+    return sseFakeResponse(
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":5}}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}\n\n' +
+      'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    );
+  };
+
+  try {
+    // 故意用非默认端点（中国网关）与特定 key——若回退到硬编码默认则断言失败
+    const configuredBaseUrl = 'https://api.moonshot.cn/anthropic';
+    const configuredApiKey = 'sk-custom-gateway-123';
+    const adapter = createAdapter({
+      enabled: true,
+      model: 'claude-sonnet-4-20250514',
+      baseUrl: configuredBaseUrl,
+      apiKey: configuredApiKey,
+      maxTurns: 50,
+      timeoutSec: 300,
+      maxParallel: 2,
+    });
+
+    assert.equal(adapter.provider, 'anthropic');
+    assert.ok(adapter instanceof AnthropicAdapter);
+
+    const chunks = [];
+    for await (const chunk of adapter.stream(makeChatParams({ model: 'claude-sonnet-4-20250514' }), new AbortController().signal)) {
+      chunks.push(chunk);
+    }
+
+    // 配置覆盖默认：请求 URL 必须来自配置 baseUrl，而非硬编码默认 api.anthropic.com
+    assert.equal(capturedUrl, `${configuredBaseUrl}/v1/messages`);
+    assert.ok(!capturedUrl.includes('api.anthropic.com'), '不应回退到默认 anthropic 端点');
+    // 配置 apiKey 必须流入 x-api-key 头
+    assert.equal(capturedApiKey, configuredApiKey);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 // ═══════════════════════════════════════════════
 // 第九部分：deepseek 特定测试 + 补充覆盖
 // ═══════════════════════════════════════════════
