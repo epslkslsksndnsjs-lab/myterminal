@@ -42,6 +42,31 @@ function tempDir() {
   return dir;
 }
 
+/**
+ * 健壮删除临时目录：Windows 不允许删除仍被句柄锁定的目录
+ * （例如 abort 后子进程尚未释放 cwd/管道），直接 rmSync 会抛 EBUSY/EPERM。
+ * 这里对这类错误做短暂重试，避免在 Windows CI 上偶发红。
+ * 仅影响测试清理，不改变任何产品行为或断言。
+ */
+function rmDirRobust(dir, attempts = 10) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = err && err.code;
+      const retryable = code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY';
+      if (i < attempts - 1 && retryable) {
+        // 等子进程/句柄释放后重试（同步短睡，跨平台可靠）
+        const end = Date.now() + 50;
+        while (Date.now() < end) { /* spin */ }
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** 创建纯文本响应的 fake adapter */
 function textAdapter(text, usage) {
   const u = usage ?? { input_tokens: 10, output_tokens: 5 };
@@ -215,7 +240,7 @@ test('正常路径: 一轮完成——fake adapter 返回纯文本', async () =>
 
   assert.equal(result.status, 'completed');
   assert.ok(result.result.includes('Task completed'));
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('正常路径: 两轮带工具——read_file + 文本', async () => {
@@ -258,7 +283,7 @@ test('正常路径: 两轮带工具——read_file + 文本', async () => {
   // tool_result 已配对——result 的 content 含文件内容
   assert.ok(result.result.includes('File read'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('content 检测回归: fake adapter 返回 stop_reason=stop 但含 tool_use → 不退出', async () => {
@@ -291,7 +316,7 @@ test('content 检测回归: fake adapter 返回 stop_reason=stop 但含 tool_use
   assert.equal(result.status, 'completed');
   assert.equal(adapter.callCount, 2);
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -319,7 +344,7 @@ test('maxTurns: 永远返回 tool_use → 跑满 maxTurns → failed', async () 
   assert.equal(result.status, 'failed');
   assert.ok(result.error.includes('Max turns'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('abort: 外部 abortController.abort() → status=aborted', async () => {
@@ -346,7 +371,7 @@ test('abort: 外部 abortController.abort() → status=aborted', async () => {
   assert.equal(result.status, 'aborted');
   assert.ok(result.error.includes('Aborted'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('timeout: timeoutSec=1 + adapter 卡 >1s → failed + 含 Timeout', async () => {
@@ -365,7 +390,7 @@ test('timeout: timeoutSec=1 + adapter 卡 >1s → failed + 含 Timeout', async (
   assert.equal(result.status, 'failed');
   assert.ok(result.error.includes('Timeout'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('shell 清理回归: abort 后 finally 清理执行', async () => {
@@ -391,7 +416,7 @@ test('shell 清理回归: abort 后 finally 清理执行', async () => {
   // shell-tracker agent 条目应被删除
   assert.equal(getTrackedCount('test-8'), 0);
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -423,7 +448,7 @@ test('compact 熔断: autoCompact 连续失败 3 次 → failed', async () => {
   // 如果 token 估算足够高触发 compact，然后 compact 连续失败 → 熔断
   assert.ok(result.status === 'failed');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -465,7 +490,7 @@ test('rate_limit 错误重试后成功', async () => {
   assert.equal(throwCount, 3); // 2 errors + 1 success
   assert.ok(result.result.includes('Recovered'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('auth 错误 → 零重试直接 failed', async () => {
@@ -499,7 +524,7 @@ test('auth 错误 → 零重试直接 failed', async () => {
   assert.equal(callCount, 1); // 零重试——只调了 1 次
   assert.ok(result.error.includes('API key'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('connection 错误 ×3 → failed', async () => {
@@ -534,7 +559,7 @@ test('connection 错误 ×3 → failed', async () => {
   assert.ok(callCount >= 4);
   assert.ok(result.error.includes('Network'));
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('Circuit Breaker: connection 错误不触发 CB（重试策略先于 CB 耗尽）', async () => {
@@ -565,7 +590,7 @@ test('Circuit Breaker: connection 错误不触发 CB（重试策略先于 CB 耗
   assert.equal(result.status, 'failed');
   assert.ok(callCount >= 4);
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('Circuit Breaker with rate_limit: 连续 5 次 rate_limit 后熔断', async () => {
@@ -602,7 +627,7 @@ test('Circuit Breaker with rate_limit: 连续 5 次 rate_limit 后熔断', async
   // 所以 callCount 应该是 5（前 5 次调了 stream）
   assert.equal(callCount, 5);
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('529 server_overload ×3 → 切换 fallbackModel（第4次失败触发降级，第5次用新model）', async () => {
@@ -649,7 +674,7 @@ test('529 server_overload ×3 → 切换 fallbackModel（第4次失败触发降�
   assert.equal(models[2], 'gpt-4o');
   assert.equal(models[3], 'gpt-4o');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -686,7 +711,7 @@ test('costTracker 聚合两轮 usage', async () => {
   assert.ok(record.cost.outputTokens > 0);
   assert.ok(record.cost.totalUSD > 0);
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('决策 37 回归: abort 时 normalizeMessages 补齐孤儿 tool_use', async () => {
@@ -744,7 +769,7 @@ test('决策 37 回归: abort 时 normalizeMessages 补齐孤儿 tool_use', asyn
   // abort 应该导致 status='aborted'
   assert.equal(result.status, 'aborted');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -831,7 +856,7 @@ test('集成用例: 完整任务——read → edit → task_create → task_upd
   assert.ok(lastType === 'RUN_FINISHED' || lastType === 'STEP_FINISHED',
     `Last event should be RUN_FINISHED or STEP_FINISHED, got ${lastType}`);
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -865,7 +890,7 @@ test('readOnly 模式: 只包含只读工具', async () => {
 
   assert.equal(result.status, 'completed');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('ADR-0014 readOnly 执行层硬门禁: write_file 被拒绝（#19 核心）', async () => {
@@ -897,7 +922,7 @@ test('ADR-0014 readOnly 执行层硬门禁: write_file 被拒绝（#19 核心）
   assert.equal(result.status, 'completed');
   assert.ok(!existsSync(join(cwd, 'evil.txt')), 'write_file should be blocked by execution gate');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 test('ADR-0017 非法工具输入不杀 subagent（#23 核心）', async () => {
@@ -927,7 +952,7 @@ test('ADR-0017 非法工具输入不杀 subagent（#23 核心）', async () => {
   // subagent 不应被杀死——应正常完成，工具调用返回错误结果
   assert.equal(result.status, 'completed', 'subagent should complete despite bad tool input');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -955,6 +980,6 @@ test('onEvent 注入: 自定义 onEvent 收到完整事件流', async () => {
   assert.equal(events[0].subagentId, 'test-evt');
   assert.ok(typeof events[0].timestamp === 'number');
 
-  rmSync(cwd, { recursive: true, force: true });
+  rmDirRobust(cwd);
 });
 });
