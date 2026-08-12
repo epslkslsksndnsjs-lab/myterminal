@@ -6,7 +6,7 @@ import { describePortOwner, portOwner, upsertWorkspaceRecord, workspaceId, works
 import { migrateWorkspaceState } from './migration.js';
 import os from 'node:os';
 import path from 'node:path';
-import type { MyTerminalConfig, MyTerminalSettings } from './types.js';
+import type { MyTerminalConfig, MyTerminalSettings, SubagentSettings } from './types.js';
 
 const WORKSPACE_PLACEHOLDERS = new Set(['/absolute/path/to/project']);
 const PUBLIC_URL_PLACEHOLDERS = new Set(['https://replace-with-your-tunnel.example']);
@@ -102,6 +102,23 @@ export function createDefaultSettings(workspaceDir = defaultWorkspaceForCwd()): 
 }
 
 
+// ADR-0045（spine）：subagent 可选字段默认值集中施加。
+// validateSettings（校验/保存归一化）与 server 运行时加载路径（server.ts 重读 settings、
+// 不经 validateSettings）共用同一实现；否则最小配置（只填 model/baseUrl/apiKey）下
+// maxTurns/timeoutSec 等为 undefined → executor 在 AbortSignal.timeout(undefined*1000)
+// 抛 RangeError、while(turns<undefined) 永不循环，subagent 静默崩溃（code-review S#5，合并阻断）。
+export function applySubagentDefaults(sub: SubagentSettings): SubagentSettings {
+  return {
+    ...sub,
+    maxTurns: boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 50, 1, 200),
+    timeoutSec: boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 300, 30, 3600),
+    maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4),
+    contextWindow: boundedInteger(sub.contextWindow != null ? String(sub.contextWindow) : undefined, 120_000, 1_000, 1_000_000),
+    maxOutput: boundedInteger(sub.maxOutput != null ? String(sub.maxOutput) : undefined, 32_000, 1_000, 200_000),
+    compactThreshold: boundedInteger(sub.compactThreshold != null ? String(sub.compactThreshold) : undefined, 80_000, 1_000, 500_000),
+  };
+}
+
 export function validateSettings(settings: MyTerminalSettings): string[] {
   const errors: string[] = [];
   if (typeof settings.workspaceDir !== 'string' || !settings.workspaceDir.trim()) errors.push('Workspace cannot be empty.');
@@ -139,12 +156,9 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
         errors.push('Subagent apiKey is required.');
       }
       // 三可选：带默认（有配置用配置，无配置用默认）
-      sub.maxTurns = boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 50, 1, 200);
-      sub.timeoutSec = boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 300, 30, 3600);
-      sub.maxParallel = boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4);
-      sub.contextWindow = boundedInteger(sub.contextWindow != null ? String(sub.contextWindow) : undefined, 120_000, 1_000, 1_000_000);
-      sub.maxOutput = boundedInteger(sub.maxOutput != null ? String(sub.maxOutput) : undefined, 32_000, 1_000, 200_000);
-      sub.compactThreshold = boundedInteger(sub.compactThreshold != null ? String(sub.compactThreshold) : undefined, 80_000, 1_000, 500_000);
+      // 默认值集中由 applySubagentDefaults 施加（见下方函数），validateSettings 与
+      // server 运行时加载路径共用同一实现，避免 server 重读 settings 漏默认值（code-review S#5）。
+      Object.assign(sub, applySubagentDefaults(sub));
 
       // fallbackModel 可选，默认无；空串视为未设置
       if (sub.fallbackModel !== undefined && (typeof sub.fallbackModel !== 'string' || !sub.fallbackModel.trim())) {

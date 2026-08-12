@@ -18,7 +18,7 @@ import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
 import { commandPassiveLock, passiveLockStatus, startPassiveLockService } from './session-resources.js';
 import { sessionResourceManager } from './session-resource-manager.js';
 import type { JsonObject, MyTerminalConfig, MyTerminalSettings, ToolAuditEvent, ToolResponse } from './types.js';
-import { assessRuntimeEnvironment, createDefaultSettings, readMyTerminalSettings, settingsWithEnvironment, type RuntimeEnvironmentStatus } from './config.js';
+import { applySubagentDefaults, assessRuntimeEnvironment, createDefaultSettings, readMyTerminalSettings, settingsWithEnvironment, type RuntimeEnvironmentStatus } from './config.js';
 import { ControlChannelMonitor, isExternalControlUrl, type ControlChannelState } from './control-channel.js';
 import { writeRuntimeLifecycle, type RuntimeLifecyclePhase } from './runtime-lifecycle.js';
 import { initSubagentRunner } from './subagent/runner.js';
@@ -72,7 +72,10 @@ export class MyTerminalRuntime {
     // ADR-0045（spine）：仅当配置显式提供 baseUrl + apiKey（新契约）才启动 subagent；
     // 遗留 provider 配置或零默认（无 subagent 段）均不启动。
     const settings = settingsWithEnvironment(readMyTerminalSettings() ?? createDefaultSettings(config.workspaceDir), process.env);
-    const subagentSettings = settings.subagent;
+    // ADR-0045（spine）+ code-review S#5：server 重读 settings 不经 validateSettings，
+    // 必须在此显式施加 subagent 可选字段默认值，否则最小配置下 executor 因
+    // timeoutSec/maxTurns=undefined 崩溃。
+    const subagentSettings = settings.subagent ? applySubagentDefaults(settings.subagent) : undefined;
     // ADR-0045（spine）：仅当配置显式提供 model + baseUrl + apiKey（新契约三必填）才启动 subagent；
     // 遗留 provider 配置或零默认（无 subagent 段）均不启动。
     if (subagentSettings?.model && subagentSettings?.baseUrl && subagentSettings?.apiKey) {

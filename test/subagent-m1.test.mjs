@@ -1,6 +1,6 @@
 import { test } from 'bun:test';
 import assert from 'node:assert/strict';
-import { createDefaultSettings, validateSettings } from '../dist/config.js';
+import { applySubagentDefaults, createDefaultSettings, validateSettings } from '../dist/config.js';
 
 // 最小合法的新契约 subagent 段（三必填齐全，三可选交给默认值）
 function newShapeSubagent(overrides = {}) {
@@ -151,4 +151,53 @@ test('integration: missing optional subagent fields get defaults', () => {
   assert.equal(settings.subagent.contextWindow, 120_000);
   assert.equal(settings.subagent.maxOutput, 32_000);
   assert.equal(settings.subagent.compactThreshold, 80_000);
+});
+
+// ── 用例 9（S#5 回归）：最小配置只填三必填，applySubagentDefaults 必须补齐可选默认值 ──
+// 这是 server.ts 运行时重读路径（不经 validateSettings）所依赖的函数；此前漏施加默认值
+// 会导致 executor 在 AbortSignal.timeout(undefined*1000) 抛 RangeError、while(turns<undefined)
+// 永不循环——subagent 静默崩溃。本测试锁死"最小配置也能拿到完整默认值"。
+test('applySubagentDefaults fills defaults for minimal config (S#5 regression)', () => {
+  // 模拟用户只填三必填、完全不写可选字段
+  const minimal = {
+    model: 'claude-sonnet-4-20250514',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-test-1234567890',
+  };
+  const normalized = applySubagentDefaults(minimal);
+
+  // 三必填原样保留
+  assert.equal(normalized.model, 'claude-sonnet-4-20250514');
+  assert.equal(normalized.baseUrl, 'https://api.anthropic.com/v1');
+  assert.equal(normalized.apiKey, 'sk-ant-test-1234567890');
+
+  // 可选字段不得为 undefined（这正是 S#5 崩溃根因）
+  assert.equal(normalized.maxTurns, 50, 'maxTurns 必须非空，否则 executor while(turns<undefined) 死循环');
+  assert.equal(normalized.timeoutSec, 300, 'timeoutSec 必须非空，否则 AbortSignal.timeout(NaN) 抛 RangeError');
+  assert.equal(normalized.maxParallel, 2);
+  assert.equal(normalized.contextWindow, 120_000);
+  assert.equal(normalized.maxOutput, 32_000);
+  assert.equal(normalized.compactThreshold, 80_000);
+});
+
+// ── 用例 10（S#5 回归）：applySubagentDefaults 不应破坏已显式提供的可选值 ──
+test('applySubagentDefaults preserves explicit optional values (S#5 regression)', () => {
+  const withOpts = {
+    model: 'm',
+    baseUrl: 'b',
+    apiKey: 'k',
+    maxTurns: 10,
+    timeoutSec: 120,
+    maxParallel: 3,
+    contextWindow: 200_000,
+    maxOutput: 16_384,
+    compactThreshold: 100_000,
+  };
+  const normalized = applySubagentDefaults(withOpts);
+  assert.equal(normalized.maxTurns, 10);
+  assert.equal(normalized.timeoutSec, 120);
+  assert.equal(normalized.maxParallel, 3);
+  assert.equal(normalized.contextWindow, 200_000);
+  assert.equal(normalized.maxOutput, 16_384);
+  assert.equal(normalized.compactThreshold, 100_000);
 });
