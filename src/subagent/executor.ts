@@ -477,7 +477,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
           // auth / system / connection 耗尽 → 直接失败
           if (llmError.kind === 'auth') {
-            return finishFailed(`API key is invalid or expired (${settings.provider})`);
+            return finishFailed('API key is invalid or expired.');
           }
           if (llmError.kind === 'connection') {
             return finishFailed(`Network error after ${MAX_SERVER_RETRIES} retries: ${llmError.message}`);

@@ -1,9 +1,13 @@
 {
   "enabled": true,
-  "provider": "openai",
-  "model": "gpt-4o",
+  "model": "",
+  "baseUrl": "",
+  "apiKey": "",
   "maxTurns": 50,
   "timeoutSec": 300,
   "maxParallel": 2,
+  "contextWindow": 120000,
+  "maxOutput": 32000,
+  "compactThreshold": 80000,
   "fallbackModel": ""
 }

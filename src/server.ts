@@ -18,14 +18,12 @@ import { CLUSTER_PROTOCOL_VERSION, CURRENT_VERSION } from './version.js';
 import { commandPassiveLock, passiveLockStatus, startPassiveLockService } from './session-resources.js';
 import { sessionResourceManager } from './session-resource-manager.js';
 import type { JsonObject, MyTerminalConfig, MyTerminalSettings, ToolAuditEvent, ToolResponse } from './types.js';
-import { assessRuntimeEnvironment, type RuntimeEnvironmentStatus } from './config.js';
-import { readMyTerminalSettings } from './config.js';
+import { assessRuntimeEnvironment, createDefaultSettings, readMyTerminalSettings, settingsWithEnvironment, type RuntimeEnvironmentStatus } from './config.js';
 import { ControlChannelMonitor, isExternalControlUrl, type ControlChannelState } from './control-channel.js';
 import { writeRuntimeLifecycle, type RuntimeLifecyclePhase } from './runtime-lifecycle.js';
 import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
-import type { SubagentSettings } from './types.js';
 
 export type RuntimeLog = { at: string; level: 'info' | 'error'; message: string; audit?: ToolAuditEvent };
 export type RuntimeHealth = { phase: 'active' | 'revalidating' | 'degraded' | 'shutting_down'; environment: RuntimeEnvironmentStatus; message?: string; lastCheckedAt: string };
@@ -70,12 +68,15 @@ export class MyTerminalRuntime {
     this.store = new MyTerminalStore(config.stateDir);
     const builtins = createBuiltinTools(config, this.store);
     this.extensions = new ExtensionService(config, this.store, builtins, (event) => this.logAuditEvent(event));
-    // M8：初始化 SubagentRunner——读 settings 获取 subagent 配置，注入 delegate + callSubagent 通知链路
-    const settings = readMyTerminalSettings();
-    const subagentSettings: SubagentSettings = settings?.subagent ?? {
-      enabled: true, provider: 'openai', model: 'gpt-4o', maxTurns: 50, timeoutSec: 300, maxParallel: 2,
-    };
-    initSubagentRunner({
+    // M8：初始化 SubagentRunner——读 settings 获取 subagent 配置，注入 delegate + callSubagent 通知链路。
+    // ADR-0045（spine）：仅当配置显式提供 baseUrl + apiKey（新契约）才启动 subagent；
+    // 遗留 provider 配置或零默认（无 subagent 段）均不启动。
+    const settings = settingsWithEnvironment(readMyTerminalSettings() ?? createDefaultSettings(config.workspaceDir), process.env);
+    const subagentSettings = settings.subagent;
+    // ADR-0045（spine）：仅当配置显式提供 model + baseUrl + apiKey（新契约三必填）才启动 subagent；
+    // 遗留 provider 配置或零默认（无 subagent 段）均不启动。
+    if (subagentSettings?.model && subagentSettings?.baseUrl && subagentSettings?.apiKey) {
+      initSubagentRunner({
       runSubagentImpl: runSubagent,
       settings: subagentSettings,
       workspaceDir: config.workspaceDir,
@@ -97,6 +98,7 @@ export class MyTerminalRuntime {
         return { session: result.session, identity: result.identity };
       },
     });
+    }
     this.mcp = new MyTerminalMcpTransport(this.extensions);
     this.app = express();
     this.app.disable('x-powered-by');

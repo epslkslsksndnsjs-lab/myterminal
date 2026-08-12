@@ -582,10 +582,13 @@ type AnthropicMessage = {
 export class AnthropicAdapter implements LlmAdapter {
   readonly provider: string = 'anthropic';
   private apiKey: string;
+  private baseUrl: string;
   private fetchImpl: typeof fetch;
 
-  constructor(apiKey: string, fetchImpl?: typeof fetch) {
+  // ADR-0045（spine）：baseUrl 可配（配置即端点，可指向 Anthropic 兼容网关）
+  constructor(apiKey: string, fetchImpl?: typeof fetch, baseUrl?: string) {
     this.apiKey = apiKey;
+    this.baseUrl = baseUrl || 'https://api.anthropic.com/v1';
     this.fetchImpl = fetchImpl ?? globalThis.fetch.bind(globalThis);
   }
 
@@ -654,7 +657,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }));
     }
 
-    const response = await this.fetchImpl('https://api.anthropic.com/v1/messages', {
+    const response = await this.fetchImpl(`${this.baseUrl}/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
@@ -801,7 +804,7 @@ export class AnthropicAdapter implements LlmAdapter {
       }));
     }
 
-    const response = await this.fetchImpl('https://api.anthropic.com/v1/messages', {
+    const response = await this.fetchImpl(`${this.baseUrl}/messages`, {
       method: 'POST',
       headers: {
         'x-api-key': this.apiKey,
@@ -1093,55 +1096,18 @@ export async function collectStream(params: {
 // ═══════════════════════════════════════════════
 
 /**
- * 根据 settings 创建对应 provider 的适配器（决策 14）
- * API key 只从环境变量读，缺失时抛错消息写明 export 指引
+ * 根据 settings 创建适配器（ADR-0045 spine）。
+ * 配置契约：apiKey / baseUrl 为必填、由配置文件显式提供；
+ * 代码永不猜测模型 / 端点 / credential。零默认、单适配器（Anthropic Messages 协议）。
  */
-export function createAdapter(settings: SubagentSettings, env: NodeJS.ProcessEnv = process.env): LlmAdapter {
-  const { provider } = settings;
-
-  switch (provider) {
-    case 'openai': {
-      const key = env.OPENAI_API_KEY;
-      if (!key) {
-        throw new Error('OPENAI_API_KEY is not set. Please add "export OPENAI_API_KEY=sk-..." to your shell profile.');
-      }
-      return new OpenAIAdapter(key);
-    }
-
-    case 'anthropic': {
-      const key = env.ANTHROPIC_API_KEY;
-      if (!key) {
-        throw new Error('ANTHROPIC_API_KEY is not set. Please add "export ANTHROPIC_API_KEY=sk-ant-..." to your shell profile.');
-      }
-      return new AnthropicAdapter(key);
-    }
-
-    case 'deepseek': {
-      const key = env.DEEPSEEK_API_KEY;
-      if (!key) {
-        throw new Error('DEEPSEEK_API_KEY is not set. Please add "export DEEPSEEK_API_KEY=sk-..." to your shell profile.');
-      }
-      return new DeepSeekAdapter(key);
-    }
-
-    case 'glm': {
-      const key = env.GLM_API_KEY;
-      if (!key) {
-        throw new Error('GLM_API_KEY is not set. Please add "export GLM_API_KEY=..." to your shell profile.');
-      }
-      return new GlmAdapter(key);
-    }
-
-    case 'qwen': {
-      const key = env.DASHSCOPE_API_KEY;
-      if (!key) {
-        throw new Error('DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to your shell profile.');
-      }
-      const baseUrl = env.DASHSCOPE_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-      return new QwenAdapter(key, baseUrl);
-    }
-
-    default:
-      throw new Error(`Unknown provider: ${provider}. Supported: openai, anthropic, deepseek, glm, qwen.`);
+export function createAdapter(settings: SubagentSettings): LlmAdapter {
+  const key = settings.apiKey;
+  const baseUrl = settings.baseUrl;
+  const model = settings.model;
+  if (!key || !baseUrl || !model) {
+    throw new Error(
+      'Subagent apiKey, baseUrl and model are required. Provide them in the MyTerminal config file (subagent.apiKey / subagent.baseUrl / subagent.model).',
+    );
   }
+  return new AnthropicAdapter(key, undefined, baseUrl);
 }

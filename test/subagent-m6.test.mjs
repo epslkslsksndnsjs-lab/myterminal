@@ -840,42 +840,34 @@ test('集成 — 两轮对话（tool_call + tool_result + 最终文本）', asyn
 // 第八部分：createAdapter 工厂（决策 14）
 // ═══════════════════════════════════════════════
 
-// ── 用例 23：createAdapter 按 provider 创建 ──
+// ── 用例 23：createAdapter 按 settings 创建（ADR-0045 spine：单适配器，配置即端点）──
 
-test('createAdapter — openai', () => {
-  const adapter = createAdapter(
-    { enabled: true, provider: 'openai', model: 'gpt-4o', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-    { OPENAI_API_KEY: 'sk-test' },
-  );
-  assert.equal(adapter.provider, 'openai');
-  assert.ok(adapter instanceof OpenAIAdapter);
-});
-
-test('createAdapter — 缺少 API key 抛错', () => {
-  assert.throws(() => {
-    createAdapter(
-      { enabled: true, provider: 'openai', model: 'gpt-4o', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-      {}, // 无 OPENAI_API_KEY
-    );
-  }, /OPENAI_API_KEY/);
-});
-
-test('createAdapter — deepseek', () => {
-  const adapter = createAdapter(
-    { enabled: true, provider: 'deepseek', model: 'deepseek-chat', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-    { DEEPSEEK_API_KEY: 'sk-ds-test' },
-  );
-  assert.equal(adapter.provider, 'deepseek');
-  assert.ok(adapter instanceof DeepSeekAdapter);
-});
-
-test('createAdapter — anthropic', () => {
-  const adapter = createAdapter(
-    { enabled: true, provider: 'anthropic', model: 'claude-sonnet-4', maxTurns: 50, timeoutSec: 300, maxParallel: 2 },
-    { ANTHROPIC_API_KEY: 'sk-ant-test' },
-  );
+test('createAdapter — returns AnthropicAdapter from settings.apiKey/baseUrl', () => {
+  const adapter = createAdapter({
+    enabled: true,
+    model: 'claude-sonnet-4-20250514',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-test',
+    maxTurns: 50,
+    timeoutSec: 300,
+    maxParallel: 2,
+  });
   assert.equal(adapter.provider, 'anthropic');
   assert.ok(adapter instanceof AnthropicAdapter);
+});
+
+test('createAdapter — 缺少 apiKey/baseUrl/model 抛错', () => {
+  assert.throws(() => {
+    createAdapter({
+      enabled: true,
+      model: '',
+      baseUrl: '',
+      apiKey: '',
+      maxTurns: 50,
+      timeoutSec: 300,
+      maxParallel: 2,
+    });
+  }, /Subagent apiKey, baseUrl and model are required/);
 });
 
 // ═══════════════════════════════════════════════

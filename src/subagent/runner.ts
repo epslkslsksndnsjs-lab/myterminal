@@ -173,7 +173,6 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       // 合并运行时配置
       const mergedSettings: SubagentSettings = {
         ...settings,
-        provider: input.provider ?? settings.provider,
         model: input.model ?? settings.model,
         maxTurns: input.maxTurns ?? settings.maxTurns,
         timeoutSec: input.timeoutSec ?? settings.timeoutSec,
