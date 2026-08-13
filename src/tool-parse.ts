@@ -74,6 +74,72 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk * 1.5 + latin / 4);
 }
 
+// ── D12 失败双帽（#32 / Q4）────────────────────────────────────────────────────
+//
+// error.message / error.details 通用长度帽（D12：「通用截断」，全通道通用）。
+// - message → 截到 ERROR_MESSAGE_MAX_CHARS
+// - details: string → 截到 ERROR_DETAILS_MAX_CHARS（Q4 双分支一；防御性：框架内
+//   details 恒为 object，但自定义/扩展工具或历史路径可能传 string）
+// - details: object → 逐顶层 string 值截到 ERROR_DETAILS_MAX_CHARS；保留
+//   continuation 子键整体原样（D12/Q4 + D13 控制流保全）；键顺序保全
+// - code / retryable 原样不动（D9/D11）；绝不插层标记（D17 静默）
+// 纯函数零副作用；截断前完整 error 由 D7 审计 rawResult 保留（诊断保全）。
+export const ERROR_MESSAGE_MAX_CHARS = 2000;
+export const ERROR_DETAILS_MAX_CHARS = 6000;
+
+function truncateChars(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) : s;
+}
+
+type ErrorShape = NonNullable<ToolResponse['error']>;
+
+/** D12 capError：对 error.message / error.details 施加长度帽（Q4 双分支）。 */
+export function capError(error: ErrorShape): ErrorShape {
+  let changed = false;
+
+  const message = truncateChars(error.message, ERROR_MESSAGE_MAX_CHARS);
+  if (message !== error.message) changed = true;
+
+  const rawDetails: unknown = error.details;
+  let details: JsonObject | string | undefined = error.details;
+
+  if (typeof rawDetails === 'string') {
+    // Q4 双分支一：string details → 直接截
+    const capped = truncateChars(rawDetails, ERROR_DETAILS_MAX_CHARS);
+    if (capped !== rawDetails) { details = capped; changed = true; }
+  } else if (rawDetails !== null && rawDetails !== undefined && typeof rawDetails === 'object' && !Array.isArray(rawDetails)) {
+    // Q4 双分支二：object details → 逐顶层 string 值截；保留 continuation 子键
+    const src = rawDetails as JsonObject;
+    const out: JsonObject = {};
+    let detailsChanged = false;
+    for (const [k, v] of Object.entries(src)) {
+      if (k === 'continuation') { out[k] = v; continue; } // 控制流子键整体原样保全（D12/Q4/D13）
+      if (typeof v === 'string') {
+        const c = truncateChars(v, ERROR_DETAILS_MAX_CHARS);
+        out[k] = c;
+        if (c !== v) detailsChanged = true;
+      } else {
+        out[k] = v; // 非 string 值（number/boolean/array/嵌套 object）原样
+      }
+    }
+    if (detailsChanged || Object.keys(out).length !== Object.keys(src).length) {
+      details = out;
+      changed = true;
+    }
+  }
+
+  if (!changed) return error; // 无截断 → 返回同一引用（无副作用，保全回归基线）
+  return { ...error, message, details } as ErrorShape;
+}
+
+/** 对整条响应套 D12 帽（仅 error 受影响；无 error 时返回同一引用）。 */
+function capErrorResponse(response: ToolResponse): ToolResponse {
+  if (!response.error) return response;
+  const cappedError = capError(response.error);
+  if (cappedError === response.error) return response; // 无变化 → 同引用
+  return { ...response, error: cappedError };
+}
+
 // ── 被动去噪（L1 reducer 变体一）──────────────────────────────────────────────
 //
 // CommandResult 权威 10 字段（core-tools.ts runCommand 返回，ADR-0047 补遗3
@@ -152,11 +218,13 @@ function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): Re
 /**
  * 工具响应整形入口（D13：包住最终装饰响应，含 decorateContinuation 后的长任务结构）。
  *
- * 执行顺序（T03）：
+ * 执行顺序（T03 + T04 #32）：
  *  - 路由判定（resolveShape）→ L1 reducer / L3(预算门) / passthrough
- *  - L1 被动/主动 reducer（零模型）→ D16 count 规则 → 重建 response（只动 data.result，
- *    ok/error/events/data.tool/data.continuation 原样不动，D9）
- *  - D7 双版本审计：整形前记 rawResult、整形后记 shapedResult + shaping.reason
+ *  - L1 被动/主动 reducer（零模型）→ D16 count 规则 → 重建 response（只动 data.result）
+ *  - D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽，
+ *    continuation 子键保全（Q4）；ok / error.code / error.retryable / events /
+ *    data.tool / data.continuation 原样不动（D9/D11）
+ *  - D7 双版本审计：rawResult 保留未截断完整 error（诊断保全）、shapedResult 为截断版 + shaping.reason
  *  - D17 静默：结果中绝不插入层标记
  *  - D11 fail-open：reducer 抛错 / 非对象 / 超预算 → 原样 passthrough，原因只进审计
  */
@@ -164,39 +232,47 @@ export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): To
   const toolName = typeof response.data?.tool === 'string' ? response.data.tool : '';
   const rawResult = response.data?.result;
 
-  // 非对象 result（D11 non-object）→ 原样 passthrough，记原因
+  // 结果整形（仅 data.result / 路由）：base 为整形后响应（error 仍原样），shaping 记录结果路径决策
+  let base: ToolResponse;
+  let shaping: ShapingAudit;
+
+  // 非对象 result（D11 non-object）→ 不整形 data.result
   if (rawResult === null || rawResult === undefined || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
-    ctx.audit({ rawResult: response, shapedResult: response, shaping: { applied: false, reason: 'non-object' } });
-    return response;
-  }
+    base = response;
+    shaping = { applied: false, reason: 'non-object' };
+  } else {
+    const resolved = resolveShape(toolName, ctx.resolveTool(toolName));
 
-  const resolved = resolveShape(toolName, ctx.resolveTool(toolName));
-
-  if (resolved.kind === 'passthrough') {
-    ctx.audit({ rawResult: response, shapedResult: response, shaping: { applied: false, reason: 'passthrough' } });
-    return response;
-  }
-
-  if (resolved.kind === 'l3') {
-    // 预算门（D6 护栏2 / Q3）：超门直接 passthrough，记 over-budget，绝不进 L3
-    if (estimateTokens(JSON.stringify(rawResult)) > RAW_BUDGET_TOKENS) {
-      ctx.audit({ rawResult: response, shapedResult: response, shaping: { applied: false, reason: 'over-budget' } });
-      return response;
+    if (resolved.kind === 'passthrough') {
+      base = response;
+      shaping = { applied: false, reason: 'passthrough' };
+    } else if (resolved.kind === 'l3') {
+      // 预算门（D6 护栏2 / Q3）：超门直接 passthrough，记 over-budget，绝不进 L3
+      if (estimateTokens(JSON.stringify(rawResult)) > RAW_BUDGET_TOKENS) {
+        base = response;
+        shaping = { applied: false, reason: 'over-budget' };
+      } else {
+        // L3 引擎在 T10 落地；T03/T04 阶段 schema 工具 fail-open passthrough（零模型底线，绝不伪造）
+        base = response;
+        shaping = { applied: false, reason: 'passthrough' };
+      }
+    } else {
+      // L1 被动/主动 reducer（零模型）
+      try {
+        const reduced = applyCountRule(resolved.reduce(rawResult as JsonObject, ctx));
+        base = { ...response, data: { ...(response.data ?? {}), result: reduced } };
+        shaping = { applied: true };
+      } catch {
+        // D11 fail-open：reducer 抛错 → 原样 passthrough，记 reducer-threw
+        base = response;
+        shaping = { applied: false, reason: 'reducer-threw' };
+      }
     }
-    // L3 引擎在 T10 落地；T03 阶段 schema 工具 fail-open passthrough（零模型底线，绝不伪造）
-    ctx.audit({ rawResult: response, shapedResult: response, shaping: { applied: false, reason: 'passthrough' } });
-    return response;
   }
 
-  // L1 被动/主动 reducer（零模型）
-  try {
-    const reduced = applyCountRule(resolved.reduce(rawResult as JsonObject, ctx));
-    const shaped: ToolResponse = { ...response, data: { ...(response.data ?? {}), result: reduced } };
-    ctx.audit({ rawResult: response, shapedResult: shaped, shaping: { applied: true } });
-    return shaped;
-  } catch {
-    // D11 fail-open：reducer 抛错 → 原样 passthrough，记 reducer-threw
-    ctx.audit({ rawResult: response, shapedResult: response, shaping: { applied: false, reason: 'reducer-threw' } });
-    return response;
-  }
+  // D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽（continuation 子键保全）。
+  // D7 审计：rawResult 保留未截断完整 error（诊断保全），shapedResult 为截断版。
+  const shaped = capErrorResponse(base);
+  ctx.audit({ rawResult: response, shapedResult: shaped, shaping });
+  return shaped;
 }
