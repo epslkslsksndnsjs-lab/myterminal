@@ -15,7 +15,7 @@ export type { ShapingAudit } from './types.js';
  * fail-open passthrough（不伪造）。
  */
 
-/** 整形介入原因（D7/D11 权威枚举；T03 实际产生 passthrough / over-budget / non-object / reducer-threw / 成功 applied） */
+/** 整形介入原因（D7/D11 权威枚举；T03/T04 实际产生 passthrough / over-budget / non-object / reducer-threw / cap-threw / 成功 applied） */
 export type ShapingReason =
   | 'reducer-threw'
   | 'l3-unavailable-timeout'
@@ -23,7 +23,8 @@ export type ShapingReason =
   | 'over-budget'
   | 'nested-over-budget'
   | 'quota'
-  | 'passthrough';
+  | 'passthrough'
+  | 'cap-threw';
 
 /** 整形审计记录（D7）：`{ applied, reason? }`，只进审计、永不进模型上下文（D17）。类型单源在 types.ts。 */
 export type ShapingAuditRecord = {

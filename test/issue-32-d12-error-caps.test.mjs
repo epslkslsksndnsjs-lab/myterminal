@@ -19,7 +19,6 @@ import {
   ERROR_MESSAGE_MAX_CHARS,
   ERROR_DETAILS_MAX_CHARS,
   shapeToolResponse,
-  TOOL_SHAPES,
 } from '../dist/tool-parse.js';
 
 // D17 静默契约：任何层都不插自标识标记
