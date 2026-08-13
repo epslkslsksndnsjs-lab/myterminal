@@ -66,7 +66,7 @@ export function Subagents({ subagents, selected, theme, onSelect }: {
               {`├─ ${t('Progress', '进度')}: ${completedTasks}/${record.tasks.length} ${t('done', '完成')}`}
             </Line>
             <Line color={active ? theme.selectedText : theme.muted}>
-              {`├─ ${t('Cost', '成本')}: $${record.cost.totalUSD.toFixed(4)} (${record.cost.inputTokens}+${record.cost.outputTokens} tokens)`}
+              {`├─ ${t('Cost', '成本')}: ${record.cost.inputTokens}+${record.cost.outputTokens} tokens`}
             </Line>
             {record.sessionId ? (
               <Line color={active ? theme.selectedText : theme.muted}>

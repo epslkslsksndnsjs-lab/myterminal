@@ -159,7 +159,7 @@ DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to yo
 
 If `provider` does not match the exported variable, the same class of error appears for the variable that the configured provider expects.
 
-If both are correct, `subagent_start` returns a `taskId` immediately. Poll `subagent_status` with that `taskId` until `status` reaches `completed`, `failed`, or `aborted`. The final result includes the cost in USD and the token usage.
+If both are correct, `subagent_start` returns a `taskId` immediately. Poll `subagent_status` with that `taskId` until `status` reaches `completed`, `failed`, or `aborted`. The final result includes the token usage.
 
 ## 6. Per-call overrides (optional)
 
@@ -167,9 +167,9 @@ Callers may override the configured `provider`, `model`, `maxTurns`, and `timeou
 
 The `skill` tool's `fork` mode also accepts `forkOptions`, but it can only set **engineering** parameters (`maxTurns`, `timeoutSec`, `readOnly`, `deliverables`, `acceptanceCriteria`, `constraints`) for the spawned subagent. The `model` and `provider` are fixed by global configuration and **cannot** be overridden by a skill.
 
-## 7. Cost tracking
+## 7. Token usage
 
-Every subagent records its token usage and estimated cost in USD. The pricing table lives in `src/subagent/cost-tracker.ts` and is keyed by model name with a prefix-match fallback. If you use a model not in the table, the closest known model in the same provider family is used and a warning is logged. The cost is tracked for visibility only — MyTerminal never enforces a budget limit. The safety nets are `maxTurns`, `timeoutSec`, `maxParallel`, and explicit `subagent_abort`.
+Every subagent records its token usage (input, output, and cache-read tokens). As of ADR-0046, `src/subagent/cost-tracker.ts` is a pure token accumulator — there is no pricing table and no cost estimation. Token counts are for visibility only; MyTerminal never enforces a budget limit. The safety nets are `maxTurns`, `timeoutSec`, `maxParallel`, and explicit `subagent_abort`.
 
 ## 8. Privacy
 
@@ -188,4 +188,3 @@ Every subagent records its token usage and estimated cost in USD. The pricing ta
 | Subagent returns 429 | Provider rate limit reached. | Reduce `maxParallel`, slow down polling, or upgrade provider quota. |
 | Subagent returns 400 with `context_length_exceeded` | The task plus tool outputs exceeded the model's context window. | Switch to a model with a larger window (e.g. `qwen3.7-max` for 1M) or split the task. |
 | `subagent_start` is rejected with `FORBIDDEN` | You hit `maxParallel` concurrent subagents, or you tried to start a subagent from inside another subagent (recursion guard). | Wait for an existing subagent to finish, or call from the root session. |
-| Cost shows `0` in the result | The model name did not match any entry in the pricing table and fell back to a free tier. | Confirm the model name in `config.json` matches the provider's official name. |

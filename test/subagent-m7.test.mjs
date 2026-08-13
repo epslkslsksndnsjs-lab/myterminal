@@ -712,7 +712,6 @@ test('costTracker 聚合两轮 usage', async () => {
   const record = getSubagent('test-cost');
   assert.ok(record.cost.inputTokens > 0);
   assert.ok(record.cost.outputTokens > 0);
-  assert.ok(record.cost.totalUSD > 0);
 
   rmDirRobust(cwd);
 });
@@ -841,8 +840,8 @@ test('集成用例: 完整任务——read → edit → task_create → task_upd
   // 审计日志
   assert.ok(record.auditLogs.length >= 5, `Expected >=5 audit logs, got ${record.auditLogs.length}`);
 
-  // 成本 > 0
-  assert.ok(record.cost.totalUSD > 0);
+  // token 用量 > 0
+  assert.ok(record.cost.inputTokens > 0);
 
   // 事件流含 STATE_SNAPSHOT
   const eventTypes = events.map(e => e.type);

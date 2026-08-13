@@ -159,7 +159,7 @@ DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to yo
 
 如果 `provider` 与 export 的变量不匹配，会出现同类错误，提示该 provider 期望的变量名。
 
-两者都正确时，`subagent_start` 立即返回一个 `taskId`。用该 `taskId` 轮询 `subagent_status`，直到 `status` 变为 `completed`、`failed` 或 `aborted`。最终结果包含 USD 成本和 token 用量。
+两者都正确时，`subagent_start` 立即返回一个 `taskId`。用该 `taskId` 轮询 `subagent_status`，直到 `status` 变为 `completed`、`failed` 或 `aborted`。最终结果包含 token 用量。
 
 ## 6. 按调用覆盖（可选）
 
@@ -167,9 +167,9 @@ DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to yo
 
 `skill` 工具的 `fork` 模式也接受 `forkOptions`，但只能设置**工程**参数（`maxTurns`、`timeoutSec`、`readOnly`、`deliverables`、`acceptanceCriteria`、`constraints`）。`model` 与 `provider` 由全局配置唯一决定，技能**不可**覆盖。
 
-## 7. 成本追踪
+## 7. Token 用量
 
-每个 subagent 会记录 token 用量和估算的 USD 成本。定价表在 `src/subagent/cost-tracker.ts`，按模型名索引并带前缀匹配 fallback。如果你用的模型不在表里，会用同 provider 家族里最接近的已知模型并打一条警告。成本只用于可见性——MyTerminal **绝不**强制预算限制。安全网是 `maxTurns`、`timeoutSec`、`maxParallel` 和显式的 `subagent_abort`。
+每个 subagent 会记录 token 用量（input、output 与 cache-read tokens）。自 ADR-0046 起，`src/subagent/cost-tracker.ts` 是纯 token 累加器——不再有定价表，也不再估算成本。token 计数仅用于可见性；MyTerminal **绝不**强制预算限制。安全网是 `maxTurns`、`timeoutSec`、`maxParallel` 和显式的 `subagent_abort`。
 
 ## 8. 隐私
 
@@ -188,4 +188,3 @@ DASHSCOPE_API_KEY is not set. Please add "export DASHSCOPE_API_KEY=sk-..." to yo
 | subagent 收到 429 | 触发 provider 限流。 | 降低 `maxParallel`，减慢轮询频率，或升级 provider 配额。 |
 | subagent 收到 400 且含 `context_length_exceeded` | 任务加工具输出超出了模型上下文窗口。 | 换更大窗口的模型（如 `qwen3.7-max` 支持 1M），或拆分任务。 |
 | `subagent_start` 被拒返回 `FORBIDDEN` | 达到 `maxParallel` 并发上限，或在另一个 subagent 内部又启 subagent（递归防护）。 | 等现有 subagent 完成，或从 root session 调用。 |
-| 结果里成本显示 `0` | 模型名没命中定价表，fallback 到了免费档。 | 确认 `config.json` 里的模型名与 provider 官方名称一致。 |

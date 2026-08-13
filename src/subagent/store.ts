@@ -81,7 +81,7 @@ export function createSubagent(
     }],
     origin: fields.origin,
     abortController: new AbortController(),
-    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalUSD: 0 },
+    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
     auditLogs: [],
     createdAt: Date.now(),
   };
@@ -151,7 +151,7 @@ export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext 
   }
 }
 
-export function updateCost(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalUSD: number }, ctx: SubagentContext = defaultContext): void {
+export function updateCost(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
   record.cost = { ...usage };

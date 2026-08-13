@@ -37,60 +37,22 @@ import {
 // cost-tracker 测试
 // ──────────────────────────────────────────────
 
-// 用例 1：单次 addUsage + getTotalCost 计算正确
-test('CostTracker single addUsage accumulates correctly', () => {
-  const tracker = new CostTracker('gpt-4o');
-  // gpt-4o: input 2.5, output 10 per 1M
-  tracker.addUsage({ input_tokens: 1_000_000, output_tokens: 500_000 });
+// 用例 1（getTotalCost 定价计算）已随 ADR-0046 D1 移除——CostTracker 降级为纯 token 累加器，不再核算成本。
 
-  const expected = 2.5 + 5.0; // 1M * 2.5/1M + 0.5M * 10/1M
-  assert.ok(Math.abs(tracker.getTotalCost() - expected) < 0.001, `expected ~${expected}, got ${tracker.getTotalCost()}`);
-});
-
-// 用例 2：多次 addUsage + cacheRead 累积正确
+// 用例 2：多次 addUsage + cacheRead 累积正确（纯 token 累加，不再核算成本）
 test('CostTracker multiple addUsage with cacheRead', () => {
-  const tracker = new CostTracker('gpt-4o');
+  const tracker = new CostTracker();
   tracker.addUsage({ input_tokens: 800_000, output_tokens: 300_000, cache_read_input_tokens: 200_000 });
-  // 800K input * 2.5/1M + 300K output * 10/1M + 200K cache * 1.25/1M
-  // = 2.0 + 3.0 + 0.25 = 5.25
   tracker.addUsage({ input_tokens: 200_000, output_tokens: 100_000 });
-  // 200K input * 2.5/1M + 100K output * 10/1M = 0.5 + 1.0 = 1.5
-  // total = 6.75
 
   const usage = tracker.getUsage();
   assert.equal(usage.inputTokens, 1_000_000);
   assert.equal(usage.outputTokens, 400_000);
   assert.equal(usage.cacheReadTokens, 200_000);
-  assert.ok(Math.abs(usage.totalUSD - 6.75) < 0.001, `expected ~6.75, got ${usage.totalUSD}`);
 });
 
-// 用例 3：前缀匹配——gpt-4o-2024-08-06 按 gpt-4o 定价
-test('CostTracker matches model by prefix', () => {
-  const tracker = new CostTracker('gpt-4o-2024-08-06');
-  tracker.addUsage({ input_tokens: 1_000_000, output_tokens: 0 });
-  assert.ok(Math.abs(tracker.getTotalCost() - 2.5) < 0.001, 'should use gpt-4o pricing');
-});
+// 用例 3/4（前缀匹配 / 未知模型回退定价）已随 ADR-0046 D1 移除——resolvePricing 已删
 
-// 用例 4：未知模型不抛错，按 provider 保守估算
-test('CostTracker falls back for unknown model without throwing', () => {
-  // deepseek-v4-unknown → deepseek-chat pricing
-  const tracker1 = new CostTracker('deepseek-v4-unknown');
-  tracker1.addUsage({ input_tokens: 1_000_000, output_tokens: 0 });
-  assert.ok(Math.abs(tracker1.getTotalCost() - 0.27) < 0.01, 'should fallback to deepseek-chat');
-
-  // gpt-unknown → gpt-4o pricing
-  const tracker2 = new CostTracker('gpt-unknown-thing');
-  tracker2.addUsage({ input_tokens: 1_000_000, output_tokens: 0 });
-  assert.ok(Math.abs(tracker2.getTotalCost() - 2.5) < 0.01, 'should fallback to gpt-4o');
-
-  // completely unknown → gpt-4o
-  const tracker3 = new CostTracker('some-unknown-model');
-  tracker3.addUsage({ input_tokens: 1_000_000, output_tokens: 0 });
-  assert.ok(Math.abs(tracker3.getTotalCost() - 2.5) < 0.01, 'should fallback to gpt-4o');
-
-  // Doesn't throw
-  assert.ok(true);
-});
 
 // ──────────────────────────────────────────────
 // file-state 测试
@@ -229,7 +191,7 @@ test('subagent store full CRUD flow', () => {
   assert.equal(record.tasks.length, 1);
   assert.equal(record.tasks[0].subject, 'Test task');
   assert.equal(record.tasks[0].status, 'pending');
-  assert.equal(record.cost.totalUSD, 0);
+  assert.equal(record.cost.inputTokens, 0);
   assert.ok(record.createdAt > 0);
 
   // get
@@ -307,13 +269,13 @@ test('subagent store updateCost and updateSubagentCost work', () => {
   clearAllSubagents();
   createSubagent('sub-cost', { subject: 'Cost test' });
 
-  updateCost('sub-cost', { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0, totalUSD: 0.0035 });
+  updateCost('sub-cost', { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0 });
   const r = getSubagent('sub-cost');
   assert.ok(r);
-  assert.equal(r.cost.totalUSD, 0.0035);
+  assert.equal(r.cost.inputTokens, 1000);
 
   // updateSubagentCost（通过 UsageSummary 更新）
-  updateSubagentCost('sub-cost', { inputTokens: 5000, outputTokens: 1000, cacheReadTokens: 0, totalUSD: 0.02 });
+  updateSubagentCost('sub-cost', { inputTokens: 5000, outputTokens: 1000, cacheReadTokens: 0 });
   const r2 = getSubagent('sub-cost');
   assert.ok(r2);
   assert.equal(r2.cost.inputTokens, 5000);
@@ -376,12 +338,12 @@ test('integration: full subagent lifecycle', () => {
   });
 
   // 4. update cost
-  updateCost(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500, totalUSD: 0.025 });
+  updateCost(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500 });
 
   // 5. getSubagentResult (reads without removing)
   const before = getSubagentResult(agentId);
   assert.ok(before);
-  assert.equal(before.cost.totalUSD, 0.025);
+  assert.equal(before.cost.inputTokens, 5000);
 
   // 6. complete
   updateSubagentStatus(agentId, 'completed', { result: 'All tasks completed successfully' });
@@ -393,7 +355,7 @@ test('integration: full subagent lifecycle', () => {
   assert.equal(collected.result, 'All tasks completed successfully');
   assert.ok(collected.tasks.length >= 1, 'record 应至少含主目标任务（store 单源，任务经 tools 写入）');
   assert.equal(collected.auditLogs.length, 2);
-  assert.ok(collected.cost.totalUSD > 0);
+  assert.ok(collected.cost.inputTokens > 0);
   assert.ok(collected.completedAt > 0);
   assert.ok(collected.createdAt > 0);
 
