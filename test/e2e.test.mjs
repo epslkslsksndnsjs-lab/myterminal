@@ -323,3 +323,81 @@ test('E2E T07: session_list 主动精简 + 可恢复翻页', async () => {
     await server.close();
   }
 });
+
+// ═══════════════════════════════════════════════════════════
+// E2E T08: session_history 嵌套 ToolResponse → 摘要 + read_file_range maxBytes 截断（D15/T08）
+// ═══════════════════════════════════════════════════════════
+test('E2E T08: session_history 嵌套 ToolResponse 摘要化 + read_file_range maxBytes 截断', async () => {
+  const server = await createRuntime();
+  try {
+    const url = `${server.baseUrl}/mcp/${CONNECTOR_KEY}`;
+    const init = await rpcPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't08-test', version: '1.0.0' } } });
+    const sid = init.sessionId;
+
+    const reg = await rpcPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 't08-root', role: 'lead' } } }, sid);
+    const identity = reg.data.result.structuredContent.data.result.identity;
+
+    // ── 1) session_history 经 live server 整形：嵌套 ToolResponse → 摘要 ──
+    const hist = await rpcPost(url, { jsonrpc: '2.0', id: 100, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'session_history', input: { limit: 10 }, identity } } }, sid);
+    const histData = hist.data.result.structuredContent;
+    assert.equal(histData.ok, true, 'session_history 应 ok');
+    const entries = histData.data.result.history.entries;
+    assert.ok(Array.isArray(entries) && entries.length > 0, 'history 应含条目');
+
+    // 找带嵌套 result 的 tool_audit 条目（如已完成 session_register）
+    const audited = entries.find((e) => e.type === 'tool_audit' && e.data && e.data.result);
+    assert.ok(audited, '应存在带嵌套 result 的 tool_audit 条目');
+    const summary = audited.data.result;
+    // 摘要形态：{ tool, ok, bytes? }，不再含完整嵌套 ToolResponse
+    assert.equal(typeof summary.tool, 'string', '嵌套 ToolResponse 应被摘要为 {tool}');
+    assert.equal(typeof summary.ok, 'boolean');
+    assert.equal(typeof summary.bytes, 'number', '摘要应带 bytes 量级');
+    assert.equal('data' in summary, false, '摘要不得再含完整嵌套 data（爆炸消除）');
+    assert.equal('result' in summary, false, '摘要不得再含完整嵌套 result（防爆栈）');
+    // audit 级 tool/ok 保全
+    assert.equal(audited.data.tool, summary.tool, 'audit 级 tool 保全');
+    assert.equal(audited.data.ok, summary.ok, 'audit 级 ok 保全');
+
+    // ── 2) read_file_range maxBytes 截断（handler 流式，防全文件进内存）──
+    const bigPath = path.join(server.dirs.workspaceDir, 't08-big.txt');
+    const line = 'abcdefghij'.repeat(20); // 200 chars/行
+    const totalLines = 50;
+    // 无尾随换行 → 真实 50 行（与 read_file split 语义一致：尾随空行不计入）
+    fs.writeFileSync(bigPath, Array.from({ length: totalLines }, () => line).join('\n'));
+
+    const rfr = await rpcPost(url, { jsonrpc: '2.0', id: 101, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'read_file_range', input: { path: 't08-big.txt', startLine: 1, endLine: totalLines, maxBytes: 500 }, identity } } }, sid);
+    const rfrData = rfr.data.result.structuredContent;
+    assert.equal(rfrData.ok, true, 'read_file_range 应 ok');
+    const rr = rfrData.data.result;
+    assert.equal(rr.totalLines, totalLines, 'totalLines 应为真实总行数（不被截断影响）');
+    assert.equal(rr.truncated, true, '超 maxBytes 应置 truncated:true');
+    assert.ok(Buffer.byteLength(rr.content, 'utf8') <= 500, 'content 字节数不应超过 maxBytes');
+    assert.ok(typeof rr.sha256 === 'string' && rr.sha256.length === 64, 'sha256 字节精确（全文件哈希）');
+    assert.ok(rr.content.includes('1: '), 'content 应为 `行号: 行内容` 格式');
+
+    // ── 2b) 空文件：totalLines 应为 1（匹配 split(/\r?\n/)，不回归为 0）──
+    const emptyPath = path.join(server.dirs.workspaceDir, 't08-empty.txt');
+    fs.writeFileSync(emptyPath, '');
+    const rfrEmpty = await rpcPost(url, { jsonrpc: '2.0', id: 102, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'read_file_range', input: { path: 't08-empty.txt', startLine: 1, endLine: 10 }, identity } } }, sid);
+    const rrEmpty = rfrEmpty.data.result.structuredContent.data.result;
+    assert.equal(rfrEmpty.data.result.structuredContent.ok, true, '空文件读取应成功');
+    assert.equal(rrEmpty.totalLines, 1, '空文件 totalLines 应为 1（与 read_file 一致，不回归为 0）');
+    assert.equal(rrEmpty.content, '', '空文件 content 为空');
+    assert.equal(rrEmpty.truncated, false);
+
+    // ── 2c) 多字节（CJK）内容：不损坏（StringDecoder 跨块边界安全）──
+    const cjkPath = path.join(server.dirs.workspaceDir, 't08-cjk.txt');
+    const cjkLine = '中文测试汉字内容混合abc' + '宇'.repeat(20);
+    const cjkTotal = 6;
+    fs.writeFileSync(cjkPath, Array.from({ length: cjkTotal }, (_, i) => `${cjkLine}行${i}`).join('\n'));
+    const rfrCjk = await rpcPost(url, { jsonrpc: '2.0', id: 103, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'read_file_range', input: { path: 't08-cjk.txt', startLine: 1, endLine: cjkTotal }, identity } } }, sid);
+    const rrCjk = rfrCjk.data.result.structuredContent.data.result;
+    assert.equal(rrCjk.totalLines, cjkTotal, 'CJK 文件总行数正确');
+    for (let i = 0; i < cjkTotal; i++) {
+      assert.ok(rrCjk.content.includes(`${i + 1}: ${cjkLine}行${i}`), `CJK 第 ${i + 1} 行无损坏`);
+    }
+    assert.equal(rrCjk.content.includes('�'), false, 'CJK 内容不得含替换字符 U+FFFD');
+  } finally {
+    await server.close();
+  }
+});

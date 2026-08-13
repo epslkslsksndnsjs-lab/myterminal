@@ -272,7 +272,13 @@ test('T03-AC6: e2e execute_cli 真实调用 → 无噪声结果 + 审计双版�
     assert.deepEqual(execAudit.data.shaping, { applied: true }, 'e2e 审计 applied:true（非 over-budget）');
     // raw 不落盘到模型可见的 tool_audit（T01 先例 + D7「审计永不进模型上下文」）；raw 侧由 AC4 单测经 ctx.audit 记录锁定。
     assert.equal(execAudit.data.rawResult, undefined, 'raw 不落盘到模型可见的 tool_audit');
-    assert.equal(execAudit.data.result.data.result.command, undefined, '整形后 result 已去噪');
+    // T08(#36)：session_history 现在把每条 tool_audit 的嵌套 ToolResponse（含 execute_cli）摘要化，
+    // 以防递归嵌套爆炸 + 大结果（stdout/token）重入历史；历史里不再保留完整去噪结果。
+    const storedSummary = execAudit.data.result;
+    assert.equal(typeof storedSummary.tool, 'string', 'T08：历史中嵌套 ToolResponse 已摘要为 {tool}');
+    assert.equal(storedSummary.ok, true, '摘要 ok 取自嵌套');
+    assert.equal(typeof storedSummary.bytes, 'number', '摘要 bytes（原结果量级）');
+    assert.equal('data' in storedSummary, false, '摘要不再含完整嵌套 data（命令/输出不重入历史）');
   } finally {
     await server.close();
   }

@@ -334,6 +334,12 @@ const INPUT_SCHEMA_ALLOWLIST = new Map([
   ['session_list :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:T07新增可选分页入参limit' }],
   ['session_list :: properties.limit.maximum', { baseline: undefined, current: 200, reason: 'A:T07新增可选分页入参limit(上限200)' }],
   ['session_list :: properties.limit.default', { baseline: undefined, current: 20, reason: 'A:展示层default(服务端默认20,parse不变)' }],
+  // ── A 类（续续）：T08 #36 为 read_file_range 新增可选 maxBytes 入参（与 read_file 对称）
+  //   实测 parse({}) => {}（maxBytes 非 required，服务端按缺省 256_000 截断），既有调用方零行为变化；
+  //   maximum=1_000_000 与 read_file 同源对齐，非行为变更。
+  ['read_file_range :: properties.maxBytes.type', { baseline: undefined, current: 'integer', reason: 'A:T08新增可选maxBytes入参' }],
+  ['read_file_range :: properties.maxBytes.minimum', { baseline: undefined, current: 1, reason: 'A:T08新增可选maxBytes入参' }],
+  ['read_file_range :: properties.maxBytes.maximum', { baseline: undefined, current: 1000000, reason: 'A:T08新增可选maxBytes(上限1_000_000,与read_file同源)' }],
   // ── B 类：约束收紧（运行期本就拒，判定结果不变，错误通道前移）──
   ['session_inherit :: properties.claimCode.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
   ['session_inherit :: properties.sessionToken.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],

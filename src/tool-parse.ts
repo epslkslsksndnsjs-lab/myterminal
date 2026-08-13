@@ -292,13 +292,114 @@ function reduceSessionList(result: JsonObject, _ctx: ShapeContext): JsonObject {
   };
 }
 
+// ── D15/T08 主动精简（session_history）：嵌套完整 ToolResponse → 摘要（⑨ 递归深度盲区解法）──
+//
+// 根因（L2 候选报告）：session_history 的 audit entry（`type:"tool_audit"`）的
+// `data.result` 可能是**完整嵌套 ToolResponse**（历史 session_history 调用把自身完整
+// result 嵌进来，最深 4 层、6 处嵌套、单条最大 247KB）。D13 只递归 `task_poll.operation`，
+// 覆盖不到这种藏在 `result.history.entries[].data.result` 数组里的嵌套 ToolResponse。
+//
+// 解法（用户拍板 A）：默认把 audit entry 的 `data.result` 替换为摘要
+//   `{ tool, ok, entryCount?, bytes?, errorCode? }`
+// - `tool`：嵌套调用的工具名（取 `nr.data.tool`）
+// - `ok`：嵌套 ToolResponse 的成败（`nr.ok`）
+// - `entryCount?`：若嵌套 result 自身含 history/entries（嵌套 session_history），报条目数
+// - `bytes?`：原嵌套 result 序列化字节数（量级感，始终给 ToolResponse 摘要）
+// - `errorCode?`：`ok:false` 时附 `nr.error.code`
+// 非 ToolResponse 包裹的小结果（如 `read_file` 几行）→ 保留原样（ADR：<500 chars 不丢）。
+// 摘要里不再含完整嵌套 ToolResponse → 从根消除递归嵌套（不需 D13 式 ToolResponse 递归、
+// 不需深度上限/防爆栈）。与 `reduceSessionList` 同构：返回内部 `__reduction`（L2 剥离后
+// 写审计，绝不进模型上下文，D17）。
+//
+// 注：`read_file_range` 的 maxBytes 截断（同属 T08）落在 handler（core-tools.ts），因为
+// 目标是"防全文件进内存"——必须在产生 result 前就流式截断，L2 reducer 截断已晚（整文件已
+// 进内存）。故 `read_file_range` 不在此注册 reducer，走 passthrough（handler 已截断）。
+
+/** 判定 `v` 是否为完整嵌套 ToolResponse 形态（`{ ok: boolean, data: object }`）。 */
+function isNestedToolResponse(v: unknown): v is ToolResponse {
+  return isPlainObject(v) && typeof (v as JsonObject).ok === 'boolean' && isPlainObject((v as JsonObject).data);
+}
+
+/** 把完整嵌套 ToolResponse 压成摘要（⑨ 解法核心）。返回新对象，零副作用。 */
+function summarizeNestedResult(nr: ToolResponse): JsonObject {
+  const data = (nr.data ?? {}) as JsonObject;
+  const summary: JsonObject = {
+    tool: typeof data.tool === 'string' ? data.tool : null,
+    ok: nr.ok === true,
+  };
+  // entryCount?：嵌套 result 自身若含 history/entries（嵌套 session_history 等）→ 报条目数
+  const nestedResult = data.result;
+  if (isPlainObject(nestedResult)) {
+    const nested = nestedResult as JsonObject;
+    const hist = isPlainObject(nested.history) ? (nested.history as JsonObject) : undefined;
+    const nestedEntries = Array.isArray(nested.entries)
+      ? (nested.entries as unknown[])
+      : hist && Array.isArray((hist as JsonObject).entries)
+        ? ((hist as JsonObject).entries as unknown[])
+        : undefined;
+    if (nestedEntries) summary.entryCount = nestedEntries.length;
+  }
+  // bytes?：原嵌套 result 字节数（量级感）；始终给 ToolResponse 摘要
+  summary.bytes = Buffer.byteLength(JSON.stringify(nr), 'utf8');
+  // errorCode?：失败附错误码（D7/D9 error.code 原样取用）
+  if (nr.ok !== true) {
+    const err = nr.error;
+    if (isPlainObject(err) && typeof (err as JsonObject).code === 'string') {
+      summary.errorCode = (err as JsonObject).code;
+    }
+  }
+  return summary;
+}
+
+/**
+ * D15/T08 主动精简 reducer（session_history）：把每条 audit entry 的 `data.result`
+ * （完整嵌套 ToolResponse）替换为摘要，消除递归嵌套爆炸。输入
+ * `data.result = { history: { total, offset, nextOffset?, entries: [...] } }`
+ * （store.ts:606，非扁平）。结构不符（无 history / 无 entries）→ 原样 fail-open。
+ * 仅替换 `entry.data.result`，保全 `entry.data.tool` / `entry.data.ok` 等审计元信息。
+ */
+function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObject {
+  const history = isPlainObject(result.history) ? (result.history as JsonObject) : undefined;
+  if (!history) return result; // 结构不符 → 原样（防御）
+  const entriesIn = Array.isArray(history.entries) ? (history.entries as JsonObject[]) : null;
+
+  let summarized = 0;
+  // 非数组 entries（畸形）→ 原样保全（fail-open，绝不把 null/非数组改写成 []）
+  const entries = entriesIn === null ? history.entries : entriesIn.map((entry) => {
+    if (!isPlainObject(entry)) return entry; // 非对象条目原样保全（防御）
+    const entryData = isPlainObject(entry.data) ? (entry.data as JsonObject) : undefined;
+    if (!entryData) return entry;
+    const nr = entryData.result;
+    if (nr === null || nr === undefined) return entry; // 无嵌套 result → 原样
+    if (isNestedToolResponse(nr)) {
+      // 完整嵌套 ToolResponse → 替换为摘要（消除递归嵌套）
+      summarized++;
+      return { ...entry, data: { ...entryData, result: summarizeNestedResult(nr) } };
+    }
+    // 非 ToolResponse 包裹（如 read_file 几行小结果）→ 保留原样（ADR：<500 chars 不丢）
+    return entry;
+  });
+
+  const reducedHistory = { ...history, entries };
+  const reduced = { ...result, history: reducedHistory };
+
+  const originalSize = JSON.stringify(result).length;
+  const reducedSize = JSON.stringify(reduced).length;
+  return {
+    ...reduced,
+    __reduction: { fieldsReduced: summarized, entriesTruncated: 0, originalSize, reducedSize },
+  };
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪（复用同一 denoiseCommandResult reducer）。
-// T07：session_list 主动精简（D15 前半）。其余工具未声明 → passthrough。
-// L3（schema）条目在 T10 落地。
+// T07：session_list 主动精简（D15 前半）。T08：session_history 嵌套 ToolResponse → 摘要
+// （D15 ⑨ 解法）；read_file_range 截断在 handler（core-tools.ts，防全文件进内存，不在此注册）。
+// 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
+  ['session_history', { reduce: reduceSessionHistory }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],

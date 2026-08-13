@@ -106,7 +106,7 @@ async function registerRoot(server) {
 
 test('T01-1: TOOL_SHAPES 注册表 + shapeToolResponse(response, ctx) 签名就位', () => {
   assert.ok(TOOL_SHAPES instanceof Map, 'TOOL_SHAPES 应为 Map 注册表');
-  assert.equal(TOOL_SHAPES.size, 7, 'T03 起注册表填充 6 个被动去噪工具（execute_cli/git_status/git_diff/git_log/git_show/run_checks）+ T07 新增 session_list 主动精简');
+  assert.equal(TOOL_SHAPES.size, 8, 'T03 起注册表填充 6 个被动去噪工具（execute_cli/git_status/git_diff/git_log/git_show/run_checks）+ T07 新增 session_list 主动精简 + T08 新增 session_history 主动精简（嵌套 ToolResponse 摘要）');
   assert.equal(typeof shapeToolResponse, 'function');
   assert.equal(shapeToolResponse.length, 2, '签名应为 shapeToolResponse(response, ctx)');
 });
@@ -311,7 +311,13 @@ test('T01-F: 无整形时审计事件带 shaping { applied:false, reason:"passth
     // raw 不落盘到模型可见的 tool_audit——T01(#29) 先例 + D7「审计永不进模型上下文」，
     // 否则 projectContext→recentToolCalls 会把 raw 喂给模型，既违 D7 又让整形形同虚设。
     assert.equal(executeAudit.data.rawResult, undefined, 'raw 不落盘到模型可见的 tool_audit');
-    assert.equal(executeAudit.data.result.data.result.command, undefined, '整形后 result 已剥除 command');
+    // T08(#36)：session_history 现在把每条 tool_audit 的嵌套 ToolResponse（含 execute_cli）摘要化，
+    // 以防递归嵌套爆炸 + 大结果（stdout/token）重入历史；历史里不再保留完整去噪结果（命令/输出不泄露到历史）。
+    const storedSummary = executeAudit.data.result;
+    assert.equal(typeof storedSummary.tool, 'string', 'T08：历史中嵌套 ToolResponse 已摘要为 {tool}');
+    assert.equal(storedSummary.ok, true, '摘要 ok 取自嵌套');
+    assert.equal(typeof storedSummary.bytes, 'number', '摘要 bytes（原结果量级）');
+    assert.equal('data' in storedSummary, false, '摘要不再含完整嵌套 data（命令/输出不重入历史）');
 
     const registerAudit = auditEntries.filter((entry) => entry.data.action === 'session_register').at(-1);
     assert.ok(registerAudit, 'session_history 应含 session_register 审计条目');
