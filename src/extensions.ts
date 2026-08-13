@@ -9,6 +9,7 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
+import { shapeToolResponse, type ShapingAudit } from './tool-parse.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
 const RESERVED_NAMES = new Set(['extension_discover', 'extension_register', 'extension_call']);
@@ -199,6 +200,7 @@ export class ExtensionService {
     status: Exclude<ToolAuditEvent['status'], 'running'>,
     result: unknown,
     error?: { code: string; message?: string },
+    shaping?: ShapingAudit,
   ): void {
     if (this.closedActionIds.has(actionId)) return;
     let finalError = error;
@@ -209,6 +211,7 @@ export class ExtensionService {
     const event: ToolAuditEvent = {
       id: actionId, timestamp: new Date(started).toISOString(), completedAt, source, action, status, durationMs: Date.now() - started, error: finalError,
       workspace: this.config.workspaceDir, session: sessionId, args, result,
+      ...(shaping ? { shaping } : {}),
     };
     const persisted = this.store.auditEvent(sessionId, event);
     this.onAudit?.(persisted);
@@ -218,6 +221,46 @@ export class ExtensionService {
   }
 
   // ─── withAudit: shared audit scaffolding (ADR-0032 #30) ─────────────────────
+
+  /**
+   * ADR-0047（#29）：工具响应整形出口——包住最终装饰响应（含 decorateContinuation 后的
+   * 长任务结构，D13）。T01 骨架阶段全量 passthrough（零行为变化回归基线）；shaper 自身
+   * 任何失败 → fail-open 返回原始响应（D11），失败原因只进审计、绝不进结果（D17）。
+   * subagent 通道（D2）不整形，原样返回。
+   */
+  private applyShape(
+    response: ToolResponse,
+    sessionId: string | undefined,
+    transport: InvocationContext['transport'],
+  ): { response: ToolResponse; shaping: ShapingAudit | undefined } {
+    if (transport === 'subagent') return { response, shaping: undefined };
+    let shaping: ShapingAudit | undefined;
+    try {
+      const shaped = shapeToolResponse(response, {
+        transport,
+        sessionId,
+        resolveTool: (name) => this.resolveTool(name),
+        audit: (record) => { shaping = record.shaping; },
+      });
+      return { response: shaped, shaping };
+    } catch {
+      return { response, shaping: { applied: false, reason: 'reducer-threw' } };
+    }
+  }
+
+  /** 按工具名解析 ToolDefinition（builtin + custom，D5 路由用）；未注册 → undefined。 */
+  private resolveTool(name: string): ToolDefinition | undefined {
+    const builtin = this.builtins.get(name);
+    if (builtin) return builtin;
+    const custom = this.store.listExtensions().find((item) => item.name === name);
+    if (!custom) return undefined;
+    // custom extension 无 invoke 实现（handler 驱动），shaper 只读其形状声明
+    return {
+      name: custom.name, title: custom.title, description: custom.description,
+      inputSchema: custom.inputSchema, annotations: custom.annotations,
+      invoke: async () => ({}),
+    };
+  }
 
   private deriveAuditError(error: unknown): { code: string; message: string } {
     return { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
@@ -249,21 +292,26 @@ export class ExtensionService {
     try {
       if (handlers.begin !== false) this.beginAudit(sessionId, actionId, source, action, args, started);
       const response = await handlers.onSuccess({ actionId, started });
-      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', response);
-      return response;
+      // ADR-0047（#29）：withAudit 出口统一过 shaper（subagent 通道除外，D2 不整形），
+      // 审计记录整形后响应 + shaping 原因（D7）。
+      const shaped = this.applyShape(response, sessionId, source);
+      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', shaped.response, undefined, shaped.shaping);
+      return shaped.response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const response = await handlers.onError({ actionId, started, auditError }, error);
       const status = handlers.errorStatus?.(auditError) ?? 'failed';
-      this.finishAudit(sessionId, actionId, source, action, args, started, status, response, auditError);
-      return response;
+      const shaped = this.applyShape(response, sessionId, source);
+      this.finishAudit(sessionId, actionId, source, action, args, started, status, shaped.response, auditError, shaped.shaping);
+      return shaped.response;
     } finally {
       if (!this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
     }
   }
 
   async discover(input: JsonObject = {}, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
-    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    // ADR-0047（#29）：守卫路径也经 shaper 出口（“所有工具响应经 shaper”）；shutdown 窗口无会话无审计，shaping 不落盘
+    if (!this.accepting) return this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport).response;
     let authenticated: { id: string } | undefined;
     try {
       authenticated = this.authenticate(input, context, true) ?? undefined;
@@ -274,10 +322,10 @@ export class ExtensionService {
     } catch (error) {
       const failed = failure(error);
       const sessionId = authenticated?.id;
-      return this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
+      return this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport).response;
     }
     if (!authenticated) {
-      return { ok: true, data: {
+      return this.applyShape({ ok: true, data: {
         agentMd: loadAgentMd(this.config.settingsPath),
         identityRequired: true,
         instructions: {
@@ -291,7 +339,7 @@ export class ExtensionService {
         },
         bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
         skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
-      } };
+      } }, undefined, context.transport).response;
     }
     return this.withAudit(authenticated.id, context.transport, 'extension_discover', input, {
       onSuccess: () => {
@@ -349,7 +397,7 @@ export class ExtensionService {
   }
 
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
-    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    if (!this.accepting) return this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport).response;
     // ADR-0032 #30 修复：main 基线中 authenticate + beforeOrdinaryCall 同在方法级 try 内，
     // beginAudit 在其后（auditStarted=false）→ 两者抛错都不写 audit，只返回
     // attachEvents(failure(error), sessionId)。authenticate 抛时 sessionId 未赋值。
@@ -358,7 +406,7 @@ export class ExtensionService {
       authenticated = this.authenticate(input, context, false)!;
       this.store.beforeOrdinaryCall(authenticated.id);
     } catch (error) {
-      return this.attachEvents(failure(error), authenticated?.id);
+      return this.applyShape(this.attachEvents(failure(error), authenticated?.id), authenticated?.id, context.transport).response;
     }
     const session = authenticated;
     return this.withAudit(session.id, context.transport, 'extension_register', input, {
@@ -398,7 +446,7 @@ export class ExtensionService {
   }
 
   async call(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
-    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    if (!this.accepting) return this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport).response;
     this.trimBackgroundTasks();
     let sessionId: string | undefined;
     const started = Date.now();
@@ -424,9 +472,9 @@ export class ExtensionService {
       }
       if (input.tool === 'task_poll') {
         if (!authenticated) throw new MyTerminalError('IDENTITY_REQUIRED', 'task_poll requires an authenticated session.');
-        const response = this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, response.ok ? 'completed' : 'failed', response, response.error);
-        return response;
+        const shaped = this.applyShape(this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id), authenticated.id, context.transport);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, shaped.response.ok ? 'completed' : 'failed', shaped.response, shaped.response.error, shaped.shaping);
+        return shaped.response;
       }
       const operation = this.trackOperation(actionId, controller, this.invokeTool(input.tool, args, invocationContext));
       if (authenticated && !CONTROL_TOOLS.has(input.tool) && this.config.nonBlockingTasksEnabled) {
@@ -444,19 +492,19 @@ export class ExtensionService {
             (result) => this.completeBackgroundTask(task, result),
             (error: unknown) => this.failBackgroundTask(task, error),
           );
-          return this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
+          return this.applyShape(this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
             reason: 'background_task_running',
             nextCall: { tool: 'task_poll', input: { taskId: task.id }, purpose: 'Confirm the detached operation completed before advancing the continuation plan.' },
-          }, context.transport), authenticated.id);
+          }, context.transport), authenticated.id), authenticated.id, context.transport).response;
         }
         if (outcome.kind === 'error') throw outcome.error;
         const result = outcome.result;
         const problem = resultProblem(result);
         if (!problem) this.store.completeContinuationCall(authenticated.id, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
-        const response = this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), response, problem);
-        return response;
+        const shaped = this.applyShape(this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id), authenticated.id, context.transport);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping);
+        return shaped.response;
       }
       const result = await operation;
       if (!sessionId && result.identity && typeof result.identity === 'object') sessionId = String((result.identity as JsonObject).sessionId || '');
@@ -470,18 +518,18 @@ export class ExtensionService {
         const problem = resultProblem(result);
         if (!problem) this.store.completeContinuationCall(sessionId, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
-        const response = this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId);
-        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), response, problem);
-        return response;
+        const shaped = this.applyShape(this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId), sessionId, context.transport);
+        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping);
+        return shaped.response;
       }
-      return this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId);
+      return this.applyShape(this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId), sessionId, context.transport).response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const isPolicyRejection = auditError.code === 'NEXT_CALL_REQUIRED' || auditError.code === 'CONTINUATION_PLAN_REQUIRED';
       const failed = failure(error);
-      const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
-      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', response, auditError);
-      return response;
+      const shaped = this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', shaped.response, auditError, shaped.shaping);
+      return shaped.response;
     } finally {
       if (!detached && !this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
     }
@@ -575,8 +623,10 @@ export class ExtensionService {
     task.status = this.resultToAuditStatus(problem);
     task.completedAt = new Date().toISOString();
     const base: ToolResponse = problem ? { ok: false, data: { tool: task.tool, result }, error: problem } : { ok: true, data: { tool: task.tool, result } };
-    task.response = this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source);
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, task.response, problem);
+    // ADR-0047（#29）：完成态在存储前整形（D18.2 执行点），完成审计记 shaping 原因（D7）
+    const shaped = this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
+    task.response = shaped.response;
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, shaped.response, problem, shaped.shaping);
     this.trimBackgroundTasks();
   }
 
@@ -585,8 +635,9 @@ export class ExtensionService {
     const auditError = this.deriveAuditError(error);
     task.status = 'failed';
     task.completedAt = new Date().toISOString();
-    task.response = this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source);
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', task.response, auditError);
+    const shaped = this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
+    task.response = shaped.response;
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping);
     this.trimBackgroundTasks();
   }
 
