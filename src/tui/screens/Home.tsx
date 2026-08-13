@@ -8,7 +8,7 @@ import type { TuiSnapshot, Theme } from '../state.js';
 import { phaseColor, presenceColor } from '../state.js';
 import { statusToVisual } from '../status-color.js';
 import { logicalSessionGroups } from '../../tui-model.js';
-import { getSubagentBySessionId } from '../../subagent/store.js';
+import { getSubagentBySessionId, type SubagentRecord } from '../../subagent/store.js';
 import { useI18n } from '../copy/context.js';
 import { greetingFor } from '../copy/index.js';
 import { Mascot } from '../components/Mascot.js';
@@ -29,12 +29,23 @@ function truncate(text: string, max: number): string {
 
 /** D2（ADR-0046 #22）：token 计数缩写格式。
  *  ≥1000 → 1 位小数 k（去尾随 .0，如 12500 → ↑12.5k）；<1000 → 原值（如 840 → ↑840）。 */
-function formatTokenCounter(total: number): string {
+export function formatTokenCounter(total: number): string {
   if (total >= 1000) {
     const k = Math.round((total / 1000) * 10) / 10;
     return `↑${k.toFixed(1).replace(/\.0$/, '')}k`;
   }
   return `↑${total}`;
+}
+
+/** #23（ADR-0046 D2.2）：计数器生命周期决策，驱动 Home 子会话行的 ↑N 显隐与红色。
+ *  - 无 record（非 subagent child）→ 不显示
+ *  - completed → 消失（成功跑完）
+ *  - failed / aborted → 显示且为错误态（红色冻结）
+ *  - running（其余）→ 显示，正常色
+ *  权威字段是 SubagentRecord.status；SessionPhase 无 failed/aborted，故不读 child.phase。 */
+export function counterLifecycle(record: SubagentRecord | undefined): { visible: boolean; isError: boolean } {
+  if (!record || record.status === 'completed') return { visible: false, isError: false };
+  return { visible: true, isError: record.status === 'failed' || record.status === 'aborted' };
 }
 
 export function Home({ runtime, state, snapshot, theme }: {
@@ -140,10 +151,8 @@ function SessionGroupRow({ group, theme, now }: {
         const isLast = idx === children.length - 1;
         const prefix = isLast ? '└─' : '├─';
         const record = getSubagentBySessionId(child.id);
-        const showCounter = record !== undefined && record.status !== 'completed';
-        const counterColor = record !== undefined && (record.status === 'failed' || record.status === 'aborted')
-          ? theme.bad
-          : theme.text;
+        const { visible: showCounter, isError } = counterLifecycle(record);
+        const counterColor = isError ? theme.bad : theme.text;
         const tokenTotal = record !== undefined ? record.usage.inputTokens + record.usage.outputTokens : 0;
         return (
           <box key={child.id} flexDirection="row" gap={1} paddingLeft={3} width="100%">
