@@ -103,6 +103,18 @@ function resultProblem(value: unknown): ResultProblem | undefined {
   return record.result === undefined ? undefined : resultProblem(record.result);
 }
 
+/**
+ * 归一化 error.details，消除 decorateContinuation 对 string 型 details 的 `{ ...string }` 炸键
+ * （展开成字符索引键、原文丢失，#30 / L567 已确证 shipped bug）。
+ * - string → { text }
+ * - object → 原样拷贝（不与原对象共享引用）
+ * - undefined / null → {}
+ */
+export function normalizeErrorDetails(details?: JsonObject | string | null): JsonObject {
+  if (typeof details === 'string') return { text: details };
+  return { ...(details ?? {}) };
+}
+
 function explicitIdentity(input: JsonObject): SessionIdentity | undefined {
   if (input.identity === undefined || input.identity === null) return undefined;
   const identity = objectValue(input.identity, 'identity');
@@ -612,7 +624,7 @@ export class ExtensionService {
     return {
       ...response,
       data: { ...(response.data ?? {}), continuation },
-      ...(!response.ok && response.error ? { error: { ...response.error, details: { ...(response.error.details ?? {}), continuation } } } : {}),
+      ...(!response.ok && response.error ? { error: { ...response.error, details: { ...normalizeErrorDetails(response.error.details), continuation } } } : {}),
     };
   }
 
