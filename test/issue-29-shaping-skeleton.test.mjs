@@ -21,6 +21,8 @@ const ACTIONS_TOKEN = 'issue29-actions-token-1234567890123456';
 
 // CommandResult 权威 10 字段（core-tools.ts runCommand 返回，ADR-0047 补遗3 evidence-locked）
 const COMMAND_RESULT_KEYS = ['command', 'cwd', 'exitCode', 'signal', 'timedOut', 'stdout', 'stderr', 'truncated', 'durationMs', 'cancelled'].sort();
+// T03 被动去噪后保留的 5 个真实数据字段（剥 command/cwd/signal/timedOut/cancelled）
+const DENOISED_COMMAND_RESULT_KEYS = ['durationMs', 'exitCode', 'stderr', 'stdout', 'truncated'].sort();
 
 // D17 静默契约：任何层都不插自标识标记
 const MARKER_KEYS = ['_shapedBy', '_l1Applied', '_l2Applied', '_l3Applied'];
@@ -102,9 +104,9 @@ async function registerRoot(server) {
 // 验收 1：tool-parse 模块就位
 // ═══════════════════════════════════════════════════════════
 
-test('T01-1: TOOL_SHAPES 空注册表 + shapeToolResponse(response, ctx) 签名就位', () => {
+test('T01-1: TOOL_SHAPES 注册表 + shapeToolResponse(response, ctx) 签名就位', () => {
   assert.ok(TOOL_SHAPES instanceof Map, 'TOOL_SHAPES 应为 Map 注册表');
-  assert.equal(TOOL_SHAPES.size, 0, 'T01 阶段注册表必须为空（零整形）');
+  assert.equal(TOOL_SHAPES.size, 6, 'T03 起注册表填充 6 个被动去噪工具（execute_cli/git_status/git_diff/git_log/git_show/run_checks）');
   assert.equal(typeof shapeToolResponse, 'function');
   assert.equal(shapeToolResponse.length, 2, '签名应为 shapeToolResponse(response, ctx)');
 });
@@ -136,13 +138,15 @@ test('T01-A: actions execute_cli 成功响应与基线逐字段一致（CommandR
     assert.equal(exec.status, 200);
     assert.equal(exec.body.ok, true);
     const result = exec.body.data.result;
-    assert.deepEqual(Object.keys(result).sort(), COMMAND_RESULT_KEYS, 'CommandResult 键集合必须与未接线基线一致');
-    assert.equal(result.command, 'echo t01a-output');
+    // T03：execute_cli 经被动去噪，剥 command/cwd/signal/timedOut/cancelled，仅留 5 真实数据字段
+    assert.deepEqual(Object.keys(result).sort(), DENOISED_COMMAND_RESULT_KEYS, 'T03 后 CommandResult 仅保留 5 个真实数据字段');
+    assert.equal(result.command, undefined, '噪声字段 command 已剥除');
+    assert.equal(result.cwd, undefined, '噪声字段 cwd 已剥除');
+    assert.equal(result.signal, undefined, '噪声字段 signal 已剥除');
+    assert.equal(result.timedOut, undefined, '噪声字段 timedOut 已剥除');
+    assert.equal(result.cancelled, undefined, '噪声字段 cancelled 已剥除');
     assert.ok(result.stdout.includes('t01a-output'));
     assert.equal(result.exitCode, 0);
-    assert.equal(result.timedOut, false);
-    assert.equal(result.cancelled, false);
-    assert.equal(result.signal, null);
     assert.equal(typeof result.durationMs, 'number');
     assert.equal(exec.body.data.continuation, undefined, 'off 模式无 continuation（与基线一致）');
     assertNoShapingMarkers(exec.body);
@@ -164,9 +168,15 @@ test('T01-B: actions execute_cli 失败响应原样（error 三要素 + result �
       message: 'The command exited with code 3.',
       retryable: false,
     });
-    assert.deepEqual(Object.keys(exec.body.data.result).sort(), COMMAND_RESULT_KEYS, '失败结果同样逐字段保留');
+    assert.deepEqual(Object.keys(exec.body.data.result).sort(), DENOISED_COMMAND_RESULT_KEYS, '失败结果同样去噪（剥 5 噪声字段）');
     assert.ok(exec.body.data.result.stderr.includes('t01b-err'));
     assert.equal(exec.body.data.result.exitCode, 3);
+    // error 三要素原样（D9：只动 data.result，error 不动）
+    assert.deepEqual(exec.body.error, {
+      code: 'NON_ZERO_EXIT',
+      message: 'The command exited with code 3.',
+      retryable: false,
+    });
     assertNoShapingMarkers(exec.body);
   } finally {
     await server.close();
@@ -206,15 +216,19 @@ test('T01-D: task_poll 完成态嵌套 operation（完整 ToolResponse）原样�
     assert.ok(operation && typeof operation === 'object', 'operation 嵌套必须原样存在');
     assert.equal(operation.ok, true, 'operation.ok 保全');
     assert.equal(operation.data.tool, 'execute_cli', 'operation.data.tool 保全');
-    assert.deepEqual(Object.keys(operation.data.result).sort(), COMMAND_RESULT_KEYS, '嵌套 CommandResult 键集合一致');
+    // T03：后台完成审计在存储前整形（D18.2 执行点），嵌套 CommandResult 同样被动去噪
+    assert.deepEqual(Object.keys(operation.data.result).sort(), DENOISED_COMMAND_RESULT_KEYS, '嵌套 CommandResult 已去噪');
+    for (const noise of ['command', 'cwd', 'signal', 'timedOut', 'cancelled']) {
+      assert.equal(operation.data.result[noise], undefined, `嵌套噪声字段 ${noise} 已剥除`);
+    }
     assertNoShapingMarkers(poll.body);
 
-    // 完成态在存储前整形（D18.2 执行点）：后台完成审计也记 passthrough 原因（D7）
+    // 完成态在存储前整形（D18.2 执行点）：后台完成审计记去噪原因（D7）
     const hist = await actionsCall(server, 'session_history', {}, identity);
     const completedExec = hist.body.data.result.history.entries
       .filter((entry) => entry.type === 'tool_audit' && entry.data.action === 'execute_cli' && entry.data.completedAt).at(-1);
     assert.ok(completedExec, '后台任务完成审计条目存在');
-    assert.deepEqual(completedExec.data.shaping, { applied: false, reason: 'passthrough' }, '后台完成审计记 passthrough 原因');
+    assert.deepEqual(completedExec.data.shaping, { applied: true }, 'T03 后台完成审计记 applied:true（去噪）');
   } finally {
     await server.close();
   }
@@ -250,8 +264,9 @@ test('T01-E: MCP 通道 execute_cli 结果字段集合与 actions 一致 + event
     assert.notEqual(exec.data.result.isError, true);
     const structured = exec.data.result.structuredContent;
     assert.equal(structured.ok, true);
-    assert.deepEqual(Object.keys(structured.data.result).sort(), COMMAND_RESULT_KEYS, 'MCP 与 actions 字段集合一致');
+    assert.deepEqual(Object.keys(structured.data.result).sort(), DENOISED_COMMAND_RESULT_KEYS, 'MCP 与 actions 同样经被动去噪');
     assert.ok(structured.data.result.stdout.includes('t01e-mcp-output'));
+    assert.equal(structured.data.result.command, undefined, 'MCP 噪声字段 command 已剥除');
     if (structured.events !== undefined) {
       assert.ok(Array.isArray(structured.events), 'events 数组原样透传');
       for (const event of structured.events) {
@@ -291,7 +306,12 @@ test('T01-F: 无整形时审计事件带 shaping { applied:false, reason:"passth
     const auditEntries = entries.filter((entry) => entry.type === 'tool_audit' && entry.data.completedAt);
     const executeAudit = auditEntries.filter((entry) => entry.data.action === 'execute_cli').at(-1);
     assert.ok(executeAudit, 'session_history 应含 execute_cli 审计条目');
-    assert.deepEqual(executeAudit.data.shaping, { applied: false, reason: 'passthrough' }, '无整形时审计记 passthrough 原因');
+    assert.deepEqual(executeAudit.data.shaping, { applied: true }, 'T03 后 execute_cli 整形成功记 applied:true（无 reason）');
+    // D7 双版本审计：raw 侧由单测（ctx.audit 记录）锁定（见 issue-31 AC4）。持久化层只留 shaping + 整形后 result；
+    // raw 不落盘到模型可见的 tool_audit——T01(#29) 先例 + D7「审计永不进模型上下文」，
+    // 否则 projectContext→recentToolCalls 会把 raw 喂给模型，既违 D7 又让整形形同虚设。
+    assert.equal(executeAudit.data.rawResult, undefined, 'raw 不落盘到模型可见的 tool_audit');
+    assert.equal(executeAudit.data.result.data.result.command, undefined, '整形后 result 已剥除 command');
 
     const registerAudit = auditEntries.filter((entry) => entry.data.action === 'session_register').at(-1);
     assert.ok(registerAudit, 'session_history 应含 session_register 审计条目');

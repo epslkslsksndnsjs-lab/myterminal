@@ -1,3 +1,5 @@
+import type { ToolReducer } from './tool-parse.js';
+
 export type JsonObject = Record<string, unknown>;
 
 export type SessionPhase = 'pending' | 'working' | 'waiting' | 'blocked' | 'completed' | 'cancelled';
@@ -269,4 +271,6 @@ export type ToolDefinition = {
   annotations: ExtensionAnnotations;
   aliases?: Record<string, string>;
   invoke: (input: JsonObject, context: InvocationContext) => Promise<JsonObject>;
+  /** ADR-0047（D5）：可选内联 L1 形状声明（工具自检），路由第一优先于中心表 TOOL_SHAPES。零模型 reducer；未声明走中心表/ passthrough。 */
+  shapeResult?: ToolReducer;
 };
