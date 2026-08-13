@@ -101,13 +101,28 @@ export function capError(error: ErrorShape): ErrorShape {
   if (message !== error.message) changed = true;
 
   const rawDetails: unknown = error.details;
-  let details: JsonObject | string | undefined = error.details;
+  let details: unknown = error.details;
 
   if (typeof rawDetails === 'string') {
     // Q4 双分支一：string details → 直接截
     const capped = truncateChars(rawDetails, ERROR_DETAILS_MAX_CHARS);
     if (capped !== rawDetails) { details = capped; changed = true; }
-  } else if (rawDetails !== null && rawDetails !== undefined && typeof rawDetails === 'object' && !Array.isArray(rawDetails)) {
+  } else if (Array.isArray(rawDetails)) {
+    // 数组 details（非标准；扩展/历史路径可能传）：逐顶层 string 元素截，其余原样（P4：不再静默漏帽）
+    const src = rawDetails as unknown[];
+    const out: unknown[] = [];
+    let arrChanged = false;
+    for (const v of src) {
+      if (typeof v === 'string') {
+        const c = truncateChars(v, ERROR_DETAILS_MAX_CHARS);
+        out.push(c);
+        if (c !== v) arrChanged = true;
+      } else {
+        out.push(v);
+      }
+    }
+    if (arrChanged) { details = out; changed = true; }
+  } else if (rawDetails !== null && rawDetails !== undefined && typeof rawDetails === 'object') {
     // Q4 双分支二：object details → 逐顶层 string 值截；保留 continuation 子键
     const src = rawDetails as JsonObject;
     const out: JsonObject = {};
@@ -122,7 +137,7 @@ export function capError(error: ErrorShape): ErrorShape {
         out[k] = v; // 非 string 值（number/boolean/array/嵌套 object）原样
       }
     }
-    if (detailsChanged || Object.keys(out).length !== Object.keys(src).length) {
+    if (detailsChanged) {
       details = out;
       changed = true;
     }
@@ -272,7 +287,14 @@ export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): To
 
   // D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽（continuation 子键保全）。
   // D7 审计：rawResult 保留未截断完整 error（诊断保全），shapedResult 为截断版。
-  const shaped = capErrorResponse(base);
+  // D11 fail-open：帽步骤自身异常 → 原样 passthrough（base），绝不阻断（与 L1 reducer 同形态）。
+  let shaped: ToolResponse;
+  try {
+    shaped = capErrorResponse(base);
+  } catch {
+    shaped = base;
+    shaping = { applied: false, reason: 'cap-threw' };
+  }
   ctx.audit({ rawResult: response, shapedResult: shaped, shaping });
   return shaped;
 }

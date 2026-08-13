@@ -191,3 +191,37 @@ test('T04-AC7: D17 静默 — 截断后结果 / error 无层标记', () => {
   const shaped = shapeToolResponse(resp, ctx);
   assertNoShapingMarkers(shaped);
 });
+
+// ───────────────────────────────────────────────────────────
+// AC8（P4 修复）：error.details 为数组 → 顶层 string 元素截断，非 string 原样
+// ───────────────────────────────────────────────────────────
+
+test('T04-AC8: error.details 为数组 → 顶层 string 元素截到 6000，非 string 元素原样（P4）', () => {
+  const error = {
+    code: 'X', message: 'boom', retryable: false,
+    details: ['a'.repeat(9000), 'short', 42, { nested: 'b'.repeat(9000) }],
+  };
+  const capped = capError(error);
+  assert.equal(capped.details[0].length, ERROR_DETAILS_MAX_CHARS, '顶层 string 元素截断');
+  assert.equal(capped.details[1], 'short', '短 string 元素原样');
+  assert.equal(capped.details[2], 42, 'number 元素原样');
+  assert.deepEqual(capped.details[3], { nested: 'b'.repeat(9000) }, '嵌套对象元素原样（本票不递归截）');
+  assert.equal(capped.code, 'X');
+  assert.equal(capped.message, 'boom');
+});
+
+// ───────────────────────────────────────────────────────────
+// AC9（P3 修复）：畸形 error（缺 message）→ shaper 不抛、fail-open 记 cap-threw
+// ───────────────────────────────────────────────────────────
+
+test('T04-AC9: 畸形 error（缺 message）经 shapeToolResponse 不抛、fail-open 记 cap-threw（P3）', () => {
+  const { ctx, getRecord } = makeCtx();
+  // 缺 message（扩展/三方工具可能返回）；未修复前 capError 会对 undefined.length 抛 TypeError
+  const resp = { ok: false, error: { code: 'X', retryable: false }, data: { tool: 'execute_cli', result: 'not-object' } };
+  let threw = false;
+  let shaped;
+  try { shaped = shapeToolResponse(resp, ctx); } catch { threw = true; }
+  assert.equal(threw, false, 'D11 fail-open：帽步骤异常绝不阻断模型');
+  assert.strictEqual(shaped, resp, '异常时原样 passthrough（base，error 未损坏）');
+  assert.equal(getRecord().shaping.reason, 'cap-threw', '帽异常原因记 audit（不误标 reducer-threw）');
+});
