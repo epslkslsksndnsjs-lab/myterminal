@@ -50,7 +50,7 @@ export type SubagentStatusResult = {
   status: string;
   sessionId?: string;
   tasks: SubagentTask[];
-  cost: UsageSummary;
+  usage: UsageSummary;
   error?: string;
   result?: string;
   /** ADR-0042 #78 选项 A：来源（skill fork 时标注 skillName；direct start 为 undefined） */
@@ -215,7 +215,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         status: record.status,
         sessionId: record.sessionId,
         tasks: record.tasks,
-        cost: record.cost,
+        usage: record.usage,
         error: record.error,
         result: record.status === 'completed' ? record.result : undefined,
         origin: record.origin,

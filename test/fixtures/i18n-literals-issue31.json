@@ -1489,7 +1489,7 @@
     "word",
     "wrap",
     "└─ Session: ${record.sessionId}",
-    "├─ ${t('Cost', '成本')}: ${record.cost.inputTokens}+${record.cost.outputTokens} tokens",
+    "├─ ${t('Usage', '用量')}: ${record.usage.inputTokens}+${record.usage.outputTokens} tokens",
     "├─ ${t('Progress', '进度')}: ${completedTasks}/${record.tasks.length} ${t('done', '完成')}",
     "├─ ${t('Task', '任务')}: ${summary}",
     "中止中",

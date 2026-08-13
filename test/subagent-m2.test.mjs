@@ -24,7 +24,7 @@ import {
   collectSubagentResult,
   getSubagentResult,
   addAuditLog,
-  updateCost,
+  updateUsage,
   updateSubagentCost,
   countRunning,
   getRecentAuditLogs,
@@ -191,7 +191,7 @@ test('subagent store full CRUD flow', () => {
   assert.equal(record.tasks.length, 1);
   assert.equal(record.tasks[0].subject, 'Test task');
   assert.equal(record.tasks[0].status, 'pending');
-  assert.equal(record.cost.inputTokens, 0);
+  assert.equal(record.usage.inputTokens, 0);
   assert.ok(record.createdAt > 0);
 
   // get
@@ -264,22 +264,22 @@ test('subagent store countRunning filters correctly', () => {
   assert.equal(countRunning(), 1);
 });
 
-// 用例 16b：updateCost + updateSubagentCost
-test('subagent store updateCost and updateSubagentCost work', () => {
+// 用例 16b：updateUsage + updateSubagentCost
+test('subagent store updateUsage and updateSubagentCost work', () => {
   clearAllSubagents();
   createSubagent('sub-cost', { subject: 'Cost test' });
 
-  updateCost('sub-cost', { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0 });
+  updateUsage('sub-cost', { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0 });
   const r = getSubagent('sub-cost');
   assert.ok(r);
-  assert.equal(r.cost.inputTokens, 1000);
+  assert.equal(r.usage.inputTokens, 1000);
 
   // updateSubagentCost（通过 UsageSummary 更新）
   updateSubagentCost('sub-cost', { inputTokens: 5000, outputTokens: 1000, cacheReadTokens: 0 });
   const r2 = getSubagent('sub-cost');
   assert.ok(r2);
-  assert.equal(r2.cost.inputTokens, 5000);
-  assert.equal(r2.cost.outputTokens, 1000);
+  assert.equal(r2.usage.inputTokens, 5000);
+  assert.equal(r2.usage.outputTokens, 1000);
 });
 
 // 用例 17：1 小时清理定时器——可注入间隔
@@ -338,12 +338,12 @@ test('integration: full subagent lifecycle', () => {
   });
 
   // 4. update cost
-  updateCost(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500 });
+  updateUsage(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500 });
 
   // 5. getSubagentResult (reads without removing)
   const before = getSubagentResult(agentId);
   assert.ok(before);
-  assert.equal(before.cost.inputTokens, 5000);
+  assert.equal(before.usage.inputTokens, 5000);
 
   // 6. complete
   updateSubagentStatus(agentId, 'completed', { result: 'All tasks completed successfully' });
@@ -355,7 +355,7 @@ test('integration: full subagent lifecycle', () => {
   assert.equal(collected.result, 'All tasks completed successfully');
   assert.ok(collected.tasks.length >= 1, 'record 应至少含主目标任务（store 单源，任务经 tools 写入）');
   assert.equal(collected.auditLogs.length, 2);
-  assert.ok(collected.cost.inputTokens > 0);
+  assert.ok(collected.usage.inputTokens > 0);
   assert.ok(collected.completedAt > 0);
   assert.ok(collected.createdAt > 0);
 

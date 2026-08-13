@@ -43,7 +43,7 @@ export interface SubagentRecord {
    *  仅可选字段，不影响既有序列化（#62 持久化格式纪律）。 */
   origin?: SubagentOrigin;
   abortController: AbortController;
-  cost: UsageSummary;
+  usage: UsageSummary;
   auditLogs: ToolAuditLog[];
   createdAt: number;
   completedAt?: number;
@@ -81,7 +81,7 @@ export function createSubagent(
     }],
     origin: fields.origin,
     abortController: new AbortController(),
-    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
     auditLogs: [],
     createdAt: Date.now(),
   };
@@ -151,10 +151,10 @@ export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext 
   }
 }
 
-export function updateCost(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, ctx: SubagentContext = defaultContext): void {
+export function updateUsage(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
-  record.cost = { ...usage };
+  record.usage = { ...usage };
 }
 
 export function countRunning(ctx: SubagentContext = defaultContext): number {
@@ -188,5 +188,5 @@ export function clearAllSubagents(): void {
 export function updateSubagentCost(id: string, usage: UsageSummary, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
-  record.cost = usage;
+  record.usage = usage;
 }
