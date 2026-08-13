@@ -2,7 +2,7 @@
 
 [中文](SUBAGENT_SETUP.zh-CN.md) · [GPT Action setup](ACTIONS_SETUP.md) · [Manual install](MANUAL_INSTALL.md) · [Privacy](PRIVACY.md)
 
-MyTerminal's subagent system delegates a bounded task to an isolated agent loop that runs against a separate LLM call. The subagent carries its own tool set, context window, cost tracker, and abort handle. The main session starts it with `subagent_start`, polls `subagent_status`, and cancels with `subagent_abort`. To use it you must configure **one** LLM provider and supply its API key as an environment variable. The API key is never stored in `config.json`.
+MyTerminal's subagent system delegates a bounded task to an isolated agent loop that runs against a separate LLM call. The subagent carries its own tool set, context window, token usage tracker, and abort handle. The main session starts it with `subagent_start`, polls `subagent_status`, and cancels with `subagent_abort`. To use it you must configure **one** LLM provider and supply its API key as an environment variable. The API key is never stored in `config.json`.
 
 > The subagent system is opt-in. If `subagent.enabled` is `false` or the matching environment variable is missing, `subagent_start` returns a clear error and no remote call is attempted.
 
@@ -19,7 +19,7 @@ flowchart LR
 
 ## 1. Pick a provider
 
-MyTerminal supports five providers. Pick the one whose model and pricing fit your workload. The default is `openai` with `gpt-4o`.
+MyTerminal supports five providers. Pick the one whose model fits your workload. The default is `openai` with `gpt-4o`.
 
 | Provider | Console | Environment variable | Recommended model | Notes |
 |----------|---------|----------------------|-------------------|-------|
