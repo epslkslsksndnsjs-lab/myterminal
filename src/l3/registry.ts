@@ -1,0 +1,80 @@
+import type { LocalModelAdapter } from './adapter.js';
+
+/**
+ * ADR-0047 D8/D8.2/D8.3 — L3 适配器 registry（单例懒加载 + env 旋钮 + fake 注入）。
+ *
+ * 职责：解析框架配置（env 旋钮）并提供默认/注入的 LocalModelAdapter 单例。L3 引擎
+ * （T10）只依赖 LocalModelAdapter 接口，不直接碰此 registry 的实例来源——真模型
+ * （node-llama-cpp + ~1.1GB GGUF）在 T10/T11 落地，测试环境经 `registerAdapterFactory`
+ * 注入 fake adapter（成功/超时/不可用三路径），真模型不进自动化测试。
+ */
+
+// ── env 旋钮（D8.3 运维逃生舱）───────────────────────────────────────────────
+//
+// 优先级 env > 默认（本票只做 env > 默认；多进程 cluster 参与者默认 false 属 D18.2，
+// 留 T12 落地，见 ADR「D18.2 多进程 gate」）。
+// - MYTERMINAL_L3_ENABLED：一键关 L3 → 全 passthrough（由 T10 引擎读取，false 时不调
+//   模型）。未设置/空串 → 默认 true。
+// - MYTERMINAL_L3_MODEL_PATH：覆盖 GGUF 路径。未设置/空串 → DEFAULT_L3_MODEL_PATH。
+//   真实分发绝对路径（installationRoot 派生）在 T11 真模型探测时确定，此处给稳定默认。
+
+/** 框架默认本地模型文件名（D8.3 已决：Qwen3.5-1.7B GGUF Q4_K_M）。 */
+export const DEFAULT_L3_MODEL_PATH = 'Qwen3.5-1.7B-Q4_K_M.gguf';
+
+/** L3 是否启用（env 优先，未设置默认 true）。 */
+export function l3Enabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.MYTERMINAL_L3_ENABLED?.trim();
+  if (!raw) return true; // 未设置或空串 → 默认 true
+  return /^(1|true|yes|on)$/i.test(raw);
+}
+
+/** L3 本地模型 GGUF 路径（env 优先，未设置默认内置模型名）。 */
+export function l3ModelPath(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.MYTERMINAL_L3_MODEL_PATH?.trim();
+  return raw ? raw : DEFAULT_L3_MODEL_PATH;
+}
+
+// ── 单例懒加载 + 注入（D8.2）────────────────────────────────────────────────
+//
+// LocalModelAdapter 实例（含已 load 的模型权重）由 registry 以单例持有：首次
+// `getL3Adapter()` 懒加载（用注入的 factory 或默认 unavailable adapter），之后常驻复用；
+// 冷加载延迟只在第一次发生。进程退出/会话结束调用 `resetL3Adapter()` 释放（下次再懒加载）。
+//
+// 注入语义：`registerAdapterFactory` 注册工厂后，仅在下一次懒加载时生效；若单例已创建，
+// 需先 `resetL3Adapter()` 再注入（懒加载常驻，不随注册翻转——与 D18.2「注册时定一次、
+// 不随成员增减翻转」同源）。
+
+let adapterSingleton: LocalModelAdapter | undefined;
+let adapterFactory: (() => LocalModelAdapter) | undefined;
+
+/** 注册 adapter 工厂（测试注入 fake；T10/T11 注册真实 llama 实现）。 */
+export function registerAdapterFactory(factory: () => LocalModelAdapter): void {
+  adapterFactory = factory;
+}
+
+/** 懒加载单例：首次调用创建并缓存，后续复用同一实例。 */
+export function getL3Adapter(): LocalModelAdapter {
+  if (!adapterSingleton) {
+    adapterSingleton = adapterFactory ? adapterFactory() : createUnavailableAdapter();
+  }
+  return adapterSingleton;
+}
+
+/** 释放单例 + 注入工厂（进程退出/会话结束；测试 tearDown）。下次 getL3Adapter 重新懒加载。 */
+export function resetL3Adapter(): void {
+  adapterSingleton = undefined;
+  adapterFactory = undefined;
+}
+
+/**
+ * 默认 unavailable adapter（T09 阶段无真实模型）。isReady=false + supportsStructuredOutput=false
+ * 对应 D8.4 失败矩阵「模型不可用 → passthrough（l3-unavailable）」；引擎（T10）据此 fail-open。
+ */
+function createUnavailableAdapter(): LocalModelAdapter {
+  return {
+    id: 'l3-unavailable',
+    supportsStructuredOutput: false,
+    isReady: async () => false,
+    complete: async () => ({ object: null, finishReason: 'error', latencyMs: 0, modelId: 'l3-unavailable' }),
+  };
+}
