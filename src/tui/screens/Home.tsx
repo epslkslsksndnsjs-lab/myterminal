@@ -8,6 +8,7 @@ import type { TuiSnapshot, Theme } from '../state.js';
 import { phaseColor, presenceColor } from '../state.js';
 import { statusToVisual } from '../status-color.js';
 import { logicalSessionGroups } from '../../tui-model.js';
+import { getSubagentBySessionId } from '../../subagent/store.js';
 import { useI18n } from '../copy/context.js';
 import { greetingFor } from '../copy/index.js';
 import { Mascot } from '../components/Mascot.js';
@@ -24,6 +25,16 @@ function timeOf(at: string): string {
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…';
+}
+
+/** D2（ADR-0046 #22）：token 计数缩写格式。
+ *  ≥1000 → 1 位小数 k（去尾随 .0，如 12500 → ↑12.5k）；<1000 → 原值（如 840 → ↑840）。 */
+function formatTokenCounter(total: number): string {
+  if (total >= 1000) {
+    const k = Math.round((total / 1000) * 10) / 10;
+    return `↑${k.toFixed(1).replace(/\.0$/, '')}k`;
+  }
+  return `↑${total}`;
 }
 
 export function Home({ runtime, state, snapshot, theme }: {
@@ -128,6 +139,12 @@ function SessionGroupRow({ group, theme, now }: {
       {children.map((child, idx) => {
         const isLast = idx === children.length - 1;
         const prefix = isLast ? '└─' : '├─';
+        const record = getSubagentBySessionId(child.id);
+        const showCounter = record !== undefined && record.status !== 'completed';
+        const counterColor = record !== undefined && (record.status === 'failed' || record.status === 'aborted')
+          ? theme.bad
+          : theme.text;
+        const tokenTotal = record !== undefined ? record.usage.inputTokens + record.usage.outputTokens : 0;
         return (
           <box key={child.id} flexDirection="row" gap={1} paddingLeft={3} width="100%">
             <text fg={theme.muted} wrapMode="none">{prefix}</text>
@@ -135,6 +152,9 @@ function SessionGroupRow({ group, theme, now }: {
             <box flexGrow={1} />
             <text fg={phaseColor(theme, child.phase)} wrapMode="none">●</text>
             <text fg={presenceColor(theme, child)} wrapMode="none">○</text>
+            {showCounter && (
+              <text fg={counterColor} wrapMode="none">{formatTokenCounter(tokenTotal)}</text>
+            )}
           </box>
         );
       })}

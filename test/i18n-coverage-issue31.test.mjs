@@ -27,6 +27,12 @@
 //     本锁是「重新审查后重锁」路径（测试注释预留：字面量总数变化需重新审查后重锁），
 //     重锁后继续作为 TUI 层字面量回归护栏。
 //
+//     重锁记录（2026-08-13，#22 / ADR-0046 D2）：Home.tsx SessionGroupRow 挂载实时 token 计数器
+//     （↑N），新增 6 条字面量——两个模板体（↑${k.toFixed(1).replace(/\.0$/, '')}k、↑${total}）、
+//     completed/failed/aborted 状态比较、none（新 text 节点 wrapMode）。净变化 1760→1766。
+//     逐条核对：均为新功能引入的用户向/状态字面量，无 zh/CJK 串被改、无 t() 参数颠倒
+//     （由其余子测试守住且全绿），属预期内漂移，重新审查后重锁。
+//
 // (b) 覆盖率断言 —— 重构前红、重构后绿。这是本刀的目标指标，不是锁。
 //     断言 seam 作用域内不再存在 `zh ? … : …` 三元与 `zh: boolean` / `zh={zh}` prop 传递。
 
@@ -90,7 +96,7 @@ describe('#31 i18n seam', () => {
     }
     assert.equal(Object.keys(baseline).length, 55, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 1760, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 1766, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───

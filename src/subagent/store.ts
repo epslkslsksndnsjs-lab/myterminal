@@ -93,6 +93,15 @@ export function getSubagent(id: string, ctx: SubagentContext = defaultContext): 
   return ctx.subagents.get(id);
 }
 
+/** D2（ADR-0046 #22）：按 child sessionId 反查 SubagentRecord。
+ *  runner.ts:169 已存 `record.sessionId = child.id`，故 child.id → SubagentRecord → usage 单向对应。 */
+export function getSubagentBySessionId(sessionId: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  for (const record of ctx.subagents.values()) {
+    if (record.sessionId === sessionId) return record;
+  }
+  return undefined;
+}
+
 export function updateSubagentStatus(
   id: string,
   status: SubagentStatus,
