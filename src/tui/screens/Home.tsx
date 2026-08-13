@@ -48,6 +48,13 @@ export function counterLifecycle(record: SubagentRecord | undefined): { visible:
   return { visible: true, isError: record.status === 'failed' || record.status === 'aborted' };
 }
 
+/** #24（ADR-0046 D2.2）：↑N 的语义来源 —— 累计 input + output（不含 cacheRead）。
+ *  与 formatTokenCounter / counterLifecycle 同组，供 Home 子会话行渲染与回归测试共用。 */
+export function tokenTotalFor(record: SubagentRecord | undefined): number {
+  if (!record) return 0;
+  return record.usage.inputTokens + record.usage.outputTokens;
+}
+
 export function Home({ runtime, state, snapshot, theme }: {
   runtime: MyTerminalRuntime;
   state: StoredState;
@@ -153,7 +160,7 @@ function SessionGroupRow({ group, theme, now }: {
         const record = getSubagentBySessionId(child.id);
         const { visible: showCounter, isError } = counterLifecycle(record);
         const counterColor = isError ? theme.bad : theme.text;
-        const tokenTotal = record !== undefined ? record.usage.inputTokens + record.usage.outputTokens : 0;
+        const tokenTotal = tokenTotalFor(record);
         return (
           <box key={child.id} flexDirection="row" gap={1} paddingLeft={3} width="100%">
             <text fg={theme.muted} wrapMode="none">{prefix}</text>
