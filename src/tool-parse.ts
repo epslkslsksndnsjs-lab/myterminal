@@ -13,6 +13,11 @@ export type { ShapingAudit } from './types.js';
  * RAW_BUDGET_TOKENS）、D16 count 引擎规则、D7 双版本审计（raw + shaped + shaping.reason）、
  * D17 静默（结果中无任何层标记）。L1/L2 零模型；L3 引擎在 T10 落地，T03 阶段 schema 工具
  * fail-open passthrough（不伪造）。
+ * T05（#33）：D13 task_poll 递归整形（嵌套 operation.data.result 走 L2 路由 + operation.error
+ * 走 D12 帽，保全 operation.ok / data.tool）+ Q7 嵌套预算门（超 RAW_BUDGET_TOKENS fail-open 回
+ * 原始 operation）+ Q6 递归 fail-open（异常整层回退原始 operation，绝不半成品）+ Q8 operation
+ * 缓存（key = taskId + raw 哈希，命中免重整形 / 免重复 L3 配额；clearOperationCache 清理）+ Q10
+ * 嵌套审计（递归调用自身产嵌套 raw/shaped + 外层全量 response 快照）。
  */
 
 /** 整形介入原因（D7/D11 权威枚举；T03/T04 实际产生 passthrough / over-budget / non-object / reducer-threw / cap-threw / 成功 applied） */
@@ -22,6 +27,7 @@ export type ShapingReason =
   | 'non-object'
   | 'over-budget'
   | 'nested-over-budget'
+  | 'nested-recursion-threw'
   | 'quota'
   | 'passthrough'
   | 'cap-threw';
@@ -231,6 +237,63 @@ function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): Re
   return { kind: 'passthrough' };
 }
 
+// ── D13 递归（task_poll 嵌套 operation 整形）+ Q6/Q7/Q8 护栏 ──────────────────
+//
+// D13：当 tool==='task_poll' 且 data.result.operation 是完整 ToolResponse 时，递归整形
+//   operation.data.result（走 L2 执行层路由：L1 reducer / L3 / passthrough）与
+//   operation.error（走 D12 双帽）。仅整形 operation 这一层，保全 operation.ok 与
+//   operation.data.tool（长任务成败信号 / 嵌套工具身份），绝不整把递归。
+// Q7：进 operation 整形前量嵌套 raw（estimateTokens(JSON.stringify(operation))），超
+//   RAW_BUDGET_TOKENS → 该嵌套层 fail-open 回原始 operation（外层 task_poll 结构保留），
+//   不让超大嵌套进 L3、也不绕过预算门。
+// Q6：递归层整体 try/catch，任一异常 → 用原始 operation 整体替换，绝不返回半成品；
+//   与 D11 fail-open 一致，审计记 nested-recursion-threw。
+// Q8：按 operation 身份缓存已整形结果（key = taskId + raw 内容哈希）；同 key 再次 poll
+//   直接返回缓存版，不重复触发 L3、不重复计 D6 配额；缓存随 task 完成/会话结束清理
+//   （clearOperationCache）。
+// Q10：D7 审计覆盖嵌套 operation——递归调用自身即产生嵌套 raw/shaped 审计；外层再抓
+//   全量 response 前后快照，双层覆盖。
+
+function isPlainObject(v: unknown): v is JsonObject {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** task_poll result 是否含完整嵌套 operation（ToolResponse 形态：有 data 对象）。 */
+function isNestedOperation(rawResult: unknown): rawResult is { operation: ToolResponse } & JsonObject {
+  if (!isPlainObject(rawResult)) return false;
+  const op = (rawResult as JsonObject).operation;
+  return isPlainObject(op) && isPlainObject((op as JsonObject).data);
+}
+
+// Q8 缓存：key = `${taskId} ${hash}` 或 `${hash}`（无 taskId）；命中直接返回缓存版。
+const operationCache = new Map<string, { op: ToolResponse; reason: ShapingReason | undefined }>();
+const OPERATION_CACHE_MAX = 512;
+
+/** FNV-1a 32-bit 哈希（确定性、跨进程稳定），用于 operation 内容指纹。 */
+function hashString(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * Q8 清理：不传 taskId → 清全量；传 taskId → 只清该 task 的缓存条目（task 完成/会话结束）。
+ * 由调用方（server.ts / extensions.ts 接线处）在合适时机调用；本模块只暴露原语。
+ */
+export function clearOperationCache(taskId?: string): void {
+  if (taskId === undefined) {
+    operationCache.clear();
+    return;
+  }
+  const prefix = `${taskId} `;
+  for (const key of operationCache.keys()) {
+    if (key.startsWith(prefix)) operationCache.delete(key);
+  }
+}
+
 /**
  * 工具响应整形入口（D13：包住最终装饰响应，含 decorateContinuation 后的长任务结构）。
  *
@@ -284,6 +347,62 @@ export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): To
         shaping = { applied: false, reason: 'reducer-threw' };
       }
     }
+  }
+
+  // ── D13 递归（task_poll 嵌套 operation 整形）+ Q6/Q7/Q8 ──
+  // 仅对 task_poll 的嵌套 operation 整形；其他控制工具（session_checkpoint 等）不在注册表
+  // → 走下方 passthrough，无副作用（D13 关键坑）。
+  if (toolName === 'task_poll' && isNestedOperation(rawResult)) {
+    const result = rawResult as JsonObject;
+    const op = result.operation as ToolResponse;
+    const taskId = typeof result.taskId === 'string' ? (result.taskId as string) : undefined;
+    const opJson = JSON.stringify(op);
+    const cacheKey = taskId !== undefined ? `${taskId} ${hashString(opJson)}` : hashString(opJson);
+
+    let shapedOperation: ToolResponse;
+    let cacheReason: ShapingReason | undefined;
+
+    const cached = operationCache.get(cacheKey);
+    if (cached !== undefined) {
+      // Q8 命中：直接返回缓存版，不重复触发 L3、不重复计 D6 配额
+      shapedOperation = cached.op;
+      cacheReason = cached.reason;
+    } else {
+      if (estimateTokens(opJson) > RAW_BUDGET_TOKENS) {
+        // Q7 嵌套预算门：超大嵌套 fail-open 回原始 operation（外层 task_poll 结构保留），
+        // 不让超大嵌套进 L3、也不绕过预算门
+        shapedOperation = op;
+        cacheReason = 'nested-over-budget';
+      } else {
+        try {
+          // Q6 try/catch：递归整形嵌套 operation（L2 路由 operation.data.result + D12 帽
+          // operation.error，保全 operation.ok / data.tool）；递归调用自身亦产嵌套审计（Q10）
+          shapedOperation = shapeToolResponse(op, ctx);
+        } catch {
+          // Q6 fail-open：递归层任一异常 → 用原始 operation 整体替换，绝不返回半成品
+          shapedOperation = op;
+          cacheReason = 'nested-recursion-threw';
+        }
+      }
+      // Q8 仅缓存「整形成功」结果（cacheReason === undefined）；fail-open 路径不消费 L3
+      // 配额，缓存它零收益且会冻结瞬时失败（如 L3 冷加载超时 / audit 通道抖动），故不缓存。
+      if (cacheReason === undefined) {
+        if (operationCache.size >= OPERATION_CACHE_MAX) {
+          const oldest = operationCache.keys().next().value;
+          if (oldest !== undefined) operationCache.delete(oldest);
+        }
+        operationCache.set(cacheKey, { op: shapedOperation, reason: cacheReason });
+      }
+    }
+
+    // 重建 response：仅替换 result.operation，保全其余字段（status / taskId / continuation 等）
+    base = {
+      ...base,
+      data: { ...(base.data ?? {}), result: { ...result, operation: shapedOperation } },
+    };
+    // Q7/Q6 fail-open 原因记外层审计（递归未发生的情形，嵌套审计缺失，须由外层兜底）
+    if (cacheReason === 'nested-over-budget') shaping = { applied: false, reason: 'nested-over-budget' };
+    else if (cacheReason === 'nested-recursion-threw') shaping = { applied: false, reason: 'nested-recursion-threw' };
   }
 
   // D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽（continuation 子键保全）。
