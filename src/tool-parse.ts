@@ -194,11 +194,111 @@ function applyCountRule(result: JsonObject): JsonObject {
   return result;
 }
 
+// ── D15 主动精简（T07）：session_list 长文本截断 + 限条目 + 分页 ────────────────
+//
+// 字段分级白名单（D15 控制护栏三件套之一）：protected 答案本身（身份 / 状态 / 时间戳 /
+// 结构）绝不截断；reducible 长文本元数据摘要可精简。仅下列点路径上的 string 值参与截断。
+export const REDUCIBLE_TEXT_MAX_CHARS = 500; // 触发截断阈值：字段长度超过即截断（保留头尾 + 标记）
+const REDUCIBLE_TEXT_HEAD_CHARS = 420; // 截断后保留的头部长度
+const REDUCIBLE_TEXT_TAIL_CHARS = 60; // 截断后保留的尾部长度（head+tail=480 < MAX 500，标记另占 ~20，故输出约 500）
+const SESSION_REDUCIBLE_TEXT_FIELDS: string[][] = [
+  ['finalSummary'],
+  ['task', 'objective'],
+  ['task', 'background'],
+  ['latestCheckpoint', 'summary'],
+];
+
+/** 取嵌套路径值（只读）。 */
+function getPathValue(obj: JsonObject, path: string[]): unknown {
+  let cur: unknown = obj;
+  for (const key of path) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') return undefined;
+    cur = (cur as JsonObject)[key];
+  }
+  return cur;
+}
+
+/**
+ * 对单条 session 条目截断 reducible 长文本字段（默认 500 chars，保留头尾 + 标记），
+ * protected 字段原样。返回截断后条目与截断字段数。不可变：逐路径浅拷贝受影响子树。
+ */
+function truncateReducibleText(entry: JsonObject): { entry: JsonObject; truncatedFields: number } {
+  let truncatedFields = 0;
+  const out: JsonObject = { ...entry };
+  for (const path of SESSION_REDUCIBLE_TEXT_FIELDS) {
+    const value = getPathValue(out, path);
+    if (typeof value === 'string' && value.length > REDUCIBLE_TEXT_MAX_CHARS) {
+      const head = REDUCIBLE_TEXT_HEAD_CHARS;
+      const tail = REDUCIBLE_TEXT_TAIL_CHARS;
+      const omitted = value.length - (head + tail);
+      const kept = value.slice(0, head) + `...[truncated ${omitted} chars]` + value.slice(value.length - tail);
+      // 写回嵌套路径（逐层浅拷贝，保全其余字段）
+      let cur: JsonObject = out;
+      for (let i = 0; i < path.length - 1; i++) {
+        const k = path[i];
+        cur[k] = { ...(cur[k] as JsonObject) };
+        cur = cur[k] as JsonObject;
+      }
+      cur[path[path.length - 1]] = kept;
+      truncatedFields++;
+    }
+  }
+  return { entry: out, truncatedFields };
+}
+
+/**
+ * D15/T07 主动精简 reducer（session_list）：限条目 + 长文本截断 + count/totalCount +
+ * 分页提示。输入 data.result = { sessions, total, page:{offset,limit} }（handler 已按
+ * offset/limit 切片并上报 total/page）。protected 字段原样；reducible 长文本截到 500
+ * chars 头尾保留 + 标记。返回内部提示 pagination（L2 剥离后发射 data.continuation.
+ * pagination）与 __reduction（L2 剥离后写入审计，绝不进模型上下文，D17）。
+ */
+function reduceSessionList(result: JsonObject, _ctx: ShapeContext): JsonObject {
+  const sessionsIn = Array.isArray(result.sessions) ? (result.sessions as JsonObject[]) : [];
+  const total = typeof result.total === 'number' ? result.total : sessionsIn.length;
+  const page = isPlainObject(result.page) ? (result.page as JsonObject) : {};
+  const offset = typeof page.offset === 'number' ? page.offset : 0;
+  const limit = typeof page.limit === 'number' ? page.limit : sessionsIn.length;
+
+  let fieldsReduced = 0;
+  const visible = sessionsIn.map((s) => {
+    if (!isPlainObject(s)) return s; // 非对象条目原样保全（防御）
+    const { entry, truncatedFields } = truncateReducibleText(s);
+    fieldsReduced += truncatedFields;
+    return entry;
+  });
+
+  const truncated = total > offset + limit;
+  const count = visible.length;
+  const entriesTruncated = Math.max(0, total - count);
+
+  const originalSize = JSON.stringify(sessionsIn).length;
+  const reducedSize = JSON.stringify(visible).length;
+
+  const pagination: JsonObject = {
+    truncated,
+    ...(truncated
+      ? { nextCall: { tool: 'session_list', input: { offset: offset + limit, limit }, purpose: 'fetch next page of sessions' } }
+      : {}),
+  };
+
+  return {
+    sessions: visible,
+    count,
+    totalCount: total,
+    truncated,
+    pagination,
+    __reduction: { fieldsReduced, entriesTruncated, originalSize, reducedSize },
+  };
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪（复用同一 denoiseCommandResult reducer）。
-// 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
+// T07：session_list 主动精简（D15 前半）。其余工具未声明 → passthrough。
+// L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
+  ['session_list', { reduce: reduceSessionList }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
@@ -338,9 +438,45 @@ export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): To
     } else {
       // L1 被动/主动 reducer（零模型）
       try {
-        const reduced = applyCountRule(resolved.reduce(rawResult as JsonObject, ctx));
+        const reducedRaw = resolved.reduce(rawResult as JsonObject, ctx);
+        const reduced = applyCountRule(reducedRaw);
+        // 剥离 active-trim reducer 返回的内部提示（绝不进模型上下文，D17）：
+        //  - pagination → L2 合并发射 data.continuation.pagination
+        //  - __reduction → 写入审计精简详情
+        const pagination = (reduced as JsonObject).pagination;
+        const reduction = (reduced as JsonObject).__reduction;
+        delete (reduced as JsonObject).pagination;
+        delete (reduced as JsonObject).__reduction;
         base = { ...response, data: { ...(response.data ?? {}), result: reduced } };
         shaping = { applied: true };
+        // D15/T07：L2 是唯一发射方——把 reducer 的 pagination 提示合并进 data.continuation
+        // （不覆盖 decorateContinuation 的控制流 continuation；控制流 continuation 在 extensions.ts 注入，
+        //  此处只在其上叠加 pagination 子键）
+        if (pagination && isPlainObject(pagination) && !!(pagination as JsonObject).truncated) {
+          const p = pagination as JsonObject;
+          const existing = (base.data as JsonObject | undefined)?.continuation;
+          const paginationContinuation: JsonObject = {
+            pagination: {
+              truncated: true,
+              ...(p.nextCall ? { nextCall: p.nextCall } : {}),
+            },
+          };
+          (base.data as JsonObject).continuation = existing && isPlainObject(existing)
+            ? { ...(existing as JsonObject), ...paginationContinuation }
+            : paginationContinuation;
+        }
+        // D15/T07 审计：精简详情（raw 完整版已由 D7 保留）
+        if (reduction && isPlainObject(reduction)) {
+          const r = reduction as JsonObject;
+          shaping = {
+            ...shaping,
+            reduced: true,
+            fieldsReduced: typeof r.fieldsReduced === 'number' ? r.fieldsReduced : 0,
+            entriesTruncated: typeof r.entriesTruncated === 'number' ? r.entriesTruncated : 0,
+            originalSize: typeof r.originalSize === 'number' ? r.originalSize : 0,
+            reducedSize: typeof r.reducedSize === 'number' ? r.reducedSize : 0,
+          };
+        }
       } catch {
         // D11 fail-open：reducer 抛错 → 原样 passthrough，记 reducer-threw
         base = response;

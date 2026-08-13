@@ -12,7 +12,16 @@ export type SessionIdentity = { sessionId: string; sessionToken: string };
  * ADR-0047：整形审计（D7/D11/D17）。`{ applied, reason? }` 只进审计、永不进模型上下文。
  * reason 的权威枚举（ShapingReason）在 tool-parse.ts，此处为审计持久化的宽松形态。
  */
-export type ShapingAudit = { applied: boolean; reason?: string };
+export type ShapingAudit = {
+  applied: boolean;
+  reason?: string;
+  /** D15/T07 主动精简审计（可选，仅 active-trim reducer 产）：精简详情，只进审计、永不进模型上下文（D17） */
+  reduced?: boolean;
+  fieldsReduced?: number;
+  entriesTruncated?: number;
+  originalSize?: number;
+  reducedSize?: number;
+};
 
 export type ToolAuditStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'policy_rejected';
 export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test' | 'subagent' | 'mcp'; // ADR-0009 决策 3；ADR-0029 新增 'mcp'

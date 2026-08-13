@@ -281,3 +281,45 @@ test('E2E MCP tools: workspace_info + session_list + session_checkpoint flow', a
     await server.close();
   }
 });
+
+// ═══════════════════════════════════════════════════════════
+// E2E T07: session_list 主动精简 + 可恢复翻页（D15 前半）
+// ═══════════════════════════════════════════════════════════
+test('E2E T07: session_list 主动精简 + 可恢复翻页', async () => {
+  const server = await createRuntime();
+  try {
+    const url = `${server.baseUrl}/mcp/${CONNECTOR_KEY}`;
+    const init = await rpcPost(url, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't07-test', version: '1.0.0' } } });
+    const sid = init.sessionId;
+
+    // 注册首会话拿 identity
+    const reg = await rpcPost(url, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 't07-root', role: 'lead' } } }, sid);
+    const identity = reg.data.result.structuredContent.data.result.identity;
+
+    // 再建 25 个 root 会话，总计 26
+    for (let i = 0; i < 25; i++) {
+      await rpcPost(url, { jsonrpc: '2.0', id: 10 + i, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: `t07-page-${i}`, role: 'lead' } } }, sid);
+    }
+
+    // 第一页（默认 limit 20）
+    const list = await rpcPost(url, { jsonrpc: '2.0', id: 100, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'session_list', input: {}, identity } } }, sid);
+    const listData = list.data.result.structuredContent;
+    assert.equal(listData.ok, true);
+    assert.equal(listData.data.result.sessions.length, 20, '第一页限条目 20');
+    assert.equal(listData.data.result.totalCount, 26, 'totalCount 真实总量');
+    assert.equal(listData.data.result.truncated, true);
+    assert.ok(listData.data.continuation?.pagination, '应发射分页 continuation');
+    assert.equal(listData.data.continuation.pagination.truncated, true);
+    assert.equal(listData.data.continuation.pagination.nextCall.input.offset, 20, 'nextCall 指向下一页');
+
+    // 翻页（offset 20）— 模型按 continuation 恢复
+    const page2 = await rpcPost(url, { jsonrpc: '2.0', id: 101, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'session_list', input: { offset: 20 }, identity } } }, sid);
+    const page2Data = page2.data.result.structuredContent;
+    assert.equal(page2Data.data.result.sessions.length, 6, '第二页 6 条');
+    assert.equal(page2Data.data.result.totalCount, 26);
+    assert.equal(page2Data.data.result.truncated, false, '末页不再 truncated');
+    assert.equal(page2Data.data.continuation, undefined, '末页不发射分页 continuation');
+  } finally {
+    await server.close();
+  }
+});

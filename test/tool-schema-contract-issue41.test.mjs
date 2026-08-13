@@ -322,6 +322,18 @@ const INPUT_SCHEMA_ALLOWLIST = new Map([
   ['blob_create :: properties.encoding.default', { baseline: undefined, current: 'utf-8', reason: 'A:展示层default' }],
   ['blob_read :: properties.encoding.default', { baseline: undefined, current: 'utf-8', reason: 'A:展示层default' }],
   ['blob_write_file :: properties.createParents.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
+  // ── A 类（续）：T07 #35 为 session_list 新增可选分页入参 offset/limit ──
+  //   实测 parse({}) => {}（两字段均非 required，服务端按缺省 offset=0/limit=20 切片），
+  //   既有调用方零行为变化；limit.default=20 仅展示层广告（同 message_inbox 模式）。
+  //   offset.maximum / limit.maximum 中 9007199254740991 为 zod4 派生器对 integer 型
+  //   必带的 safe-int 边界（源 schema 未声明，派生往返 faithfully 还原），非行为变更。
+  ['session_list :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:T07新增可选分页入参offset' }],
+  ['session_list :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:T07新增可选分页入参offset' }],
+  ['session_list :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
+  ['session_list :: properties.limit.type', { baseline: undefined, current: 'integer', reason: 'A:T07新增可选分页入参limit' }],
+  ['session_list :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:T07新增可选分页入参limit' }],
+  ['session_list :: properties.limit.maximum', { baseline: undefined, current: 200, reason: 'A:T07新增可选分页入参limit(上限200)' }],
+  ['session_list :: properties.limit.default', { baseline: undefined, current: 20, reason: 'A:展示层default(服务端默认20,parse不变)' }],
   // ── B 类：约束收紧（运行期本就拒，判定结果不变，错误通道前移）──
   ['session_inherit :: properties.claimCode.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
   ['session_inherit :: properties.sessionToken.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],

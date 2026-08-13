@@ -444,7 +444,15 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'session_list', title: 'List sessions', description: 'List the audited session hierarchy, phases, presence, and continuation links.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.session_list, annotations: readOnly,
-    invoke: async (_input, context) => { actor(context); return { sessions: store.listSessions().map(publicSession) }; },
+    invoke: async (input, context) => {
+      actor(context);
+      // D15/T07：服务端按 offset/limit 切片（默认 20、上限 200，与 BUILTIN_INPUT_SCHEMAS.session_list 对齐）；
+      // 同时上报 total + page，供 L1 reducer 派生 totalCount / truncated / 分页 continuation。
+      const offset = typeof input.offset === 'number' && input.offset >= 0 ? Math.floor(input.offset) : 0;
+      const limit = typeof input.limit === 'number' && input.limit >= 1 ? Math.min(Math.floor(input.limit), 200) : 20;
+      const all = store.listSessions().map(publicSession);
+      return { sessions: all.slice(offset, offset + limit), total: all.length, page: { offset, limit } };
+    },
   });
   add({
     name: 'session_checkpoint', title: 'Checkpoint session', description: 'Record durable session state. When the optional enhanced Actions long-task harness is enabled, a working checkpoint requires 1-3 exact concrete nextCalls and the returned nextCall must run immediately.',

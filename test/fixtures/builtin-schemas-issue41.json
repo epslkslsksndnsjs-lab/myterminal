@@ -620,7 +620,18 @@
     },
     "inputSchema": {
       "type": "object",
-      "properties": {},
+      "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 20
+        }
+      },
       "additionalProperties": false
     }
   },

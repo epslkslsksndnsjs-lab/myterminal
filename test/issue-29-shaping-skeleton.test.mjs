@@ -106,7 +106,7 @@ async function registerRoot(server) {
 
 test('T01-1: TOOL_SHAPES 注册表 + shapeToolResponse(response, ctx) 签名就位', () => {
   assert.ok(TOOL_SHAPES instanceof Map, 'TOOL_SHAPES 应为 Map 注册表');
-  assert.equal(TOOL_SHAPES.size, 6, 'T03 起注册表填充 6 个被动去噪工具（execute_cli/git_status/git_diff/git_log/git_show/run_checks）');
+  assert.equal(TOOL_SHAPES.size, 7, 'T03 起注册表填充 6 个被动去噪工具（execute_cli/git_status/git_diff/git_log/git_show/run_checks）+ T07 新增 session_list 主动精简');
   assert.equal(typeof shapeToolResponse, 'function');
   assert.equal(shapeToolResponse.length, 2, '签名应为 shapeToolResponse(response, ctx)');
 });
