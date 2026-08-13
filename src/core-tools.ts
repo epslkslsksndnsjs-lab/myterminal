@@ -609,7 +609,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   add({
     name: 'subagent_status', title: 'Subagent status',
-    description: 'Query subagent progress, tasks, cost, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.',
+    description: 'Query subagent progress, tasks, token usage, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.subagent_status,
     annotations: readOnly,
     invoke: async (input) => {

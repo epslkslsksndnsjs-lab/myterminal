@@ -233,7 +233,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
 
   // ── Subagent tools（ADR-0009 决策 1）──
   registerDirect('subagent_start', 'Start Subagent', 'Start a subagent for a sub-task. Asynchronous: returns taskId immediately; poll with subagent_status; completion arrives via message.', safeLocalMutation);
-  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up.');
+  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, token usage, and result. On first call after completion, returns the result and cleans up.');
   registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
 
   // ── Skill 工具（ADR-0037 #82：指令 mcp.ts:150 已承诺 skill() 直呼，须补齐 direct 注册）──

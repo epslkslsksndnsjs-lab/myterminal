@@ -14,7 +14,6 @@ import { EventEmitter } from 'node:events';
 
 import { runSubagent } from '../dist/subagent/executor.js';
 import { emitAgUi, subagentEvents } from '../dist/subagent/tui-bridge.js';
-import { CostTracker } from '../dist/subagent/cost-tracker.js';
 import { clearAllSubagents, getSubagent, createSubagent, updateSubagentCost } from '../dist/subagent/store.js';
 import { clearAllFileStates, clearFileState } from '../dist/subagent/file-state.js';
 import { clearAllShellTasks, getTrackedCount } from '../dist/subagent/shell-tracker.js';
@@ -710,9 +709,8 @@ test('costTracker 聚合两轮 usage', async () => {
 
   assert.equal(result.status, 'completed');
   const record = getSubagent('test-cost');
-  assert.ok(record.cost.inputTokens > 0);
-  assert.ok(record.cost.outputTokens > 0);
-  assert.ok(record.cost.totalUSD > 0);
+  assert.ok(record.usage.inputTokens > 0);
+  assert.ok(record.usage.outputTokens > 0);
 
   rmDirRobust(cwd);
 });
@@ -841,8 +839,8 @@ test('集成用例: 完整任务——read → edit → task_create → task_upd
   // 审计日志
   assert.ok(record.auditLogs.length >= 5, `Expected >=5 audit logs, got ${record.auditLogs.length}`);
 
-  // 成本 > 0
-  assert.ok(record.cost.totalUSD > 0);
+  // token 用量 > 0
+  assert.ok(record.usage.inputTokens > 0);
 
   // 事件流含 STATE_SNAPSHOT
   const eventTypes = events.map(e => e.type);

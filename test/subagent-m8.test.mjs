@@ -224,7 +224,7 @@ test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 
   const status1 = runner.status(result.taskId);
   assert.equal(status1.status, 'running');
   assert.ok(Array.isArray(status1.tasks));
-  assert.ok(status1.cost);
+  assert.ok(status1.usage);
 
   // 手动标记为 completed（模拟后台完成）
   const record = getSubagent(result.taskId);

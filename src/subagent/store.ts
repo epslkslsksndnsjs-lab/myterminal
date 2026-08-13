@@ -43,7 +43,7 @@ export interface SubagentRecord {
    *  仅可选字段，不影响既有序列化（#62 持久化格式纪律）。 */
   origin?: SubagentOrigin;
   abortController: AbortController;
-  cost: UsageSummary;
+  usage: UsageSummary;
   auditLogs: ToolAuditLog[];
   createdAt: number;
   completedAt?: number;
@@ -81,7 +81,7 @@ export function createSubagent(
     }],
     origin: fields.origin,
     abortController: new AbortController(),
-    cost: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, totalUSD: 0 },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
     auditLogs: [],
     createdAt: Date.now(),
   };
@@ -91,6 +91,15 @@ export function createSubagent(
 
 export function getSubagent(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
   return ctx.subagents.get(id);
+}
+
+/** D2（ADR-0046 #22）：按 child sessionId 反查 SubagentRecord。
+ *  runner.ts:169 已存 `record.sessionId = child.id`，故 child.id → SubagentRecord → usage 单向对应。 */
+export function getSubagentBySessionId(sessionId: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  for (const record of ctx.subagents.values()) {
+    if (record.sessionId === sessionId) return record;
+  }
+  return undefined;
 }
 
 export function updateSubagentStatus(
@@ -151,10 +160,10 @@ export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext 
   }
 }
 
-export function updateCost(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; totalUSD: number }, ctx: SubagentContext = defaultContext): void {
+export function updateUsage(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
-  record.cost = { ...usage };
+  record.usage = { ...usage };
 }
 
 export function countRunning(ctx: SubagentContext = defaultContext): number {
@@ -188,5 +197,5 @@ export function clearAllSubagents(): void {
 export function updateSubagentCost(id: string, usage: UsageSummary, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
-  record.cost = usage;
+  record.usage = usage;
 }

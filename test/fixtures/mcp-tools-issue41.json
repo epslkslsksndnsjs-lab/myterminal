@@ -2463,7 +2463,7 @@
   },
   "subagent_status": {
     "title": "Subagent Status",
-    "description": "Query subagent progress, tasks, cost, and result. On first call after completion, returns the result and cleans up.",
+    "description": "Query subagent progress, tasks, token usage, and result. On first call after completion, returns the result and cleans up.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,

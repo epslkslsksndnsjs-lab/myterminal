@@ -299,8 +299,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     readOnly: options.readOnly ?? false,
   };
 
-  // 成本追踪（决策 22：只记账不限制——ADR-0009 决策 14）
-  const costTracker = new CostTracker(settings.model);
+  // token 追踪（ADR-0046 D1：纯 token 累加器，不再核算成本）
+  const costTracker = new CostTracker();
 
   // 弹性策略（决策 21，issue #65 抽离）
   const resilience = new ResiliencePolicy();
@@ -331,26 +331,26 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   // ── 局部辅助：三态完成函数 ──
 
   const finishCompleted = (result: string): SubagentRunResult => {
-    const cost = costTracker.getUsage();
+    const usage = costTracker.getUsage();
     updateSubagentStatus(agentId, 'completed', { result });
-    updateSubagentCost(agentId, cost);
+    updateSubagentCost(agentId, usage);
     emit({
       subagentId: agentId,
       type: 'RUN_FINISHED',
-      data: { result: result.slice(0, 500), cost },
+      data: { result: result.slice(0, 500), usage },
       timestamp: Date.now(),
     });
     return { status: 'completed', result };
   };
 
   const finishFailed = (error: string): SubagentRunResult => {
-    const cost = costTracker.getUsage();
+    const usage = costTracker.getUsage();
     updateSubagentStatus(agentId, 'failed', { error });
-    updateSubagentCost(agentId, cost);
+    updateSubagentCost(agentId, usage);
     emit({
       subagentId: agentId,
       type: 'RUN_ERROR',
-      data: { error, cost },
+      data: { error, usage },
       timestamp: Date.now(),
     });
     return { status: 'failed', error };
@@ -360,14 +360,14 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     const reason = timeoutSignal.aborted
       ? `Timeout after ${settings.timeoutSec}s`
       : 'Aborted by parent';
-    const cost = costTracker.getUsage();
+    const usage = costTracker.getUsage();
     const status = timeoutSignal.aborted ? 'failed' : 'aborted';
     updateSubagentStatus(agentId, status, { error: reason });
-    updateSubagentCost(agentId, cost);
+    updateSubagentCost(agentId, usage);
     emit({
       subagentId: agentId,
       type: 'RUN_ERROR',
-      data: { error: reason, cost, reason: timeoutSignal.aborted ? 'timeout' : 'user_abort' },
+      data: { error: reason, usage, reason: timeoutSignal.aborted ? 'timeout' : 'user_abort' },
       timestamp: Date.now(),
     });
     return { status: status === 'aborted' ? 'aborted' : 'failed', error: reason };
@@ -492,8 +492,6 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
           // server_overload 降级——换 fallback model
           if (settings.fallbackModel) {
             currentModel = settings.fallbackModel;
-            // ADR-0020: 同步更新 costTracker 定价
-            costTracker.setModel(currentModel);
           }
         }
 
@@ -502,7 +500,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
         continue; // turns 不额外扣——注释说明
       }
 
-      // ── 成本聚合（决策 22 + 29：精确值校准）──
+      // ── token 聚合（决策 29：精确值校准）──
       costTracker.addUsage(streamResult!.usage);
       updateSubagentCost(agentId, costTracker.getUsage());
 

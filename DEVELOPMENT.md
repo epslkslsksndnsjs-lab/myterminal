@@ -637,7 +637,7 @@ interface SkillForkOptions { provider?, model?, maxTurns?, timeoutSec?, readOnly
 - [shell-tracker.ts](./src/subagent/shell-tracker.ts)：`trackShellTask`/`cleanupAgentShellTasks`（杀进程组，2s SIGKILL 兜底）。
 - [result-budget.ts](./src/subagent/result-budget.ts)：`truncateResult`（MAX 50K）/`enforceMessageBudget`（200K 预算，超限按长度降序压成预览并冻结）/`ensureNonEmpty`。
 - [token-counter.ts](./src/subagent/token-counter.ts)：`estimateTokens`/`estimateMessageTokens`/`getModelContextWindow`/`getAutoCompactThreshold`。
-- [cost-tracker.ts](./src/subagent/cost-tracker.ts)：`CostTracker`（setModel 结算旧定价），`resolvePricing`（精确→前缀→provider 估算→默认 gpt-4o）。
+- [cost-tracker.ts](./src/subagent/cost-tracker.ts)：`CostTracker` 纯 token 累加器（`addUsage`/`getUsage`；input/output/cacheRead tokens，无任何定价/USD——ADR-0046 D1 已移除成本概念）。
 - [grep-utils.ts](./src/subagent/grep-utils.ts)：`includePatternToRegex`/`matchInFiles`（IO 解耦）/`createGrep`。
 - [tui-bridge.ts](./src/subagent/tui-bridge.ts)：`subagentEvents` EventEmitter + 14 种 AG-UI 事件 + `emitAgUi`。
 - [context.ts](./src/subagent/context.ts)：`SubagentContext`（收敛 6 项）+ `createSubagentContext`/`defaultContext`。

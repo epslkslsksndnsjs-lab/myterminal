@@ -88,7 +88,7 @@ Credentials are hidden by default and may be visible only while eligible `v` pre
 | Domain/state | `store.ts`, `types.ts`, `tui-model.ts` | sessions, messages, events, journal/snapshot persistence, audit history |
 | Extension facade | `extensions.ts`, `core-tools.ts`, `mcp.ts`, `openapi.ts` | authenticated tool discovery, registration and calls |
 | Skill system | `skills.ts` | SKILL.md scanning, frontmatter parsing, manifest loading, fork/inline routing, built-in skill fallback (adaptive-guard) |
-| Subagent system | `subagent/*.ts` | isolated agent loop, 8-tool set, multi-provider LLM adapter, cost tracking, permissions, file/shell state, result budget, TUI bridge |
+| Subagent system | `subagent/*.ts` | isolated agent loop, 8-tool set, multi-provider LLM adapter, token usage tracking, permissions, file/shell state, result budget, TUI bridge |
 | Resource adapters | `session-resources.ts`, `diff.ts`, `security.ts`, `update.ts`, `update-transaction.ts` | OS helpers, Git sampling, path/credential safety, transactional updates |
 | TUI contracts/presentation | `tui/contracts.ts`, `tui/workspace-selector.ts`, `tui/renderer-profile.ts`, `runtime-settings.ts`, `tui/credential-visibility.ts` | shared view models, terminal profiles, and interaction contracts |
 | TUI orchestration/rendering | `tui/state.ts`, `tui/App.tsx`, screens/components | use cases and rendering |
