@@ -14,7 +14,6 @@ import { EventEmitter } from 'node:events';
 
 import { runSubagent } from '../dist/subagent/executor.js';
 import { emitAgUi, subagentEvents } from '../dist/subagent/tui-bridge.js';
-import { CostTracker } from '../dist/subagent/cost-tracker.js';
 import { clearAllSubagents, getSubagent, createSubagent, updateSubagentCost } from '../dist/subagent/store.js';
 import { clearAllFileStates, clearFileState } from '../dist/subagent/file-state.js';
 import { clearAllShellTasks, getTrackedCount } from '../dist/subagent/shell-tracker.js';
