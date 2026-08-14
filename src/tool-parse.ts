@@ -61,8 +61,9 @@ export type ToolShape = {
 //
 // 进 L3 前量 estimateTokens(safeRaw) ≤ RAW_BUDGET_TOKENS，超限 → 直接 passthrough
 // （不调模型），审计记 reason `over-budget`。
-// 阈值公式 RAW_BUDGET_TOKENS = min(24000, L3_ctx − 2048)；T11 实测 L3 ctx 回标前，
-// L3 ctx 未知，用公式默认值 24000（ctx≥26048 时门槛维持 24K，因 26048−2048=24000）。
+// 阈值公式 RAW_BUDGET_TOKENS = min(24000, L3_ctx − 2048)。T12 实测 Qwen3.5-2B
+// max ctx = 262144（256K）≥ 26048 → min(24000, 262144−2048) = 24000，门槛维持 24K
+// （不降门槛、不升档；证据 .scratch/adr0047-tickets/t12-probe/eval.mjs）。
 export const RAW_BUDGET_TOKENS = 24000;
 
 /**

@@ -99,14 +99,12 @@ test('AC3 注入语义：单例已创建后 register 不生效，reset 后注入
 
 // ── AC4：默认 unavailable + fake 三路径 ──────────────────────────────────────
 
-test('AC4 默认 unavailable adapter：isReady=false + supportsStructuredOutput=false + complete=error', async () => {
+test('AC4 默认 llama adapter（T12）：supportsStructuredOutput=true + id=qwen3.5-2b，懒加载不触发模型', () => {
   const adapter = getL3Adapter();
-  assert.strictEqual(adapter.supportsStructuredOutput, false);
-  assert.strictEqual(await adapter.isReady(), false);
-  const result = await adapter.complete({ instruction: 'parse', schema: {} });
-  assert.strictEqual(result.object, null);
-  assert.strictEqual(result.finishReason, 'error');
-  assert.strictEqual(result.modelId, 'l3-unavailable');
+  assert.strictEqual(adapter.supportsStructuredOutput, true);
+  assert.strictEqual(adapter.id, 'qwen3.5-2b');
+  // 不调 isReady/complete——那会动态 import node-llama-cpp 并尝试加载 ~1.3GB 真模型；
+  // 真模型不进自动化测试，行为验证走 registerAdapterFactory 注入 fake（下方 AC4 注入用例）。
 });
 
 test('AC4 注入 fake（成功路径）：getL3Adapter 返回注入实例 + complete=stop', async () => {

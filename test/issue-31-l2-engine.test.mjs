@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MyTerminalRuntime } from '../dist/server.js';
 import { TOOL_SHAPES, shapeToolResponse, estimateTokens, RAW_BUDGET_TOKENS } from '../dist/tool-parse.js';
+import { registerAdapterFactory, resetL3Adapter } from '../dist/l3/registry.js';
 
 const CONNECTOR_KEY = 'issue31-connector-key-123456';
 const ACTIONS_TOKEN = 'issue31-actions-token-1234567890123456';
@@ -81,15 +82,23 @@ test('T03-AC1b: 内联 ToolDefinition.shapeResult 优先于中心表（L1）', a
   TOOL_SHAPES.delete('inline_probe');
 });
 
-test('T03-AC1c: 中心表 schema→L3 路由分支可达（T10 后走 L3 引擎，默认 unavailable → l3-unavailable-timeout）', async () => {
+test('T03-AC1c: 中心表 schema→L3 路由分支可达（注入 unavailable fake → l3-unavailable-timeout）', async () => {
+  // T12 起默认 adapter 改为真模型 LlamaLocalAdapter（supportsStructuredOutput=true），
+  // 故「模型不可用」场景须显式注入 unavailable fake（与 issue-38/45 同法），不依赖旧默认。
+  registerAdapterFactory(() => ({
+    id: 'fake', supportsStructuredOutput: false,
+    isReady: async () => false,
+    complete: async () => ({ object: null, finishReason: 'error', latencyMs: 0, modelId: 'fake' }),
+  }));
   const { ctx, getRecord } = makeCtx();
   TOOL_SHAPES.set('t03_l3_small', { schema: { type: 'object' } });
   const resp = { ok: true, data: { tool: 't03_l3_small', result: { a: 'hi' } } };
   const shaped = await shapeToolResponse(resp, ctx);
-  assert.strictEqual(shaped, resp, '默认 unavailable adapter（无注入）下 fail-open 原样');
+  assert.strictEqual(shaped, resp, 'unavailable adapter 下 fail-open 原样');
   assert.equal(getRecord().shaping.applied, false);
   assert.equal(getRecord().shaping.reason, 'l3-unavailable-timeout');
   TOOL_SHAPES.delete('t03_l3_small');
+  resetL3Adapter();
 });
 
 // ───────────────────────────────────────────────────────────
