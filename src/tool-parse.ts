@@ -496,6 +496,27 @@ export function clearOperationCache(taskId?: string): void {
   }
 }
 
+// ── D2 细化 / 补遗3 L3-if-small 例外路由（subagent_status.result，T11 #45）─────
+//
+// subagent_status 是控制工具、不在 TOOL_SHAPES → resolveShape 判 passthrough。此例外
+// 只对 data.result.result 子字段做 L3-if-small 路由（仅 status==='completed' + 自由文本
+// string + ≤24K tokens），其余内部上下文（status/sessionId/tasks/usage/error/origin/
+// auditLogs）一律不整形（避免双重整形，D2）。预算门只量 result 子字段（非整对象），超门
+// fail-open reason=over-budget；非 completed / result 非 string → 保持 passthrough。
+// 注：真正的 L3 提取 schema 由 T14（#44 L3 提示词与失败矩阵）定义，此处为占位。
+
+/** subagent_status.result 是否命中 L3-if-small 例外（仅 completed + 自由文本 string）。 */
+function isSubagentCompletedResult(rawResult: unknown): rawResult is { status: string; result: string } & JsonObject {
+  if (!isPlainObject(rawResult)) return false;
+  return (rawResult as JsonObject).status === 'completed' && typeof (rawResult as JsonObject).result === 'string';
+}
+
+/** TODO(T14 #44)：占位 schema——真正的 result 提取 schema 由 T14 提示词票定义。 */
+const SUBAGENT_STATUS_RESULT_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: { summary: { type: 'string' } },
+};
+
 /**
  * 工具响应整形入口（D13：包住最终装饰响应，含 decorateContinuation 后的长任务结构）。
  *
@@ -649,6 +670,29 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
     // Q7/Q6 fail-open 原因记外层审计（递归未发生的情形，嵌套审计缺失，须由外层兜底）
     if (cacheReason === 'nested-over-budget') shaping = { applied: false, reason: 'nested-over-budget' };
     else if (cacheReason === 'nested-recursion-threw') shaping = { applied: false, reason: 'nested-recursion-threw' };
+  }
+
+  // ── D2 细化 L3-if-small 例外（subagent_status.result，T11 #45）──
+  // 仅对 data.result.result 子字段做 L3（completed + 自由文本 string + ≤24K），其余字段原样。
+  if (toolName === 'subagent_status' && isSubagentCompletedResult(rawResult)) {
+    const text = (rawResult as JsonObject).result as string;
+    if (estimateTokens(text) > RAW_BUDGET_TOKENS) {
+      // 超预算门（D6 护栏2）→ fail-open passthrough，reason=over-budget（不调模型）
+      base = response;
+      shaping = { applied: false, reason: 'over-budget' };
+    } else {
+      // L3 结构化解析（占位 schema；全路径 fail-open，reason 由 engine 给出）
+      const outcome = await runL3({ summary: text }, SUBAGENT_STATUS_RESULT_SCHEMA, ctx.transport, ctx.sessionId);
+      if (outcome.shaped && typeof outcome.shaped.summary === 'string') {
+        // 只替换 result 子字段，其余内部上下文（status/tasks/usage/origin/auditLogs）原样保全
+        base = { ...response, data: { ...(response.data ?? {}), result: { ...(rawResult as JsonObject), result: outcome.shaped.summary } } };
+        shaping = { applied: true };
+      } else {
+        // L3 失败（模型不可用/超时/配额/Q5 全丢）→ 原样 passthrough，不伪造
+        base = response;
+        shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
+      }
+    }
   }
 
   // D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽（continuation 子键保全）。
