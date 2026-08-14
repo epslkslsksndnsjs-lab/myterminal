@@ -9,7 +9,7 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
-import { clearOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
+import { clearOperationCache, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
 import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
@@ -669,6 +669,9 @@ export class ExtensionService {
     task.response = shaped.response;
     // ADR-0050 E1（#81 W1-08）：task 完成 → 清该 taskId 的 Q8 operation 缓存条目
     clearOperationCache(task.id);
+    // ADR-0051 增补-07（#106）：完成态按 poll 同款 key 预填 Q8 缓存——首次 poll 命中，
+    // 不再对「已整形内容」重跑 L3（A2 审计 F1：双烧 D6 配额 + 非确定性输出漂移）
+    seedOperationCache(task.id, task.response);
     this.trimBackgroundTasks();
   }
 

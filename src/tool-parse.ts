@@ -1010,6 +1010,30 @@ export function clearOperationCache(taskId?: string): void {
   }
 }
 
+/** Q8 写入口：512 驱逐 + 写入。reason 语义由调用方决定（undefined = 整形成功）。
+ *  D13 递归写与预填（seedOperationCache）共用此入口，驱逐通道唯一。 */
+function cacheSetOperation(cacheKey: string, op: ToolResponse, reason: ShapingReason | undefined): void {
+  if (operationCache.size >= OPERATION_CACHE_MAX) {
+    const oldest = operationCache.keys().next().value;
+    if (oldest !== undefined) operationCache.delete(oldest);
+  }
+  operationCache.set(cacheKey, { op, reason });
+}
+
+/**
+ * Q8 预填（增补-07 #106）：completeBackgroundTask 完成态落盘 task.response 后，按 poll
+ * 同款 key（taskId + 内容哈希，与 D13 递归分支逐字同公式）预写 operationCache——
+ * 首次 poll 即命中，免去对「已整形内容」重跑 runL3（A2 审计 F1：双烧 D6 配额 + 二次模型
+ * 输出非确定，poll 所见 ≠ 完成态落审计版本）。只缓存整形成功态（reason: undefined，
+ * 与 D13 递归写入口同语义）；512 驱逐复用共享写入口；taskId 缺省（bootstrap）按纯哈希 key。
+ */
+export function seedOperationCache(taskId: string | undefined, op: ToolResponse): void {
+  const opJson = JSON.stringify(op);
+  const cacheKey = taskId !== undefined ? `${taskId} ${hashString(opJson)}` : hashString(opJson);
+  if (operationCache.has(cacheKey)) return; // 已有条目不覆盖（完成时清空后预填，理论不可达）
+  cacheSetOperation(cacheKey, op, undefined);
+}
+
 // ── D2 细化 / 补遗3 L3-if-small 例外路由（subagent_status.result，T11 #45）─────
 //
 // subagent_status 是控制工具、不在 TOOL_SHAPES → resolveShape 判 passthrough。此例外
@@ -1224,13 +1248,7 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
       }
       // Q8 仅缓存「整形成功」结果（cacheReason === undefined）；fail-open 路径不消费 L3
       // 配额，缓存它零收益且会冻结瞬时失败（如 L3 冷加载超时 / audit 通道抖动），故不缓存。
-      if (cacheReason === undefined) {
-        if (operationCache.size >= OPERATION_CACHE_MAX) {
-          const oldest = operationCache.keys().next().value;
-          if (oldest !== undefined) operationCache.delete(oldest);
-        }
-        operationCache.set(cacheKey, { op: shapedOperation, reason: cacheReason });
-      }
+      if (cacheReason === undefined) cacheSetOperation(cacheKey, shapedOperation, cacheReason);
     }
 
     // 重建 response：仅替换 result.operation，保全其余字段（status / taskId / continuation 等）
