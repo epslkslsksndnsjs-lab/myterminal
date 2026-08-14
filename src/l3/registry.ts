@@ -1,5 +1,8 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import type { LocalModelAdapter } from './adapter.js';
 import { LlamaLocalAdapter } from './llama-adapter.js';
+import { installationRoot } from '../update.js';
 
 /**
  * ADR-0047 D8/D8.2/D8.3 — L3 适配器 registry（单例懒加载 + env 旋钮 + fake 注入）。
@@ -16,8 +19,9 @@ import { LlamaLocalAdapter } from './llama-adapter.js';
 // 优先级 env > 模式默认。多进程 cluster 参与者默认 false 属 D18.2（T13 落地）。
 // - MYTERMINAL_L3_ENABLED：一键关 L3 → 全 passthrough（由 T10 引擎读取，false 时不调
 //   模型）。未设置/空串 → 参与者默认（见下方 cluster gate）。
-// - MYTERMINAL_L3_MODEL_PATH：覆盖 GGUF 路径。未设置/空串 → DEFAULT_L3_MODEL_PATH。
-//   模型分发绝对路径（installationRoot 派生）随框架安装分发时确定；此处给稳定文件名默认。
+// - MYTERMINAL_L3_MODEL_PATH：覆盖 GGUF 路径。未设置/空串 → 安装根 models 目录 > 裸文件名
+//   默认（#93 W3-01 解析链：env > 安装根 models > DEFAULT_L3_MODEL_PATH，消除新用户环境
+//   L3 静默失效——裸文件名按 cwd 解析是 bug 级缺口，registry.ts l3ModelPath 注释自认）。
 
 /** 框架默认本地模型文件名（D8.3 已决：Qwen3.5-2B GGUF Q4_K_M；T12 实测 max ctx=256K ≥ 26K）。 */
 export const DEFAULT_L3_MODEL_PATH = 'Qwen3.5-2B-Q4_K_M.gguf';
@@ -49,10 +53,17 @@ export function l3Enabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
-/** L3 本地模型 GGUF 路径（env 优先，未设置默认内置模型名）。 */
+/** 安装根 models 目录下的默认模型（存在才返回；#93 W3-01 接线 installationRoot 为安装根来源）。 */
+function installedModelPath(): string | undefined {
+  const candidate = path.join(installationRoot(), 'models', DEFAULT_L3_MODEL_PATH);
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+/** L3 本地模型 GGUF 路径（#93 W3-01 解析链：env > 安装根 models 目录 > 裸文件名回落）。 */
 export function l3ModelPath(env: NodeJS.ProcessEnv = process.env): string {
   const raw = env.MYTERMINAL_L3_MODEL_PATH?.trim();
-  return raw ? raw : DEFAULT_L3_MODEL_PATH;
+  if (raw) return raw;
+  return installedModelPath() ?? DEFAULT_L3_MODEL_PATH;
 }
 
 // ── 单例懒加载 + 注入（D8.2）────────────────────────────────────────────────
@@ -66,17 +77,19 @@ export function l3ModelPath(env: NodeJS.ProcessEnv = process.env): string {
 // 不随成员增减翻转」同源）。
 
 let adapterSingleton: LocalModelAdapter | undefined;
-let adapterFactory: (() => LocalModelAdapter) | undefined;
+let adapterFactory: ((modelPath: string) => LocalModelAdapter) | undefined;
 
-/** 注册 adapter 工厂（测试注入 fake；默认走 LlamaLocalAdapter）。 */
-export function registerAdapterFactory(factory: () => LocalModelAdapter): void {
+/** 注册 adapter 工厂（测试注入 fake；默认走 LlamaLocalAdapter）。工厂入参为已解析的模型路径
+ * （l3ModelPath 解析链结果，getL3Adapter 懒加载时传入——AC4 fake 断言路径用）。 */
+export function registerAdapterFactory(factory: (modelPath: string) => LocalModelAdapter): void {
   adapterFactory = factory;
 }
 
 /** 懒加载单例：首次调用创建并缓存，后续复用同一实例。默认 LlamaLocalAdapter（真模型懒加载）。 */
 export function getL3Adapter(): LocalModelAdapter {
   if (!adapterSingleton) {
-    adapterSingleton = adapterFactory ? adapterFactory() : new LlamaLocalAdapter(l3ModelPath());
+    const modelPath = l3ModelPath();
+    adapterSingleton = adapterFactory ? adapterFactory(modelPath) : new LlamaLocalAdapter(modelPath);
   }
   return adapterSingleton;
 }
