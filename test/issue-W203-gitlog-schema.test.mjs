@@ -127,7 +127,7 @@ function assertDenoisedResult(shaped, expectedStdout, getRecord, label = '') {
 // AC1：豁免登记 — git_log L1-only（无 schema，与 git_diff 先例同形）
 // ───────────────────────────────────────────────────────────
 
-test('W2-03-AC1: 豁免登记 — git_log L1-only（无 schema 字段，与 git_diff 先例同形）', () => {
+test('W2-03-AC1: 豁免登记 — git_log L1-only（无 schema 字段；reduce=reduceGitLogAggregates 超集）', () => {
   const shape = TOOL_SHAPES.get('git_log');
   assert.ok(shape, 'git_log 应注册');
   assert.equal(typeof shape.reduce, 'function', 'reduce 保留（L1 被动去噪）');
@@ -136,7 +136,19 @@ test('W2-03-AC1: 豁免登记 — git_log L1-only（无 schema 字段，与 git_
   const gitDiff = TOOL_SHAPES.get('git_diff');
   assert.ok(gitDiff, '先例 git_diff 在册');
   assert.equal('schema' in gitDiff, false, '先例 git_diff 亦无 schema');
-  assert.equal(shape.reduce, gitDiff.reduce, '与 git_diff 先例同形（同一 denoiseCommandResult）');
+  // P2-03（#99）：git_log reduce = reduceGitLogAggregates（denoise 超集，补 D16.3 commitCount）。
+  // 不比对函数身份（git_log 已非裸 denoiseCommandResult），改行为等价断言：denoise 语义保持
+  // （噪声键剥除、数据保全）+ commitCount 恒补（commits 存在时 === 数组长度）
+  const denoised = shape.reduce({
+    command: 'git log --oneline -n 30', cwd: '/ws', exitCode: 0, signal: null, timedOut: false, cancelled: false,
+    stdout: 'a1b2c3d fix typo', stderr: '', truncated: false, durationMs: 12,
+    commits: [{ hash: 'a1b2c3d', subject: 'fix typo' }],
+  }, {});
+  assert.equal('command' in denoised, false, 'denoise 语义保持（command 剥除）');
+  assert.equal('cwd' in denoised, false, 'denoise 语义保持（cwd 剥除）');
+  assert.equal(denoised.exitCode, 0, '数据保全');
+  assert.equal(denoised.stdout, 'a1b2c3d fix typo', 'stdout 保留');
+  assert.equal(denoised.commitCount, 1, 'P2-03：commitCount === commits 数组长度（恒补）');
 });
 
 // ───────────────────────────────────────────────────────────

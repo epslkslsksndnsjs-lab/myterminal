@@ -237,6 +237,20 @@ function denoiseCommandResult(result: JsonObject): JsonObject {
   return out;
 }
 
+// ── P2-03（#99，0050 H5 / ADR-0047 D16.3）：git_log 聚合字段 commitCount ──────
+//
+// D-10 原则4：派生字段一律代码后置补、不进任何 L3 schema。git_log 已豁免 L3（增补-04
+// #103，同 git_diff 先例回 L1 被动去噪）→ 本 reducer 是 L1 主路径唯一出口：denoise 超集，
+// 结果含 commits 数组即恒补 commitCount（无 L3 成功路径故无「重复补」问题）。commits
+// 非数组 → 原样 fail-open（D11，绝不伪造）；D17 静默：只加派生数值，无任何层标记。
+function reduceGitLogAggregates(result: JsonObject): JsonObject {
+  const out = denoiseCommandResult(result);
+  if (Array.isArray(out.commits)) {
+    out.commitCount = out.commits.length; // D16.3：commitCount === commits 数组长度
+  }
+  return out;
+}
+
 /**
  * run_checks 专属逐项去噪 reducer（0050 C1）：run_checks 的 CommandResult 噪声在
  * results[] 内层（core-tools.ts results.push({ name, ...result }），顶层只有
@@ -372,6 +386,19 @@ function reduceSessionList(result: JsonObject, _ctx: ShapeContext): JsonObject {
   const count = visible.length;
   const entriesTruncated = Math.max(0, total - count);
 
+  // P2-03（#99）：D16.3 聚合字段 activeCount / completedCount（对返回条目聚合，与
+  // count=visible.length 同口径）。active = 非终态（phase ∉ completed/cancelled，对齐
+  // store.ts TERMINAL_PHASES）；completed = phase === 'completed'。D-10 原则4：代码后置
+  // 补、不进 schema；D17 静默：只加派生数值，无任何层标记。
+  let activeCount = 0;
+  let completedCount = 0;
+  for (const s of visible) {
+    if (!isPlainObject(s)) continue; // 非对象条目原样保全（防御），不参与计数
+    const phase = (s as JsonObject).phase;
+    if (phase === 'completed') completedCount++;
+    else if (phase !== 'cancelled') activeCount++;
+  }
+
   const originalSize = JSON.stringify(sessionsIn).length;
   const reducedSize = JSON.stringify(visible).length;
 
@@ -386,6 +413,8 @@ function reduceSessionList(result: JsonObject, _ctx: ShapeContext): JsonObject {
     sessions: visible,
     count,
     totalCount: total,
+    activeCount,
+    completedCount,
     truncated,
     pagination,
     __reduction: { fieldsReduced, entriesTruncated, originalSize, reducedSize },
@@ -451,6 +480,28 @@ function summarizeNestedResult(nr: ToolResponse): JsonObject {
   return summary;
 }
 
+// ── P2-03（#99，0050 H5 / ADR-0047 D16.3）：session_history 聚合字段 ───────────
+//
+// toolBreakdown（按 entry.data.tool 分组计数）/ errorCount（ok:false 条目数）。
+// D-10 原则4：派生字段一律代码后置补、不进任何 L3 schema；D17 静默：只加派生数值，
+// 无任何层标记。非对象条目 / 无 data 条目不计入（防御）；畸形 entries（非数组）由
+// 调用方 fail-open（与 count/totalCount 同纪律，绝不伪造）。
+function aggregateToolAudit(entries: JsonObject[]): { toolBreakdown: JsonObject; errorCount: number } {
+  const toolBreakdown: JsonObject = {};
+  let errorCount = 0;
+  for (const entry of entries) {
+    if (!isPlainObject(entry)) continue;
+    const data = isPlainObject(entry.data) ? (entry.data as JsonObject) : undefined;
+    if (!data) continue;
+    const tool = data.tool;
+    if (typeof tool === 'string' && tool !== '') {
+      toolBreakdown[tool] = (typeof toolBreakdown[tool] === 'number' ? (toolBreakdown[tool] as number) : 0) + 1;
+    }
+    if (data.ok === false) errorCount++;
+  }
+  return { toolBreakdown, errorCount };
+}
+
 /**
  * D15/T08 + W1-07（#80，0050 D1/D2）主动精简 reducer（session_history）：把每条 audit entry 的
  * `data.result`（完整嵌套 ToolResponse）替换为摘要，消除递归嵌套爆炸；并补齐 count/totalCount/
@@ -506,6 +557,12 @@ function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObjec
     out.count = count; // D16.1：数组实际长度
     out.totalCount = total; // D16.2：真实总量（history.total）
     out.truncated = truncated;
+    // P2-03（#99）：D16.3 聚合字段（对返回条目聚合，与 count 同口径）——toolBreakdown
+    // 按 entry.data.tool 分组计数 / errorCount = ok:false 条目数；嵌套摘要条目 tool
+    // 原样保全故仍参与分组（T08 只替换 result，不动 data.tool/data.ok）
+    const { toolBreakdown, errorCount } = aggregateToolAudit(mapped);
+    out.toolBreakdown = toolBreakdown;
+    out.errorCount = errorCount;
     reduction.entriesTruncated = truncated ? Math.max(0, total - count) : 0;
     if (truncated) {
       // D15.2/③ 可恢复翻页：nextCall.offset 复用 history.nextOffset（store.ts:606），不丢数据
@@ -545,6 +602,33 @@ function reduceCollectionCount(result: JsonObject): JsonObject {
   if (out.truncated === true && typeof result.totalMatches === 'number') {
     out.totalCount = result.totalMatches; // D16.2：截断且总量已知 → 真实总量
   }
+  return out;
+}
+
+// ── P2-03（#99，0050 H5 / ADR-0047 D16.3）：search_text 聚合字段 ──────────────
+//
+// fileCount（命中涉及的不同文件数）/ uniqueFiles（去重后的文件路径列表，保持 matches
+// 出现序）。matches 是逐行条目 { path, line, text } → 多行同文件只算一个。D-10 原则4：
+// 派生字段一律代码后置补、不进任何 L3 schema；D17 静默：只加派生数值，无任何层标记。
+// find_files 不声明这两个字段（其 matches 本身即路径字符串，聚合无增量信息）——
+// D16.3 按工具 opt-in，仅 search_text 注册本 reducer。matches 非数组 → 原样 fail-open
+// （D11，与 reduceCollectionCount 同纪律，绝不伪造）。
+function reduceSearchTextAggregates(result: JsonObject): JsonObject {
+  const out = reduceCollectionCount(result);
+  if (!Array.isArray(out.matches)) return out; // 结构不符 → 原样（防御）
+  const uniqueFiles: string[] = [];
+  const seen = new Set<string>();
+  for (const match of out.matches) {
+    if (isPlainObject(match) && typeof (match as JsonObject).path === 'string') {
+      const p = (match as JsonObject).path as string;
+      if (!seen.has(p)) {
+        seen.add(p);
+        uniqueFiles.push(p);
+      }
+    }
+  }
+  out.fileCount = uniqueFiles.length; // D16.3：不同文件数
+  out.uniqueFiles = uniqueFiles; // D16.3：去重路径列表
   return out;
 }
 
@@ -738,7 +822,6 @@ function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): Json
 // 真模型评测 Q5 全挂（答案字段被剥光，结构性退化比 L1 更差），同 git_diff 先例回 L1 被动
 // 去噪（D-16 登记，覆盖矩阵 §2）；D-12 git_show 拼接 bug 修复（core-tools.ts）与 L3 无关，保留。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
-
 // W2-05（#88）：run_checks 双条目注册（0050 B2 + 0051 D-11）——reduce=#79 逐项去噪版 +
 // schema=D-11 全文。D-4 路由裁决：双条目先过预算门走 L3，失败（超门/配额/不可用/超时/
 // Q5 拒识）回落本 reduce（#79 修复版，C1 不回退）；纯 schema（subagent_status 旁挂）失败
@@ -772,7 +855,8 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
   ['session_history', { reduce: reduceSessionHistory }],
   ['find_files', { reduce: reduceCollectionCount }],
-  ['search_text', { reduce: reduceCollectionCount }],
+  // P2-03（#99）：search_text 按工具 opt-in 聚合字段（D16.3）——fileCount/uniqueFiles
+  ['search_text', { reduce: reduceSearchTextAggregates }],
   ['read_file', { reduce: reduceReadFileLineCount }],
   ['skill', { reduce: reduceSkillsCount }],
   ['list_dir', { reduce: reduceListDirCount }],
@@ -784,7 +868,10 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   // 先例回 L1 被动去噪（无 schema → L3 永不进入，D-16 登记）
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
-  ['git_log', { reduce: denoiseCommandResult }],
+  // 增补-04（#103）：git_log L3 豁免——同 git_diff 先例回 L1 被动去噪（无 schema → L3 永不
+  // 进入）。P2-03（#99）：reduce 换 reduceGitLogAggregates（denoise 超集，补 D16.3 commitCount
+  // ——派生字段代码后置补，L1-only 下恒补；无 schema 故无 L3 成功路径，不重复问题不存在）
+  ['git_log', { reduce: reduceGitLogAggregates }],
   ['git_show', { reduce: denoiseCommandResult }],
   ['run_checks', { reduce: denoiseRunChecksResult, schema: RUN_CHECKS_SCHEMA }],
 ]);
