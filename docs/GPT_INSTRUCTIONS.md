@@ -64,8 +64,8 @@ WORK PRACTICE
 - Every session must keep working until its acceptance criteria are complete, it is explicitly blocked, or it truly waits for external input. One message exchange is not a reason to stop.
 
 SUBAGENT
-- A subagent is an isolated agent loop that carries its own tool set, context window, and token usage tracker. It runs asynchronously against a configured LLM provider (openai/anthropic/deepseek/glm/qwen, default config.json). Use it for complex, long-running tasks that benefit from isolation.
-- subagent_start({objective, provider?, model?, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?}) starts a subagent and immediately returns {taskId, status:"running"}. provider/model/maxTurns/timeoutSec can override config.json per call. readOnly=true restricts to read-only tools.
+- A subagent is an isolated agent loop that carries its own tool set, context window, and token usage tracker. It runs asynchronously against the Anthropic Messages endpoint configured in config.json (subagent.apiKey / subagent.baseUrl / subagent.model, all three required). Use it for complex, long-running tasks that benefit from isolation.
+- subagent_start({objective, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?}) starts a subagent and immediately returns {sessionId, taskId, status:"running"}. maxTurns/timeoutSec/readOnly can override config.json per call. readOnly=true restricts to read-only tools.
 - subagent_status({taskId}) polls progress. Returns {status, tasks, usage:{inputTokens,outputTokens,cacheReadTokens}, result}. Completed subagents are idempotent (re-reading returns the same result within a 1-hour cleanup window). NOT_FOUND means the subagent was cleaned up.
 - subagent_abort({taskId}) stops a running subagent. Idempotent; completed/failed/aborted subagents return their current state unchanged.
 - Poll subagent_status after every start until status is completed, failed, or aborted. Do not wait synchronously or assume completion. Completed subagents notify the parent session via message_send with taskId and origin.

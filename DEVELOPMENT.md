@@ -168,9 +168,9 @@ fork 用本地 API key（付费），不是"免费借云端 AI"。
 
 ### 4.6 forkOptions
 
-SKILL.md frontmatter 的可选字段（ADR-0010 决策 6），仅 `mode: fork` 时生效。覆盖 subagent 默认配置，优先级：`forkOptions > settings.json`。
+SKILL.md frontmatter 的可选字段（ADR-0010 决策 6），仅 `mode: fork` 时生效。覆盖 subagent 默认配置，优先级：`forkOptions > config.json subagent 段`。
 
-支持字段：deliverables / acceptanceCriteria / constraints（任务包）+ provider / model / maxTurns / timeoutSec / readOnly（运行时配置）。安全网上限：maxTurns 200，timeoutSec 3600。
+支持字段：deliverables / acceptanceCriteria / constraints（任务包）+ maxTurns / timeoutSec / readOnly（运行时配置）。安全网上限：maxTurns 200，timeoutSec 3600。
 
 ---
 ## 5. 代码架构百科（原 CODE_WIKI.md，源码静态分析生成）
@@ -206,7 +206,7 @@ MyTerminal 是连接 **ChatGPT 聊天模式与本地开发环境**的终端桥�
 - **多会话协作**：root 可委派多个直属子会话，子会话不可再委派；通过持久化消息交付可纳入的成果。
 - **声明式扩展**：用户可注册 builtin/command 两类自定义扩展。
 - **Skill 系统**：用户编写的 `SKILL.md`，支持 inline（直接执行）与 fork（隔离 subagent 异步执行）两种路由模式。
-- **Subagent 系统**：隔离的智能体循环，独立的 8 工具集、上下文窗口、成本追踪器，支持 5 个 LLM provider，git worktree 文件隔离。
+- **Subagent 系统**：隔离的智能体循环，独立的 8 工具集、上下文窗口、token 追踪器，Anthropic 兼容协议 LLM 适配（`baseUrl` 可配），上下文级单例隔离。
 - **全窗口双语 TUI**：基于 OpenTUI + React 的九页签界面（中/英双语、暖色双主题）。
 - **集群与共享端口**：多进程共享同一 `host:port`，自动选主，leader 故障自动接管。
 - **安全与隐私**：本地优先、无项目遥测、凭据脱敏单源、会话 token 仅存哈希、工作区即读写安全边界。
@@ -252,7 +252,8 @@ TUI
 | 域/状态 | `store.ts`, `types.ts`, `tui-model.ts`, `context-projector.ts` | 会话、消息、事件、journal/snapshot 持久化、审计历史 |
 | 扩展门面 | `extensions.ts`, `core-tools.ts`, `mcp.ts`, `openapi.ts`, `tool-schemas.ts` | 鉴权工具发现、注册与调用 |
 | Skill 系统 | `skills.ts` | SKILL.md 扫描、frontmatter 解析、inline/fork 路由 |
-| Subagent 系统 | `subagent/*.ts` | 隔离 agent loop、8 工具集、多 provider LLM 适配、成本追踪、权限、worktree 隔离 |
+| Subagent 系统 | `subagent/*.ts` | 隔离 agent loop、8 工具集、Anthropic 协议 LLM 适配、token 追踪、权限、上下文隔离 |
+| 工具结果整形 | `tool-parse.ts` / `l3/*.ts` | TOOL_SHAPES 中心注册表、L1/L2/L3 分层路由、D12 失败双帽、D13 递归、D7 双版本审计、预算门 |
 | 资源适配 | `session-resources.ts`, `diff.ts`, `security.ts`, `update.ts`, `update-transaction.ts` | OS helper、Git 采样、路径/凭据安全、事务化更新 |
 | TUI 契约/展示 | `tui/contracts.ts`, `tui/state.ts`, `tui/controller-logic.ts`, `tui/*` | 视图模型、终端配置、交互契约、渲染 |
 
@@ -278,11 +279,12 @@ TUI
 
 | 依赖 | 版本 | 用途 |
 |---|---|---|
-| `@modelcontextprotocol/sdk` | ^1.29.0 | MCP 协议（Apps connector） |
+| `@modelcontextprotocol/sdk` | ^1.30.0 | MCP 协议（Apps connector） |
 | `@opentui/core` / `@opentui/keymap` / `@opentui/react` | 0.4.5 | 终端 UI 渲染、键位路由 |
 | `express` | ^5.2.1 | HTTP 服务器（Actions/OpenAPI/MCP） |
 | `react` | 19.2.7 | TUI 组件树 |
 | `zod` | ^4.4.3 | 运行期 schema 校验（MCP 工具入参派生） |
+| `node-llama-cpp` | ^3.20.0 | L3 本地模型推理引擎（Qwen GGUF，trustedDependencies） |
 
 #### 3.3 devDependencies
 
@@ -290,7 +292,7 @@ TUI
 
 #### 3.4 overrides
 
-`fast-uri@3.1.4`、`@hono/node-server@2.0.11`（锁版本避免回归）。
+`fast-uri@^3.1.5`、`hono@^4.12.34`、`ip-address@^10.3.1`、`@hono/node-server@2.0.11`（锁版本避免回归）。
 
 ---
 
@@ -317,8 +319,9 @@ myterminal/
 │   ├── update.ts / update-transaction.ts / version.ts
 │   ├── diff.ts / context-projector.ts / tui-model.ts
 │   ├── tool-schemas.ts / runtime-settings.ts
-│   ├── models/registry.ts     # LLM 模型价格与上下文窗口单源
-│   ├── subagent/              # 子智能体系统 (17 文件)
+│   ├── tool-parse.ts          # 工具结果整形中心（TOOL_SHAPES 路由）
+│   ├── l3/                    # L3 本地模型层 (7 文件)
+│   ├── subagent/              # 子智能体系统 (16 文件)
 │   ├── tui/                   # 终端 UI (38 文件)
 │   └── utils/fs.ts
 ├── test/                      # 测试套件 (*.test.mjs)
@@ -336,7 +339,7 @@ myterminal/
 #### 5.1 入口与配置层
 
 ##### [src/cli.ts](./src/cli.ts)
-进程入口。解析 CLI 参数（`--version`/`--help`/`--headless`/`--verify-installation`/`--list-adoptable`/`--adopt`），执行首启设置、工作区选择、运行时启动；非 TTY 自动进入 headless；注册 `unhandledRejection`/`uncaughtException` 安全关闭。
+进程入口。解析 CLI 参数（`--version`/`--help`/`--headless`/`--verify-installation`）与 `l3-model fetch` 子命令（sha256 钉死下载 L3 模型，stateless、先于 settings/runtime），执行首启设置、工作区选择、运行时启动；非 TTY 自动进入 headless；注册 `unhandledRejection`/`uncaughtException` 安全关闭。
 
 - `main()`：主流程；`ensureSettings()` 触发首启 TUI；`chooseWorkspace()` 选择工作区；`startRuntime()` 处理 `EADDRINUSE`（kill/next/cancel）。
 - `effectiveEnvironment(headless)`：非 headless 删除 `MYTERMINAL_*` 环境覆盖，避免误覆盖 TUI 设置。
@@ -359,6 +362,7 @@ myterminal/
 `class MyTerminalRuntime` 持有工作区本地服务器、store、扩展服务、MCP 传输、集群参与权与生命周期。
 
 - **拥有资源**：`store`、`extensions`、`app`(Express)、`internalServer`(127.0.0.1:0)、可选 `publicServer`、`mcp`/`clusterMcp`/`clusterRouter`、`cluster?`、`workspaceCatalog`、`controlChannel?`、三个定时器（heartbeat 1500ms / election 1800ms / resume 2000ms）、内存日志（500 条 + 落盘 runtime.jsonl）。
+- **L3 预热**（`start()` 触发，`l3Enabled()` 门控）：异步预热 + smoke probe，最多 `WARMUP_MAX_RETRIES`+1 次尝试、退避 500/1000/2000ms，全失败仅记日志不阻断；`MYTERMINAL_L3_WARMUP=false` 可关。就绪状态三通道可见：`/health` 的 `l3` 字段（D-8 通道2）、TUI Settings 页 L3 卡片、运行时日志。启用策略（D18.2）：standalone 默认开、cluster 参与者默认关（防 N×1.1GB 模型乘散），`MYTERMINAL_L3_ENABLED` env 优先覆盖。
 - **生命周期**：`start()` → `tryBecomeLeader()` → `revalidateAfterResume()` → `close()`→`closeOnce()`。
 - **路由**（`configureRoutes`）：`/health`、`/openapi.json`、`/openapi-3.1.json`、`/mcp/:connectorKey`、`/actions/extensions/{discover,register,call}`（Bearer）、`/cluster/owns`、`/cluster/rpc/:method`（cluster-secret）。
 - **集群网关**（`createClusterGateway`）：leader 额外暴露公网入口，经 `clusterRouter` 转发到归属成员 internalPort。
@@ -414,12 +418,12 @@ TUI 纯模型：`logicalSessionGroups`（按 continuesSessionId 链归并到 ori
 
 - `discover`：无 identity 返回 bootstrap 指令 + skills + bootstrapTools（不写审计）；已认证经 `withAudit` 返回 tools catalog + instructions + harness 合约 + registrationSchema + 最多 5 条未确认事件。
 - `register`：`action` ∈ remove/validate/upsert；`validateSpec` 校验后 `store.upsertExtension`。
-- `call`：解析 tool 与 `callArguments`（三源合并）；bootstrap 豁免（`session_register` 非 delegate、`session_inherit`）；`assertContinuation` 校验队列顺序；非阻塞调度（200ms fast-return → BackgroundTask + `task_poll`）；同步路径 `invokeTool` → `decorateContinuation` → `attachEvents` → `finishAudit`。
+- `call`：解析 tool 与 `callArguments`（三源合并）；bootstrap 豁免（`session_register` 非 delegate、`session_inherit`）；`assertContinuation` 校验队列顺序；非阻塞调度（200ms fast-return → BackgroundTask + `task_poll`）；同步路径 `invokeTool` → `applyShape`（工具结果整形统一出口：L1/L2/L3 路由，subagent 通道 D2 豁免）→ `decorateContinuation` → `attachEvents` → `finishAudit`。
 - `callSubagent`：trimmed 版，供 subagent child 通知父 session。
 - `withAudit`：ADR-0032 统一的 try/beginAudit/finishAudit/catch 脚手架。
 
 ##### [src/core-tools.ts](./src/core-tools.ts)
-`createBuiltinTools`：注册约 35 个内置工具，返回 `Map<string, ToolDefinition>`。分组：
+`createBuiltinTools`：注册 36 个内置工具（34 处 add，其中 git 循环展开 git_status/git_diff/git_log 3 个），返回 `Map<string, ToolDefinition>`。分组：
 - 文件：`list_dir`/`find_files`/`search_text`/`read_file`/`read_file_range`/`write_file`/`apply_patch`
 - blob：`blob_create`/`blob_read`/`blob_write_file`
 - 命令/Git：`execute_cli`/`git_*`/`run_checks`
@@ -427,12 +431,13 @@ TUI 纯模型：`logicalSessionGroups`（按 continuesSessionId 链归并到 ori
 - 消息：`message_send`/`inbox`/`list`/`conversation`
 - skill、subagent：`subagent_start`/`status`/`abort`
 - `runCommand`/`runShellCommand`：spawn 执行器（POSIX 进程组信号、Windows taskkill 树终止、timeout+cancel、boundedOutput）；`decodeBlob`（utf-8/base64）。
+- 工具结果经 `TOOL_SHAPES` 中心表整形路由（§5.9）：git_* 四工具 L3 豁免（增补-04 #103）仅走 L1 去噪；`find_files` handler 上报 `totalMatches`（D16.2 totalCount 唯一合法来源，W1-01 #74）。
 
 ##### [src/openapi.ts](./src/openapi.ts)
 `buildOpenApi`：生成 Actions 三操作（discover/register/call）的 OpenAPI 3.1 文档与 schema 组件。操作 ID 用 camelCase（`extensionDiscover`/`extensionCall`/`extensionRegister`）。
 
 ##### [src/mcp.ts](./src/mcp.ts) — `MyTerminalMcpTransport`
-per-session `McpServer` + `StreamableHTTPServerTransport`，`sessionIdGenerator: randomUUID`；`onsessionclosed` 解绑。`createMcpServer` 注册 3 个 facade 工具 + 约 30 个 direct tool。`extensionToolInput`：facade 协议层 zod（44 字段 + catchall unknown）。`registerDirect`：从 `BUILTIN_INPUT_SCHEMAS` 派生 zod，统一注入 `identity`/`workspaceId`。
+per-session `McpServer` + `StreamableHTTPServerTransport`，`sessionIdGenerator: randomUUID`；`onsessionclosed` 解绑。`createMcpServer` 注册 3 个 facade 工具 + 约 30 个 direct tool。`extensionToolInput`：facade 协议层 zod（44 字段 + catchall unknown）。`registerDirect`：从 `BUILTIN_INPUT_SCHEMAS` 派生 zod，统一注入 `identity`/`workspaceId`。MCP 出口（facade + direct）与 Actions 共用同一 `applyShape` 整形链（T13）。
 
 ##### [src/mcp-schema.ts](./src/mcp-schema.ts)
 `jsonSchemaToZod(schema, path)`：派生器，支持 14 个关键字，`UnsupportedSchemaError` 强制失败而非静默回退。`additionalProperties:false`→strip z.object；`true`+无 properties→z.record。
@@ -452,18 +457,18 @@ per-session `McpServer` + `StreamableHTTPServerTransport`，`sessionIdGenerator:
 
 #### 5.6 Subagent 系统
 
-详见 [§6.5 Subagent 关键模块](#65-subagent-系统-srcsubagent)。该系统由 17 个文件构成，分层如下：
+详见 [§6.5 Subagent 关键模块](#65-subagent-系统-srcsubagent)。该系统由 16 个文件构成，分层如下：
 
 | 层 | 文件 | 职责 |
 |---|---|---|
-| 接入层 | `runner.ts` | start/status/abort 控制面，编排 delegate session + worktree + 通知链 |
+| 接入层 | `runner.ts` | start/status/abort 控制面，编排 delegate session + 通知链 |
 | 执行核心 | `executor.ts` | agent loop 主循环（compact 三层 + LLM + 工具 + 退出策略） |
 | 工具层 | `tools.ts` / `tool-executor.ts` | 8 工具定义 + 并行/串行执行器 |
-| LLM 适配 | `llm-adapter.ts` / `resilience-policy.ts` / `token-counter.ts` / `cost-tracker.ts` | 5 provider + 弹性 + 估算 + 计费 |
-| 隔离层 | `worktree.ts` / `permissions.ts` | git worktree 文件隔离 + 命令安全 |
+| LLM 适配 | `llm-adapter.ts` / `resilience-policy.ts` / `token-counter.ts` / `cost-tracker.ts` | Anthropic 协议适配 + 弹性 + 估算 + token 累计 |
+| 隔离层 | `permissions.ts` | 命令安全（readOnly 决策） |
 | 状态层 | `store.ts` / `file-state.ts` / `shell-tracker.ts` / `result-budget.ts` | 记录 + 读后写 + 进程追踪 + 结果预算 |
 | 辅助 | `grep-utils.ts` / `tui-bridge.ts` | grep 引擎 + AG-UI 事件总线 |
-| 地基 | `context.ts` | 可注入上下文（收敛模块级全局单例） |
+| 地基 | `context.ts` | 可注入上下文（`SubagentContext` 收敛 6 项模块级全局单例，见 §6.5 隔离说明） |
 
 #### 5.7 资源适配层
 
@@ -481,7 +486,7 @@ per-session `McpServer` + `StreamableHTTPServerTransport`，`sessionIdGenerator:
 `class AuditLog`：`event`(写)、`facts`/`recentFactsPage`/`factsPage`(读)、`pruneDeleted`。`AuditFact` 含 sessionId/sessionName/at/tool/ok/errorCode。`AuditLogIo` 注入使其无文件系统可测。状态映射 started→running、succeeded→completed，保留 policy_rejected。
 
 ##### [src/redact.ts](./src/redact.ts) — 脱敏单源（ADR-0026）
-`redact<T>(value)`：双形式（对象/字符串）。三层处理：敏感键→`[REDACTED]`；body 键→`[REDACTED <n> chars]`；自由字符串→正则扫除 Bearer/key=value/query + 字面量 secret 全量替换。所有出口（HTTP 响应/日志/审计/错误）必经此函数。
+`redact<T>(value)`：双形式（对象/字符串）。三层处理：敏感键→`[REDACTED]`；body 键→`[REDACTED <n> chars]`；自由字符串→转义合并的**单条 alternation 单遍 replace**（#102，O(串数+secrets) 替代 split/join 乘数）扫除 Bearer/key=value/query + 字面量 secret 全量替换。所有出口（HTTP 响应/日志/审计/错误）必经此函数；store 侧历史 tail 增量缓存（`historyTailCache` 按 (session,size,mtime) 失效，`HISTORY_TAIL_LIMIT=5000`）避免重复红化整段历史。
 
 ##### [src/update.ts](./src/update.ts) / [src/update-transaction.ts](./src/update-transaction.ts)
 - `checkForUpdate`：GitHub releases/latest 探测；`installUpdate`：锁→事务→快照→install→migrate→restart→recovery→prune。
@@ -494,6 +499,20 @@ per-session `McpServer` + `StreamableHTTPServerTransport`，`sessionIdGenerator:
 #### 5.8 TUI 层
 
 基于 `@opentui/react` + `@opentui/keymap` 的 React 组件树 + 控制器（`TuiController`）+ 纯函数模型层。遵循 ADR-0004 九大决策（双速 tick、五层键盘路由、暖色双主题、吉祥物情绪、纯函数模型等）。详见 [§6.6 TUI 关键模块](#66-tui-系统-srctui)。
+
+#### 5.9 工具结果整形系统（tool-parse.ts + l3/，ADR-0047）
+
+##### [src/tool-parse.ts](./src/tool-parse.ts) — 整形中心
+`TOOL_SHAPES` 中心注册表（16 条）把每个工具的结果路由为三类（各工具入口见 §5.4/§6.3）：
+
+- **L1 reduce**：被动去噪（剥 `command`/`cwd`/`signal`/`timedOut`/`cancelled`）+ 主动精简（会话/消息列表摘要替换 + count/分页）+ 聚合字段（D16 `count`/`totalCount`；D16.3 按工具 opt-in：search_text `fileCount`/`uniqueFiles`、git_log `commitCount`，派生字段一律代码后置补、不进 L3 schema）。
+- **L2 路由**（D-4）：schema 优先、reduce 兜底——有 schema 且结果走 L3；L3 失败/超预算回落 L1 reduce。
+- **L3 schema 入口（3 个）**：`execute_cli`（dual + `admitL3` stdout≤8K）、`run_checks`（dual）、`subagent_status.result` L3-if-small 例外（仅 completed + 自由文本 + ≤24K，D-13 旁挂，`result` 字段原文不动）。git_status/git_diff/git_log/git_show 增补-04 豁免：无 schema → L3 永不进入，仅 L1 去噪。
+
+失败语义（D11/D17）：reducer/cap 失败 → 原样 passthrough（reason 记审计 `reducer-threw`/`cap-threw`）；整形审计（raw+shaped+reason）只进审计链、绝不进模型上下文；成功结果无任何层标记。错误双帽（D12）：`error.message`≤2000、`error.details`≤6000（env 旋钮 `MYTERMINAL_ERROR_MESSAGE_MAX_CHARS`/`MYTERMINAL_ERROR_DETAILS_MAX_CHARS` 优先，默认 2000/6000；'0' 合法 → 帽为 0 信息全清）；`continuation` 子键原样保全。task_poll 递归（D13）：`operation.data.result` 递归整形 + `operation.error` 双帽，保全 `operation.ok`/`data.tool`；Q7 嵌套预算门、Q6 整层回退、Q8 按 (taskId + operation 内容哈希) 缓存（`clearOperationCache(taskId?)`）——预填（#106 `seedOperationCache`）哈希 shaped 内容、D13 递归哈希 poll 侧 raw operation，两者同公式保证命中。预算门（D6）：`estimateTokens`（中文×1.5/英文÷4）+ `RAW_BUDGET_TOKENS=24000`，门槛 = min(24000, L3 ctx − 2048)；L3 每会话配额 50（`l3MaxPerSession`）；超限 fail-open 回 L1。
+
+##### [src/l3/](./src/l3/) — L3 本地模型层（7 文件）
+`adapter.ts`（L3 适配接口）/ `engine.ts`（字段白名单 + 值存在性 `applyQ5`，失败矩阵 q5-rejected/l3-parse-error 零重试）/ `llama-adapter.ts`（真模型：Qwen3.5-2B GGUF，non-thinking/GBNF）/ `registry.ts`（`getL3Adapter`/`resetL3Adapter` 单例懒加载 + ctx 回标；`l3Enabled()`：`MYTERMINAL_L3_ENABLED` env 优先，未设置 → standalone 开 / cluster 参与者关）/ `warmup.ts`（`startL3Warmup` 异步预热 + smoke probe，`MYTERMINAL_L3_WARMUP=false` 关闭）/ `prompt.ts`（L3 系统提示词）/ `model-fetch.ts`（`l3-model fetch` sha256 钉死；`MYTERMINAL_L3_MODEL_PATH` 覆盖路径，未设置 → 安装根 models 目录 > 裸文件名）。
 
 ---
 
@@ -555,21 +574,23 @@ interface ToolDefinition { name, title, description, inputSchema, annotations, a
 
 | 分组 | 工具 |
 |---|---|
-| 工作区文件 | `list_dir` `find_files` `search_text` `read_file` `read_file_range` `write_file` `apply_patch` |
+| 工作区文件 | `workspace_info` `list_dir` `find_files` `search_text` `read_file` `read_file_range` `write_file` `apply_patch` |
 | Blob | `blob_create`（sha256 内容寻址，`flag:'wx'` 幂等，1MB 上限）`blob_read` `blob_write_file`（`flag:'wx'` 不覆盖，同 sha256 幂等成功，不同拒绝） |
-| 命令/Git | `execute_cli` `git_status` `git_diff` `git_log` `run_checks` |
+| 命令/Git | `execute_cli` `git_status` `git_diff` `git_log` `git_show` `run_checks` |
 | 会话 | `session_register` `session_inherit` `session_list` `session_checkpoint` `session_context` `session_history` `session_release` `session_unregister` `session_tag` `session_subscribe` `session_events_ack` |
 | 消息 | `message_send` `message_inbox` `message_list` `message_conversation` |
 | Skill | `skill` |
 | Subagent | `subagent_start` `subagent_status` `subagent_abort` |
 | 后台 | `task_poll` |
 
+36 个内置工具（34 处 add，其中 git 循环展开 `git_status`/`git_diff`/`git_log` 3 个）。工具结果统一经 `applyShape` 整形出口（§5.9）：`execute_cli`/`run_checks` 走 L3 schema（stdout≤8K 才 admit）；git_* 四工具增补-04 豁免仅 L1 去噪；其余走 L1 reduce。
+
 #### 6.4 Skill 系统（skills.ts）
 
 ```typescript
 type SkillMode = 'inline' | 'fork';
 interface SkillManifest { name, description, when_to_use, mode, forkOptions? }
-interface SkillForkOptions { provider?, model?, maxTurns?, timeoutSec?, readOnly? }
+interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 // listSkills() / loadSkill(name) / parseFrontmatter / validateSkillManifest
 ```
 
@@ -582,8 +603,8 @@ interface SkillForkOptions { provider?, model?, maxTurns?, timeoutSec?, readOnly
 ##### 接入层 — [runner.ts](./src/subagent/runner.ts)
 `createSubagentRunner(deps)` 返回 `{start, status, abort, listSubagents}`。
 
-- **start**：并发检查 → `assembleTask`/`toTaskPackage` → `registerAndClaimChild` → `createSubagent` → IIFE 后台执行（`cleanupStaleWorktrees` → `createAgentWorktree` → `runSubagentImpl`）→ 立即返回 `{sessionId, taskId, status:'running'}` → `finalize`（checkpoint + notify + store 更新 + `reclaimWorktree`）。
-- **status**：`getSubagent` → 读 manifest 回填隔离语义字段（`hasChanges`/`changesIsolated`/`reviewPending`，仅 completed 回填，running 态 undefined）→ 幂等返回。
+- **start**：并发检查 → `assembleTask`/`toTaskPackage` → `registerAndClaimChild` → `createSubagent` → IIFE 后台执行 `runSubagentImpl` → 立即返回 `{sessionId, taskId, status:'running'}` → `finalize`（checkpoint + notify + store 更新）。
+- **status**：`getSubagent` → 幂等返回 `{status, sessionId, tasks, usage, error, result?（仅 completed 回填）, origin, auditLogs}`。
 - **abort**：已终态幂等返回；否则 `abortController.abort()` → `{status:'aborting'}`。
 
 ##### 执行核心 — [executor.ts](./src/subagent/executor.ts)
@@ -592,7 +613,7 @@ interface SkillForkOptions { provider?, model?, maxTurns?, timeoutSec?, readOnly
 - 三层 compact：`microCompact`（零成本，保留最近 5 个 tool_result，更早的替换为占位）→ `autoCompact`（调 LLM 摘要，`MAX_COMPACT_FAILURES=3` 熔断）→ `normalizeMessages`。
 - `AbortSignal.any([abortController.signal, timeoutSignal])`；`collectStream`（含 Circuit Breaker）→ 决策 24 content 退出检测 → `executeToolCalls` → 追加 tool_result。
 - `finally`：`sessionResourceManager.disposeAgent(agentId)`。三态完成函数 `finishCompleted`/`finishFailed`/`finishAborted`。
-- `getSubagentSystemPrompt`：硬编码 system prompt，隔离模式追加 auto-remapped 文案。
+- `getSubagentSystemPrompt`：硬编码 system prompt（8 工具集 + 会话/交付物/退出语义）。
 
 ##### 工具层 — [tools.ts](./src/subagent/tools.ts) / [tool-executor.ts](./src/subagent/tool-executor.ts)
 
@@ -610,23 +631,19 @@ interface SkillForkOptions { provider?, model?, maxTurns?, timeoutSec?, readOnly
 | `task_update` | true | true | 状态机更新（pending→in_progress→completed） |
 
 - `buildTool(config)` 工厂；`toolRegistry: Map`；`getTool`/`getAllToolSchemas`/`getToolNames({readOnly})`。
-- `resolvePath`：cwd 限制 + ADR-0015 realpath 防 symlink 逃逸 + 隔离 ctx 下主仓→worktree 同构路径重映射。
+- `resolvePath`：cwd 限制 + ADR-0015 realpath 防 symlink 逃逸。
 - `tool-executor.ts`：`validateSchema`（4 类校验）、`partitionToolCalls`（按并发安全分批，MAX_PARALLEL=5）、`executeSingleTool`（未知工具→readOnly 门禁→schema→validateInput→checkPermissions→hooks→执行→审计）、`executeToolCalls`（并行批次 sibling abort，串行批次写失败链中断）。
 
 ##### LLM 适配 — [llm-adapter.ts](./src/subagent/llm-adapter.ts)
 - `interface LlmAdapter { provider; stream(params, signal); create(params, signal) }`。
-- 5 适配器：`OpenAIAdapter`（SSE + stream_options.include_usage）、`AnthropicAdapter`（content_block 事件路由 + cache_read_input_tokens）、`DeepSeekAdapter`/`GlmAdapter`（继承 OpenAI 改 baseUrl）、`QwenAdapter`（baseUrl 构造注入）。
-- `createAdapter(settings, env)` 工厂（按 provider，缺 key 抛错附 export 指引）。
+- 单协议适配：`AnthropicAdapter`（content_block 事件路由 + cache_read_input_tokens），`baseUrl` 可配，指向任意 Anthropic Messages 兼容端点。
+- `createAdapter(settings)` 工厂（单一 Anthropic 协议；apiKey/baseUrl/model 三必填缺失抛错：`Subagent apiKey, baseUrl and model are required. Provide them in the MyTerminal config file (subagent.apiKey / subagent.baseUrl / subagent.model).`；遗留 provider 字段静默忽略）。
 - `normalizeMessages`（合并同 role + 孤儿 tool_use 补 interrupted tool_result）、`assembleMessage`（组装单源 #66）、`collectStream`（流式累积 + 中途失败回退非流式防双重执行）。
 - `ReliabilityAdapter` 装饰器（watchdog 空闲 60s/总超时）+ `withReliability` 工厂；`LlmError`（kind: rate_limit/server_overload/auth/prompt_too_long/connection/system）。
 - `resilience-policy.ts`：`CircuitBreaker`（closed/open/half-open，5 次失败熔断 30s）+ `ResiliencePolicy.decideOnFailure`（rate_limit 指数退避、server_overload 3 次降级 fallbackModel、prompt_too_long 触发 compact）。
 
-##### 隔离 — worktree.ts
-- `createAgentWorktree`：D1 降级链（非 git/skip/空仓库→null）→ `git worktree add -b worktree-<slug> <wtPath> HEAD` → manifest → `injectDependencies`（`git check-ignore` 判定，降级 `cp -Rc`→`--reflink=auto`→`cp -a`）。
-- `hasWorktreeChanges`：`git status --porcelain` ∪ `git log baseCommit..HEAD`（根因 #1 修复）。
-- `adoptWorktree`：两阶段 `git apply --3way --check` → `--3way` → `--diff-filter=U` 取冲突 → 三联动收尾。
-- `listReviewPending`：实时派生（根因 #2 修复，不信任 manifest 死布尔）。
-- `cleanupStaleWorktrees`：prune + 清失联 + 清孤儿分支，N2 保护 review-pending。
+##### 隔离 — [context.ts](./src/subagent/context.ts)
+`SubagentContext` 收敛 6 项模块级全局单例：`subagents`（记录表）/`readFileStates`（读后写）/`agentShellTasks`（shell 子进程）/`replacementDecisions`（结果预算替换决策）/`events`（AG-UI 事件总线）/`runner`（装配实例）。每个 subagent 通过可注入 ctx 获得与主会话隔离的状态；生产用 `defaultContext`，单测用 `createSubagentContext()` 创建隔离实例。
 
 ##### 权限 — [permissions.ts](./src/subagent/permissions.ts)
 `checkCommandSafety(command, readOnly)`：解释器壳递归 → 完整 DANGEROUS → 子命令逐段 → 命令替换检测 → 全 SAFE 快道 → readOnly 决策。`splitCommands`（状态机拆分）、`hasCommandSubstitution`、`isCommandConcurrencySafe`、`interpretExitCode`（grep/rg/find/test 语义）。
@@ -636,7 +653,7 @@ interface SkillForkOptions { provider?, model?, maxTurns?, timeoutSec?, readOnly
 - [file-state.ts](./src/subagent/file-state.ts)：`recordFileRead`/`validateEdit`（0 匹配附预览，>1 非 replaceAll 报错）/`applyEdit`。
 - [shell-tracker.ts](./src/subagent/shell-tracker.ts)：`trackShellTask`/`cleanupAgentShellTasks`（杀进程组，2s SIGKILL 兜底）。
 - [result-budget.ts](./src/subagent/result-budget.ts)：`truncateResult`（MAX 50K）/`enforceMessageBudget`（200K 预算，超限按长度降序压成预览并冻结）/`ensureNonEmpty`。
-- [token-counter.ts](./src/subagent/token-counter.ts)：`estimateTokens`/`estimateMessageTokens`/`getModelContextWindow`/`getAutoCompactThreshold`。
+- [token-counter.ts](./src/subagent/token-counter.ts)：`estimateTokens`/`estimateMessageTokens`。
 - [cost-tracker.ts](./src/subagent/cost-tracker.ts)：`CostTracker` 纯 token 累加器（`addUsage`/`getUsage`；input/output/cacheRead tokens，无任何定价/USD——ADR-0046 D1 已移除成本概念）。
 - [grep-utils.ts](./src/subagent/grep-utils.ts)：`includePatternToRegex`/`matchInFiles`（IO 解耦）/`createGrep`。
 - [tui-bridge.ts](./src/subagent/tui-bridge.ts)：`subagentEvents` EventEmitter + 14 种 AG-UI 事件 + `emitAgUi`。
@@ -702,6 +719,7 @@ ChatGPT ── HTTP ──> server.ts 路由
         ├─ assertContinuation         // 续执行队列顺序校验
         ├─ invokeTool                 // builtin / custom builtin / custom command
         │     └─ core-tools ToolDefinition.invoke(input, InvocationContext)
+        ├─ applyShape                 // 工具结果整形统一出口（§5.9：L1/L2/L3 路由，subagent 通道 D2 豁免）
         ├─ decorateContinuation       // 附加 continuation{mustContinue,nextCall}
         └─ attachEvents               // 最多 5 条未确认事件
                 │
@@ -729,14 +747,13 @@ subagent_start ──> runner.start
    1. countRunning >= maxParallel? → FORBIDDEN
    2. registerAndClaimChild(parentSessionId, task)
    3. createSubagent + IIFE 后台执行
-   4. cleanupStaleWorktrees → createAgentWorktree (D1 降级链)
-   5. runSubagent(主循环):
+   4. runSubagent(主循环):
         microCompact → (超阈值? autoCompact) → normalizeMessages
         → collectStream (Circuit Breaker + watchdog)
         → 决策24 content 退出? → executeToolCalls (分批并行/串行)
         → 追加 tool_result → 下一轮
-   6. finalize: checkpoint + message_send(通知父) + store 更新 + reclaimWorktree
-subagent_status ──> 幂等读 + 隔离语义字段回填
+   5. finalize: checkpoint + message_send(通知父) + store 更新
+subagent_status ──> 幂等读 + 终态 result 回填
 subagent_abort  ──> abortController.abort() → finishAborted
 ```
 
@@ -802,7 +819,7 @@ cli.ts
 
 ```text
 runner.ts (接入层)
-  ├─ store.ts, context.ts, executor.ts(runSubagentImpl 类型), worktree.ts(注入), tools.ts
+  ├─ store.ts, context.ts, executor.ts(runSubagentImpl 类型), tools.ts
   └─ ../store.ts, ../types.ts
 executor.ts (执行核心)
   ├─ llm-adapter.ts, resilience-policy.ts, token-counter.ts, cost-tracker.ts
@@ -811,8 +828,7 @@ executor.ts (执行核心)
 tool-executor.ts ── tools.ts, store.ts, result-budget.ts
 tools.ts ── file-state.ts, shell-tracker.ts, permissions.ts, result-budget.ts, store.ts, grep-utils.ts, ../utils/fs.ts, ../redact.ts
 llm-adapter.ts ── token-counter.ts, ../types.ts
-cost-tracker.ts / token-counter.ts ── ../models/registry.ts (MODELS)
-worktree.ts ── ../lock-thresholds.ts
+cost-tracker.ts / token-counter.ts ── ../types.ts
 context.ts ── store.ts, runner.ts (类型)
 ```
 
@@ -832,7 +848,7 @@ zod ── mcp.ts, mcp-schema.ts (运行期校验)
 - `types.ts:SubagentSettings`：subagent 配置字段（单一 Anthropic 入口，无 provider 枚举）
 - `redact.ts`：脱敏
 - `lock-thresholds.ts`：锁阈值 `LOCK_STALE_THRESHOLD_MS = 30_000`
-- `models/registry.ts`：模型价格 + 上下文窗口
+- `l3/registry.ts`：L3 适配器单例（`getL3Adapter`/`resetL3Adapter`）
 - `mcp-schema.ts`：JSON Schema→zod 派生
 - `status-color.ts`：TUI 状态→颜色
 - `llm-adapter.ts:assembleMessage`：消息组装
@@ -875,13 +891,14 @@ myterminal --headless       # headless 模式（需先完成 TUI 设置）
 myterminal --version / -v
 myterminal --help / -h
 myterminal --verify-installation          # 校验运行时资源
-myterminal --list-adoptable               # 列出可采纳的 subagent worktree
-myterminal --adopt <taskId>               # 采纳 subagent worktree 变更
+myterminal l3-model fetch                 # 下载 L3 本地模型（sha256 钉死，幂等；stateless，先于 settings/runtime）
 ```
 
 #### 9.5 环境变量覆盖（仅自动化/headless）
 
 `MYTERMINAL_WORKSPACE_DIR`、`MYTERMINAL_HOST`、`MYTERMINAL_PORT`、`MYTERMINAL_PUBLIC_BASE_URL`、`MYTERMINAL_ACTIONS_TOKEN`、`MYTERMINAL_CONNECTOR_KEY`、`MYTERMINAL_MAX_OUTPUT_CHARS`、`MYTERMINAL_COMMAND_TIMEOUT_SEC`。非 headless 模式这些变量会被删除，避免误覆盖 TUI 设置。
+
+L3 与错误帽开关不受上述删除影响（非 headless 下保留）：`MYTERMINAL_L3_ENABLED`（未设置 → standalone 开 / cluster 参与者关）、`MYTERMINAL_L3_MODEL_PATH`（覆盖 L3 模型路径）、`MYTERMINAL_L3_WARMUP`（默认开，`false` 关闭预热）、`MYTERMINAL_ERROR_MESSAGE_MAX_CHARS` / `MYTERMINAL_ERROR_DETAILS_MAX_CHARS`（错误双帽，默认 2000/6000）。
 
 #### 9.6 连接端点
 
@@ -898,7 +915,7 @@ Actions facade 三操作：`extension_discover`/`extension_call`/`extension_regi
 bun run test                # 构建后跑 test/*.test.mjs（超时 120s）
 ```
 
-测试覆盖：OpenAPI 3.1、Actions/Apps identity、controller 接管、checkpoint 时机、parent/child 完成、事件 ACK、订阅、持久历史、脱敏、迁移、删除、续执行、OpenTUI 滚动与拖选、subagent M1-M8、worktree 隔离/采纳、skill v1/v2、redaction、错误码、安全边角等。
+测试覆盖：OpenAPI 3.1、Actions/Apps identity、controller 接管、checkpoint 时机、parent/child 完成、事件 ACK、订阅、持久历史、脱敏、迁移、删除、续执行、OpenTUI 滚动与拖选、subagent M1-M8、tool-parse 整形（L1/L2/L3 路由、D7 双版本审计、D12 错误双帽、D13 task_poll 递归、D16.3 聚合字段）、skill v1/v2、redaction、错误码、安全边角等。
 
 #### 9.8 CI（.github/workflows/ci.yaml）
 
@@ -936,6 +953,8 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 10. 标记非破坏的 Apps 窄工具不覆盖已有文件；通用 facade 保留显式覆盖与任意命令能力。
 11. Subagent 隔离上下文与工具集；不能启动其他 subagent（递归防护）；与 fork skill 共享全局 maxParallel。
 12. Skill frontmatter 是路由（inline vs fork）唯一真相源；skill 工具绝不静默把 fork 降级为 inline。
+13. 工具结果整形失败 fail-open（D17/D11）：reducer/cap 失败原样 passthrough（reason 只进审计），整形审计绝不进模型上下文。
+14. L3 本地模型按部署形态启用（D18.2）：standalone 默认开、cluster 参与者默认关，`MYTERMINAL_L3_ENABLED` 可显式覆盖。
 
 #### 10.2 安全约束（见本文件 §3 开发约束）
 
@@ -953,7 +972,6 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 
 #### 10.4 工程约定（来自项目记忆）
 
-- Subagent 文件隔离需工作区为 Git 仓库；否则变更直接写主工作区。
 - Subagent 超时不自动重试，需人工干预。
 - `readOnly:true` 的 subagent 缺少 `write_file`/`execute_cli` 等写工具。
 - `retryable:false` 错误（DUPLICATE_SESSION/SESSION_ALREADY_CLAIMED/INVALID_INPUT）不自动重试。
@@ -977,7 +995,7 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 | 场景 prompt | docs/PROMPT_PLAYBOOK.md |
 | 隐私与部署 | docs/PRIVACY.md |
 | 手动/离线安装 | docs/MANUAL_INSTALL.md |
-| Subagent provider 配置 | docs/SUBAGENT_SETUP.md |
+| Subagent LLM 配置 | docs/SUBAGENT_SETUP.md |
 | AI 编码规则 | 见本文件 §2 |
 | 开发约束 | 见本文件 §3 |
 | 贡献指南 | [CONTRIBUTING.md](./CONTRIBUTING.md) |

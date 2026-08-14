@@ -4,7 +4,7 @@
 
 MyTerminal gives **ChatGPT's normal chat mode a controlled way to work on your local computer**. After you connect MyTerminal through a custom GPT Action or a ChatGPT App, a regular ChatGPT conversation can inspect and edit the authorized local project, run bounded tools, coordinate multiple work sessions, and report progress while you retain control in a local TUI. MyTerminal is the bridge between ChatGPT chat and your computer; it is not a replacement chat client.
 
-MyTerminal 0.1.2 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with multi-provider LLM support.
+MyTerminal 0.1.2 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with Anthropic-protocol LLM support.
 
 ![MyTerminal session hierarchy](docs/assets/tui/sessions-en.svg)
 
@@ -106,7 +106,11 @@ Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`
 
 ### Subagent system
 
-A subagent is an isolated agent loop with its own 8-tool set, context window, and token usage tracker. It runs asynchronously against a configured LLM provider (openai, anthropic, deepseek, glm, or qwen, default from config.json; per-call override supported). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for provider configuration.
+A subagent is an isolated agent loop with its own 8-tool set, context window, and token usage tracker. It runs asynchronously against an Anthropic-Messages-compatible LLM endpoint configured in `config.json` (`subagent.apiKey` / `subagent.baseUrl` / `subagent.model`, all three required). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for configuration.
+
+### L3 tool-result shaping
+
+Tool results pass through a layered shaping pipeline (`TOOL_SHAPES`): deterministic L1 reduce, L2 routing, and an optional L3 local-model layer (a bundled Qwen GGUF) that extracts free-text results for a few tools. L3 is fail-open — the model is not part of the release archive; run `myterminal l3-model fetch` (SHA-256-pinned, idempotent) to download it and enable L3. Until then, results fall back to deterministic L1/L2 with no functional loss. L3 is on by default for standalone processes and off for shared-port cluster participants (`MYTERMINAL_L3_ENABLED` overrides).
 
 ## Auditable collaboration
 
@@ -125,7 +129,7 @@ A MyTerminal session is a work context, not a ChatGPT conversation ID.
 
 ## TUI owner control plane
 
-The seven full-window pages are Overview, Sessions, Messages, Diff, Extensions, Settings, and Logs.
+The nine full-window pages are Overview, Sessions, Messages, Timeline, Diff, Extensions, Settings, Logs, and Subagents.
 
 ![MyTerminal overview](docs/assets/tui/overview-en.svg)
 

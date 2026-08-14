@@ -64,8 +64,8 @@ Agent 上下文
 - 每个 session 必须持续工作，直到验收标准完成、明确受阻，或确实等待外部输入。完成一次消息往返不构成停止理由。
 
 SUBAGENT
-- subagent 是隔离的智能体循环，拥有独立的工具集、上下文窗口和费用追踪器。它异步运行于已配置的 LLM 提供商（openai/anthropic/deepseek/glm/qwen，默认读取 config.json）。适用于需要隔离的复杂、长时间运行任务。
-- subagent_start({objective, provider?, model?, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?}) 启动 subagent 并立即返回 {taskId, status:"running"}。provider/model/maxTurns/timeoutSec 可覆盖 config.json 的默认值。readOnly=true 限制为只读工具。
+- subagent 是隔离的智能体循环，拥有独立的工具集、上下文窗口和费用追踪器。它异步运行于 config.json 配置的 Anthropic Messages 端点（subagent.apiKey / subagent.baseUrl / subagent.model 三必填）。适用于需要隔离的复杂、长时间运行任务。
+- subagent_start({objective, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?}) 启动 subagent 并立即返回 {sessionId, taskId, status:"running"}。maxTurns/timeoutSec/readOnly 可覆盖 config.json 的默认值。readOnly=true 限制为只读工具。
 - subagent_status({taskId}) 轮询进度。返回 {status, tasks, usage:{inputTokens,outputTokens,cacheReadTokens}, result}。已完成的 subagent 具有幂等性（1 小时清理窗口内重复读取返回相同结果）。NOT_FOUND 表示 subagent 已被清理。
 - subagent_abort({taskId}) 停止运行中的 subagent。幂等；已完成/失败/中止的 subagent 返回当前状态不变。
 - 每次 start 后必须轮询 subagent_status 直到 status 为 completed、failed 或 aborted。不要同步等待或假设已完成。已完成的 subagent 通过 message_send 通知父 session，消息包含 taskId 和 origin。
