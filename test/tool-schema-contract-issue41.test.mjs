@@ -334,6 +334,16 @@ const INPUT_SCHEMA_ALLOWLIST = new Map([
   ['session_list :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:T07新增可选分页入参limit' }],
   ['session_list :: properties.limit.maximum', { baseline: undefined, current: 200, reason: 'A:T07新增可选分页入参limit(上限200)' }],
   ['session_list :: properties.limit.default', { baseline: undefined, current: 20, reason: 'A:展示层default(服务端默认20,parse不变)' }],
+  // ── A 类（续续续）：W1-03 #76 为 list_dir 新增可选分页入参 offset/limit（与 session_list 同源）
+  //   实测 parse({}) => {}（两字段均非 required，服务端按缺省 offset=0/limit=500 切片），
+  //   既有调用方（path 缺省 '.'）零行为变化；limit.maximum=500 与 500 帽同源对齐。
+  ['list_dir :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:W1-03新增可选分页入参offset' }],
+  ['list_dir :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:W1-03新增可选分页入参offset' }],
+  ['list_dir :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
+  ['list_dir :: properties.limit.type', { baseline: undefined, current: 'integer', reason: 'A:W1-03新增可选分页入参limit' }],
+  ['list_dir :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:W1-03新增可选分页入参limit' }],
+  ['list_dir :: properties.limit.maximum', { baseline: undefined, current: 500, reason: 'A:W1-03新增可选分页入参limit(上限500,与500帽同源)' }],
+  ['list_dir :: properties.limit.default', { baseline: undefined, current: 500, reason: 'A:展示层default(服务端默认500,parse不变)' }],
   // ── A 类（续续）：T08 #36 为 read_file_range 新增可选 maxBytes 入参（与 read_file 对称）
   //   实测 parse({}) => {}（maxBytes 非 required，服务端按缺省 256_000 截断），既有调用方零行为变化；
   //   maximum=1_000_000 与 read_file 同源对齐，非行为变更。

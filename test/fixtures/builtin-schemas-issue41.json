@@ -29,6 +29,16 @@
         "path": {
           "type": "string",
           "default": "."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 500
         }
       },
       "additionalProperties": false

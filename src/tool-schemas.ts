@@ -47,7 +47,7 @@ const NO_INPUT: () => JsonSchema = () => ({ type: 'object', properties: {}, addi
 export const BUILTIN_INPUT_SCHEMAS = {
   // ── 工作区与文件 ──
   workspace_info: NO_INPUT(),
-  list_dir: { type: 'object', properties: { path: { type: 'string', default: '.' } }, additionalProperties: false },
+  list_dir: { type: 'object', properties: { path: { type: 'string', default: '.' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 500, default: 500 } }, additionalProperties: false },
   find_files: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false },
   search_text: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, regex: { type: 'boolean', default: false }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false },
   read_file: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, maxBytes: { type: 'integer', minimum: 1, maximum: 1_000_000 } }, required: ['path'], additionalProperties: false },

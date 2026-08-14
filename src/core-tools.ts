@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { createReadStream } from 'node:fs';
+import { createReadStream, realpathSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
@@ -181,7 +181,11 @@ async function runShellCommand(args: {
 }
 
 function relative(config: MyTerminalConfig, absolute: string): string {
-  return path.relative(config.workspaceDir, absolute) || '.';
+  // 基准取 realpath 后的 workspaceDir：resolveWorkspacePath 对存在的路径返回 realpath 形式
+  // （macOS /var→/private/var 等 symlink 场景下与 config.workspaceDir 不一致），若不 realpath，
+  // 输出的相对 path 会带 .. 前缀、且回传作输入时无法被 resolveWorkspacePath 复原（W1-03 #76
+  // 翻页 round-trip 实测）。realpath 后两方同源，输出干净、可回传。
+  return path.relative(realpathSync(config.workspaceDir), absolute) || '.';
 }
 
 export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalStore): Map<string, ToolDefinition> {
@@ -211,8 +215,19 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: BUILTIN_INPUT_SCHEMAS.list_dir, annotations: readOnly,
     invoke: async (input, context) => {
       const directory = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.');
-      const entries = await readdir(directory, { withFileTypes: true });
-      return { path: relative(config, directory), entries: entries.filter((entry) => !IGNORE_DIRECTORIES.has(entry.name)).slice(0, 500).map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })), truncated: entries.length > 500 };
+      const all = (await readdir(directory, { withFileTypes: true })).filter((entry) => !IGNORE_DIRECTORIES.has(entry.name));
+      // W1-03（#76）：分页切片（默认 0/500、上限 500 与 500 帽对齐）；上报 total + page，
+      // 供 L1 reducer 派生 totalCount / truncated / 分页 continuation（对齐 session_list T07）
+      const offset = typeof input.offset === 'number' && input.offset >= 0 ? Math.floor(input.offset) : 0;
+      const limit = typeof input.limit === 'number' && input.limit >= 1 ? Math.min(Math.floor(input.limit), 500) : 500;
+      const page = all.slice(offset, offset + limit);
+      return {
+        path: relative(config, directory),
+        entries: page.map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })),
+        total: all.length,
+        page: { offset, limit },
+        truncated: offset + page.length < all.length,
+      };
     },
   });
   add({

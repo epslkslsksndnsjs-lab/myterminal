@@ -509,6 +509,52 @@ function reduceSkillsCount(result: JsonObject): JsonObject {
   return { ...result, count: skills.length }; // D16.1：数组实际长度
 }
 
+// ── D16 主动精简（list_dir，0050 A3 / W1-03 #76）：count + 截断 totalCount + 分页 ──
+//
+// 补遗3 权威矩阵要求 list_dir 截断 + count + 分页。handler 原生返回
+// { path, entries, total, page:{offset,limit}, truncated }（core-tools.ts，W1-03 起按
+// offset/limit 切片并上报 total/page，对齐 session_list T07 模式）。reducer 规则
+// （D16.1/16.2 + D15 + D17 静默）：
+// - entries 数组 → count（实际长度）
+// - truncated === true 且 total 为 number → totalCount（真实总量）
+// - total / page 为 handler 内部上报字段：一律剥除，统一为 count/totalCount
+//   （绝不泄漏进结果，D17，对齐 totalMatches 处理）
+// - 截断态发射 pagination 提示（D15）→ L2 合并 data.continuation.pagination，
+//   nextCall 带 path + offset + limit，模型可翻页取全量
+// - 结构不符（无 entries 数组）→ 原样 fail-open，不抛错（D11）
+function reduceListDirCount(result: JsonObject): JsonObject {
+  const entries = result.entries;
+  if (!Array.isArray(entries)) return result; // 结构不符 → 原样（防御）
+  const out: JsonObject = {};
+  for (const [key, value] of Object.entries(result)) {
+    if (key === 'total' || key === 'page') continue; // handler 内部上报字段：剥除（D17 静默）
+    out[key] = value;
+  }
+  out.count = entries.length; // D16.1：数组实际长度
+  const total = typeof result.total === 'number' ? result.total : undefined;
+  if (out.truncated === true && total !== undefined) {
+    out.totalCount = total; // D16.2：截断且总量已知 → 真实总量
+  }
+  // D15 分页提示：截断态发射（L2 剥 pagination 并合并 data.continuation.pagination）；
+  // 非截断 → { truncated:false }，L2 不发射 continuation
+  const page = isPlainObject(result.page) ? (result.page as JsonObject) : {};
+  const offset = typeof page.offset === 'number' ? page.offset : 0;
+  const limit = typeof page.limit === 'number' ? page.limit : entries.length;
+  out.pagination = {
+    truncated: out.truncated === true,
+    ...(out.truncated === true && total !== undefined
+      ? {
+          nextCall: {
+            tool: 'list_dir',
+            input: { ...(typeof out.path === 'string' ? { path: out.path } : {}), offset: offset + limit, limit },
+            purpose: 'fetch next page of directory entries',
+          },
+        }
+      : {}),
+  };
+  return out;
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪。execute_cli / git_* 复用 denoiseCommandResult；
@@ -519,6 +565,7 @@ function reduceSkillsCount(result: JsonObject): JsonObject {
 // W1-01（#74）：find_files / search_text 主动精简（D16 count/totalCount，0050 A1）。
 // W1-02（#75）：read_file 派生 lineCount（0050 A2 / D-10 原则4）。
 // W1-05（#78）：skill list 模式 count（D16.1，0050 A5）；session_context 明示豁免不注册（D-16）。
+// W1-03（#76）：list_dir 主动精简（D16 count/totalCount + D15 截断分页，0050 A3）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
@@ -527,6 +574,7 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['search_text', { reduce: reduceCollectionCount }],
   ['read_file', { reduce: reduceReadFileLineCount }],
   ['skill', { reduce: reduceSkillsCount }],
+  ['list_dir', { reduce: reduceListDirCount }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
