@@ -36,7 +36,8 @@ export class LlamaLocalAdapter implements LocalModelAdapter {
   readonly id = 'qwen3.5-2b';
   readonly supportsStructuredOutput = true;
 
-  private readonly modelPath: string;
+  /** 解析后的 GGUF 路径（public：warmup 缺失探测读取，#95 W3-03）。 */
+  readonly modelPath: string;
   private loaded = false;
   private llama: any;
   private model: any;

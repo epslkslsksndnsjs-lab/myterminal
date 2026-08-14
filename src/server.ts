@@ -9,7 +9,7 @@ import { ExtensionService } from './extensions.js';
 import { MyTerminalMcpTransport } from './mcp.js';
 import { clearL3Quota } from './l3/engine.js';
 import { resetL3Adapter, setL3ClusterMode } from './l3/registry.js';
-import { resetL3Warmup, startL3Warmup } from './l3/warmup.js';
+import { l3Health as l3HealthSnapshot, resetL3Health, resetL3Warmup, startL3Warmup, type L3HealthSnapshot } from './l3/warmup.js';
 import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
@@ -128,6 +128,8 @@ export class MyTerminalRuntime {
   }
 
   runtimeHealth(): RuntimeHealth { return { ...this.healthState, environment: { ...this.healthState.environment } }; }
+  /** D-8 通道2（#95 W3-03）：L3 就绪状态快照（/health l3 字段 + TUI 状态页数据源）。 */
+  l3Health(): L3HealthSnapshot | undefined { return l3HealthSnapshot(); }
   controlChannelStatus(): ControlChannelState | undefined { return this.controlChannel?.snapshot(); }
 
   private settingsSnapshot(): MyTerminalSettings {
@@ -550,6 +552,8 @@ export class MyTerminalRuntime {
     resetL3Adapter();
     // ADR-0051 D-6（#91 W2-08）：释放预热门闩——「下次启动自动预热」（D-8.1）
     resetL3Warmup();
+    // ADR-0051 D-8（#95 W3-03）：重置就绪状态——下次启动从 loading 重新走状态机
+    resetL3Health();
     await publicClosed;
     await this.mcp.close();
     if (this.clusterMcp) await this.clusterMcp.close();
@@ -575,7 +579,7 @@ export class MyTerminalRuntime {
         res.status(503).json({ ok: false, product: 'myterminal', workspaceId: localWorkspaceId, error: 'Workspace route mismatch.' });
         return;
       }
-      res.status(healthy ? 200 : 503).json({ ok: healthy, product: 'myterminal', version: CURRENT_VERSION, workspaceId: localWorkspaceId, toolsExposed: 3, sessions: this.store.listSessions().length, activeMcpSessions: this.activeMcpSessions(), pendingActions: this.extensions.activeActionCount(), runtime: this.runtimeHealth(), controlChannel: this.controlChannelStatus() });
+      res.status(healthy ? 200 : 503).json({ ok: healthy, product: 'myterminal', version: CURRENT_VERSION, workspaceId: localWorkspaceId, toolsExposed: 3, sessions: this.store.listSessions().length, activeMcpSessions: this.activeMcpSessions(), pendingActions: this.extensions.activeActionCount(), runtime: this.runtimeHealth(), controlChannel: this.controlChannelStatus(), l3: this.l3Health() });
     });
     this.app.get('/openapi.json', (_req, res) => res.json(buildOpenApi({ ...this.config, publicBaseUrl: this.resolvedPublicBaseUrl() })));
     this.app.get('/openapi-3.1.json', (_req, res) => res.json(buildOpenApi({ ...this.config, publicBaseUrl: this.resolvedPublicBaseUrl() })));

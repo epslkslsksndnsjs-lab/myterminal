@@ -1,7 +1,10 @@
+import fs from 'node:fs';
 import type { JsonObject, JsonSchema } from '../types.js';
 import { getL3Adapter, l3Enabled } from './registry.js';
 import { buildInstruction } from './prompt.js';
 import { L3_MAX_TOKENS } from './engine.js';
+import { LlamaLocalAdapter } from './llama-adapter.js';
+import type { LocalModelAdapter } from './adapter.js';
 
 /**
  * ADR-0051 D-6（#91 W2-08）— L3 异步预热 + smoke probe（0050 G1 翻转必修）。
@@ -65,6 +68,49 @@ export function resetL3Warmup(): void {
   warmupStarted = false;
 }
 
+// ── D-8 就绪状态（#95 W3-03：三通道对人可见、对模型静默）────────────────────────
+//
+// 就绪状态机由本模块唯一写者（预热驱动）：server.start → startL3Warmup 同步置
+// loading；probe 成功 → ready（回填 warmLatencyMs）；退避耗尽/异常 → failed；
+// 真模型文件缺失 → missing（跳过退避重试，日志指向 `myterminal l3-model fetch`）。
+// 状态只经 l3Health() 暴露给 /health（server）+ TUI 状态页（Settings）——工具结果与
+// 模型可见上下文零出现（D-9 静默边界：本状态字段不进任何 tool result）。
+
+/** D-8 就绪状态枚举（/health l3.status 白名单）。 */
+export type L3HealthStatus = 'ready' | 'loading' | 'missing' | 'failed';
+
+/** D-8 /health l3 字段形状：modelId + 预热耗时（仅 ready 回填）。 */
+export interface L3HealthSnapshot {
+  status: L3HealthStatus;
+  modelId: string;
+  warmLatencyMs?: number;
+}
+
+let health: L3HealthSnapshot | undefined;
+
+/** 当前 L3 就绪状态快照（undefined = L3 关闭/无状态可报，/health 省略 l3 字段）。 */
+export function l3Health(): L3HealthSnapshot | undefined {
+  return health ? { ...health } : undefined;
+}
+
+/** 重置状态（server.close「下次启动自动预热」/ 测试隔离）。 */
+export function resetL3Health(): void {
+  health = undefined;
+}
+
+function setL3Health(status: L3HealthStatus, modelId: string, warmLatencyMs?: number): void {
+  health = warmLatencyMs === undefined ? { status, modelId } : { status, modelId, warmLatencyMs };
+}
+
+/**
+ * 模型缺失探测：仅真模型适配器（instanceof）——注入 fake adapter 的测试/集成语义
+ * 不被文件系统污染（fake 即"已就绪"），真模型文件不在盘上 → 缺失（D-7 分发前状态）。
+ * 返回缺失的模型路径（非缺失 → null）。
+ */
+function modelFileMissing(adapter: LocalModelAdapter): string | null {
+  return adapter instanceof LlamaLocalAdapter && !fs.existsSync(adapter.modelPath) ? adapter.modelPath : null;
+}
+
 /** 预热日志回调类型（与 server.log 兼容：'info' | 'error'）。 */
 export type WarmupLogger = (message: string, level?: 'info' | 'error') => void;
 
@@ -83,8 +129,17 @@ export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = 
   if (!l3Enabled()) return; // env 优先（D-6）：关 → 不预热（no-op 不消费幂等门闩）
   if (!l3WarmupEnabled()) return; // #101 增补-02：显式关预热 → no-op（同不消费门闩；测试可测试化）
   if (warmupStarted) return; // 幂等门闩：进程内单次（D-6「下次启动自动预热」由 close 重置）
-  warmupStarted = true;
   const adapter = getL3Adapter(); // 懒加载单例：预热即首次加载；后续真实调用复用（D8.2）
+  // D-8 通道3（#95 W3-03）：模型文件缺失 → 状态 missing + 日志提示指向 fetch 命令。
+  // 跳过退避重试——文件不在盘上，重试无意义；不消费预热门闩：fetch 后重启自动再探测。
+  const missingPath = modelFileMissing(adapter);
+  if (missingPath !== null) {
+    setL3Health('missing', adapter.id);
+    log(`L3 model missing at ${missingPath}: run \`myterminal l3-model fetch\` to download and enable L3`, 'error');
+    return;
+  }
+  warmupStarted = true;
+  setL3Health('loading', adapter.id);
   void (async () => {
     const startedAt = Date.now();
     try {
@@ -99,13 +154,16 @@ export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = 
           temperature: 0,
         });
         if (probe.object !== null && typeof probe.object === 'object' && !Array.isArray(probe.object)) {
+          setL3Health('ready', adapter.id, Date.now() - startedAt);
           log(`L3 warmup ready (${Date.now() - startedAt}ms)`, 'info');
           return;
         }
       }
       // 全失败仅记日志（D-6）：不抛错不阻断；首调走既有 isReady/失败矩阵 fail-open
+      setL3Health('failed', adapter.id);
       log(`L3 warmup failed after ${WARMUP_MAX_RETRIES + 1} attempts; first L3 call will lazy-load (fail-open)`, 'error');
     } catch (error) {
+      setL3Health('failed', adapter.id);
       log(`L3 warmup error: ${error instanceof Error ? error.message : String(error)}`, 'error');
     }
   })();

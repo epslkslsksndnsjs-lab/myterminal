@@ -1,6 +1,6 @@
 /**
  * Settings — 设置页（ADR-0004 决策 7）。
- * 三组卡片式布局：运行设置 / macOS 被动锁屏 / 连接凭据+更新。
+ * 卡片式布局：运行设置 / macOS 被动锁屏 / L3 模型（D-8 通道2，#95）/ 连接凭据+更新。
  * L2 精确层：所有语义不变，仅视觉重排。
  */
 import type { ReactNode } from 'react';
@@ -12,6 +12,7 @@ import type { UpdateStatus } from '../../update.js';
 import { Heading, Line } from './shared.js';
 import { runtimeSettingsSnapshot } from '../../runtime-settings.js';
 import { useI18n } from '../copy/context.js';
+import type { L3HealthSnapshot, L3HealthStatus } from '../../l3/warmup.js';
 
 function SettingsCard({ title, theme, children }: { title: string; theme: Theme; children: ReactNode }) {
   return (
@@ -20,6 +21,32 @@ function SettingsCard({ title, theme, children }: { title: string; theme: Theme;
       {children}
     </box>
   );
+}
+
+/** D-8 通道2（#95 W3-03）：TUI 状态页 L3 就绪状态 presenter（纯函数，issue-89 同款可测模式）。 */
+export type L3StatusTone = 'text' | 'good' | 'warn' | 'bad' | 'muted';
+export interface L3StatusLine { text: string; tone: L3StatusTone }
+
+const L3_STATUS_LABELS: Record<L3HealthStatus, { en: string; zh: string; tone: L3StatusTone }> = {
+  ready: { en: 'Ready', zh: '就绪', tone: 'good' },
+  loading: { en: 'Loading', zh: '预热中', tone: 'text' },
+  missing: { en: 'Model missing', zh: '模型缺失', tone: 'warn' },
+  failed: { en: 'Failed', zh: '预热失败', tone: 'bad' },
+};
+
+export function l3StatusView(l3: L3HealthSnapshot | undefined, t: (en: string, zh: string) => string): L3StatusLine[] {
+  if (!l3) return [{ text: t('L3 model: off', 'L3 模型：未启用'), tone: 'muted' }];
+  const label = L3_STATUS_LABELS[l3.status];
+  const lines: L3StatusLine[] = [{ text: `${t('Status', '状态')}: ${t(label.en, label.zh)}`, tone: label.tone }];
+  lines.push({ text: `${t('Model', '模型')}: ${l3.modelId}`, tone: 'text' });
+  if (l3.status === 'ready' && l3.warmLatencyMs !== undefined) {
+    lines.push({ text: `${t('Warmup', '预热')}: ${l3.warmLatencyMs}ms`, tone: 'text' });
+  }
+  if (l3.status === 'missing') {
+    // D-7：缺失时指向 fetch 命令（与启动日志同款提示）
+    lines.push({ text: t('L3 model missing. Run `myterminal l3-model fetch` to enable L3.', 'L3 模型缺失：运行 `myterminal l3-model fetch` 下载并启用 L3。'), tone: 'warn' });
+  }
+  return lines;
 }
 
 export function Settings({ runtime, theme, reveal, update }: {
@@ -31,6 +58,7 @@ export function Settings({ runtime, theme, reveal, update }: {
   const { t } = useI18n();
   const config = runtimeSettingsSnapshot(runtime);
   const passiveStatus = runtime.passiveLockStatus();
+  const l3 = runtime.l3Health();
   const passiveEnabled = config.passiveLockEnabled;
   const permissionMissing = /waiting_accessibility_permission|requesting_accessibility_permission|permission_window_visible/.test(passiveStatus.state);
 
@@ -66,7 +94,14 @@ export function Settings({ runtime, theme, reveal, update }: {
         ) : null}
       </SettingsCard>
 
-      {/* 组 3：连接凭据 + 更新 */}
+      {/* 组 3：L3 模型（D-8 通道2：#95 — 就绪状态对人可见） */}
+      <SettingsCard title={t('L3 model', 'L3 模型')} theme={theme}>
+        {l3StatusView(l3, t).map((line, index) => (
+          <Line key={`l3-${index}`} color={theme[line.tone]}>{line.text}</Line>
+        ))}
+      </SettingsCard>
+
+      {/* 组 4：连接凭据 + 更新 */}
       <SettingsCard title={t('Credentials & update', '连接凭据与更新')} theme={theme}>
         <text fg={theme.text} wrapMode="none">{`Apps MCP URL: ${hiddenAppsUrl(runtime, reveal)}`}</text>
         <text fg={theme.text} wrapMode="none">{`Actions OpenAPI: ${runtime.openApiUrl}`}</text>
