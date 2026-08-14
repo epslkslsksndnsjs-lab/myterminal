@@ -73,7 +73,7 @@ test('#102-AC1: redact 语义契约 — 多 secrets 大事件逐字替换、键�
   const bodyLen = firstMessage.body.length;
 
   // 在自由字符串（非 body/sensitive 键）里嵌一个**不与任何其他 secret 重叠**的 secret
-  // 短语，验证逐字扫掠（重叠 secret 的替换顺序是 impl 伪影，不属于契约，不在此断言）。
+  // 短语，验证逐字扫掠（重叠 secret 的替换顺序属于契约，已钉断言——见下条 latency 断言）。
   event.meta = { body: 'unique-sweep-secret-777' };   // body 键 → 收入 secrets
   event.data.result.session.note = `seen body: unique-sweep-secret-777 in the log`;
   event.latency = `payload contained ${event.args.body}`;   // probe-119（与 probe-1 重叠）
@@ -174,5 +174,114 @@ test('#102-AC4: 增量缓存性能门禁 — 20 轮 append+read 大条目 < 600m
     }
     const elapsed = performance.now() - t0;
     assert.ok(elapsed < 600, `20 轮 append+read（~4MB→8MB 文件）应 < 600ms，实测 ${elapsed.toFixed(1)}ms`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── #104（ADR-0051 增补-05）：缓存账本修正（R11/R13 + #43-7/8）─────────────────────
+//
+// R11 根因：cached.size 用 `encoded.length` 累计（UTF-16 码元数），而文件字节是 UTF-8
+// （stat.size）。含 CJK 条目（路径/会话名/args）时账本 < 文件字节 → 缓存永久失配 →
+// 每次 readRecentHistory 全量重建（实测 8MB 文件 CJK append 后读 209ms vs ASCII 0.05ms）；
+// #102 夹具全 ASCII 掩盖了根因。跨窗（>5000 条 burst）时失配被放大（R13）。
+// 账本语义：size 必须等于**全文件**字节（readRecentHistory 用 `cached.size === stat.size`
+// 判命中），splice 只修剪 entries 数组、不扣账——故 UTF-8 计数修复即 R13 账本修复。
+//
+// 测试从 dist 导入：src 改动后必须先 bun run build（#43 历史教训）。
+
+/** 与 src/store.ts HISTORY_TAIL_LIMIT 一致（cache 窗口上限）。 */
+const HISTORY_TAIL_LIMIT = 5_000;
+
+/** 小条目（~百字节）：跨窗 burst 用，含 CJK（路径/工作区）以锁 UTF-8 字节账本。 */
+function smallAudit(i) {
+  return {
+    id: `act_s_${i}`, timestamp: new Date(1_755_000_000_000 + i).toISOString(),
+    completedAt: new Date(1_755_000_000_000 + i + 1).toISOString(),
+    source: 'actions', action: 'tool_x', status: 'completed', durationMs: 1,
+    workspace: '/tmp/工作区', session: 'ses_1',
+    args: { n: i, 路径: `/中文/审计/${i}.jsonl` },
+    result: { n: i, 路径: `/中文/审计/${i}.jsonl` },
+  };
+}
+
+test('#104-AC5: UTF-8 字节账本 — CJK 条目 append 后缓存命中（cached.size === 文件字节）', () => {
+  const { store, dir } = makeStore();
+  try {
+    const { session } = store.registerRoot({ name: '主会话', role: 'lead' });
+    const file = path.join(dir, 'history', `${session.id}.jsonl`);
+    store.readRecentHistory(session.id); // 预热缓存
+
+    store.auditEvent(session.id, {
+      id: 'act_cjk_1', timestamp: new Date().toISOString(), completedAt: new Date().toISOString(),
+      source: 'actions', action: 'read_file', status: 'completed', durationMs: 3,
+      workspace: '/tmp/工作区', session: session.id,
+      args: { path: '/tmp/中文目录/审计日志.jsonl', 主题: '你好世界，UTF-8 字节计数' },
+      result: { path: '/tmp/中文目录/审计日志.jsonl', lineCount: 42 },
+    });
+
+    // 账本先于任何 read 检查（read 命中失配会重建自愈、掩盖红相）
+    const cached = store['historyTailCache'].get(session.id);
+    const stat = fs.statSync(file);
+    assert.ok(cached, '缓存存在');
+    assert.equal(cached.size, stat.size, 'cached.size === 文件 UTF-8 字节数（R11：UTF-16 计数致永久失配）');
+    assert.equal(cached.mtimeMs, stat.mtimeMs, 'mtime 同步');
+
+    const after = store.readRecentHistory(session.id);
+    assert.equal(after.at(-1).data.action, 'read_file', 'CJK 条目读回');
+    assert.equal(after.at(-1).data.result.lineCount, 42, 'CJK 条目内容一致');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#104-AC6: 跨窗溢出 — >HISTORY_TAIL_LIMIT(5000) 条目 splice 后尾部正确且缓存仍命中（R13）', () => {
+  const { store, dir } = makeStore();
+  try {
+    const { session } = store.registerRoot({ name: 'main', role: 'lead' });
+    const file = path.join(dir, 'history', `${session.id}.jsonl`);
+    const warm = store.readRecentHistory(session.id); // 预热缓存
+    const n0 = warm.length;
+
+    const BURST = 5_050; // 跨窗：一次 append 超过 HISTORY_TAIL_LIMIT(5000) 的条目（中间不 read）
+    for (let i = 0; i < BURST; i++) store.auditEvent(session.id, smallAudit(i));
+
+    // 账本先于任何 read 检查（read 命中失配会重建自愈、掩盖红相）
+    const cached = store['historyTailCache'].get(session.id);
+    const stat = fs.statSync(file);
+    assert.ok(cached, '缓存存在');
+    assert.equal(cached.size, stat.size, 'burst 后账本仍 === 文件 UTF-8 字节（R13：失配被跨窗放大）');
+    assert.equal(cached.entries.length, HISTORY_TAIL_LIMIT, 'splice 后缓存条目数 = 窗口上限');
+
+    const tail = store.readRecentHistory(session.id);
+    assert.equal(tail.length, HISTORY_TAIL_LIMIT, '读回窗口 = HISTORY_TAIL_LIMIT');
+    // 保留窗口首条 = burst 第 (BURST − 5000) 条（n0 条基线 + burst 前 50 条被 splice 移出）
+    assert.equal(tail[0].data.args.n, BURST - HISTORY_TAIL_LIMIT, '尾部正确：最旧保留条目序号');
+    assert.equal(tail.at(-1).data.args.n, BURST - 1, '尾部正确：最新条目在末');
+
+    // 再 append + read：账本一致 → 缓存仍命中（不触发重建）
+    store.auditEvent(session.id, smallAudit(BURST));
+    const after = store.readRecentHistory(session.id);
+    assert.equal(after.at(-1).data.args.n, BURST, '新条目立即可见');
+    assert.equal(store['historyTailCache'].get(session.id).size, fs.statSync(file).size, '连续 append 账本一致');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('#104-AC7: JSON.parse 失败 → historyTailCache.delete 兜底（#43-7：不假同步丢条目）', () => {
+  const { store, dir } = makeStore();
+  try {
+    const { session } = store.registerRoot({ name: 'main', role: 'lead' });
+    store.readRecentHistory(session.id); // 预热缓存
+    assert.ok(store['historyTailCache'].has(session.id), '预热后缓存存在');
+
+    // 模拟 parse 失败（防御性 catch 的正常流不可达）：append 成功但解析抛错
+    const originalParse = JSON.parse;
+    JSON.parse = () => { throw new Error('simulated parse failure'); };
+    try {
+      store.auditEvent(session.id, smallAudit(1)); // appendFileSync 已落盘，parse 抛错
+    } finally {
+      JSON.parse = originalParse; // 同步块内恢复，无异步交错泄漏到其他文件
+    }
+
+    assert.ok(!store['historyTailCache'].has(session.id), 'parse 失败后缓存已删（不假同步：size/mtime 不得与缺条目缓存共存）');
+
+    const after = store.readRecentHistory(session.id);
+    assert.equal(after.at(-1).data.args.n, 1, '条目未丢：重建路径读回新条目');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

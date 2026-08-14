@@ -842,9 +842,12 @@ export class MyTerminalStore {
     // 快照保证缓存与文件逐字一致（#70 别名门禁同类考量）。
     const cached = this.historyTailCache.get(sessionId);
     if (cached) {
-      try { cached.entries.push(JSON.parse(encoded) as SessionHistoryEntry); } catch { /* 字节与缓存脱钩：静默重建路径兜底 */ }
+      try { cached.entries.push(JSON.parse(encoded) as SessionHistoryEntry); } catch { this.historyTailCache.delete(sessionId); /* #104（R13/#43-7）：parse 失败不假同步——删缓存下轮重建，不得让 size/mtime 与缺条目缓存共存 */ }
       if (cached.entries.length > HISTORY_TAIL_LIMIT) cached.entries.splice(0, cached.entries.length - HISTORY_TAIL_LIMIT);
-      cached.size += encoded.length;
+      // #104（R11）：账本按 UTF-8 字节累计——encoded.length 是 UTF-16 码元数，含 CJK
+      // 条目（路径/会话名/args）时账本 < 文件字节 → 缓存永久失配、每次读全量重建；
+      // 账本语义是「全文件字节」（判命中用 cached.size === stat.size），splice 不扣账。
+      cached.size += Buffer.byteLength(encoded, 'utf8');
       try { cached.mtimeMs = statSync(this.historyPath(sessionId)).mtimeMs; } catch { /* 缓存失配 → 下轮重建 */ }
     }
     this.historyIndexes.delete(sessionId);
