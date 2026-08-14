@@ -446,6 +446,24 @@ function reduceReadFileLineCount(result: JsonObject): JsonObject {
   return { ...result, lineCount: countContentLines(result.content) };
 }
 
+// ── D16 主动精简（skill list 模式，0050 A5 / W1-05 #78）：skills → count ──────
+//
+// 补遗3 权威矩阵要求 skill（list 模式）count（skills 数组实际长度，缺口 5）。handler 无参
+// 调用返回 { skills: [...] }（core-tools.ts 决策 3：无参 = list）。reducer 规则
+// （D16.1 + D17 静默）：
+// - skills 数组 → count（实际长度）
+// - 结构不符（无 skills 数组）→ 原样 fail-open，不抛错（D11）；运行态结果（inline 读指令 /
+//   fork 起子代理）同样无 skills 数组 → 原样，不伪造 count
+// 不发射分页：skill list 无翻页语义，矩阵只要求 count。
+// session_context 明示豁免（D-16，不注册）：handler 原生 16K 投影有界（CONTEXT_PROJECTION_LIMIT
+// = 16000，context-projector.ts），矩阵要求的主动精简已在源头达成；投影结构异构，注册 count
+// 无意义。锁定"现状为有意 passthrough"由测试 issue-W105-AC6 承担。
+function reduceSkillsCount(result: JsonObject): JsonObject {
+  const skills = result.skills;
+  if (!Array.isArray(skills)) return result; // 结构不符 / 运行态 → 原样（防御，不伪造 count）
+  return { ...result, count: skills.length }; // D16.1：数组实际长度
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪（复用同一 denoiseCommandResult reducer）。
@@ -453,6 +471,7 @@ function reduceReadFileLineCount(result: JsonObject): JsonObject {
 // （D15 ⑨ 解法）；read_file_range 截断在 handler（core-tools.ts，防全文件进内存，不在此注册）。
 // W1-01（#74）：find_files / search_text 主动精简（D16 count/totalCount，0050 A1）。
 // W1-02（#75）：read_file 派生 lineCount（0050 A2 / D-10 原则4）。
+// W1-05（#78）：skill list 模式 count（D16.1，0050 A5）；session_context 明示豁免不注册（D-16）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
@@ -460,6 +479,7 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['find_files', { reduce: reduceCollectionCount }],
   ['search_text', { reduce: reduceCollectionCount }],
   ['read_file', { reduce: reduceReadFileLineCount }],
+  ['skill', { reduce: reduceSkillsCount }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
