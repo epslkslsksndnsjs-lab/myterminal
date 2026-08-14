@@ -13,19 +13,39 @@ import { LlamaLocalAdapter } from './llama-adapter.js';
 
 // ── env 旋钮（D8.3 运维逃生舱）───────────────────────────────────────────────
 //
-// 优先级 env > 默认。多进程 cluster 参与者默认 false 属 D18.2，留 T13 落地，见 ADR「D18.2」。
+// 优先级 env > 模式默认。多进程 cluster 参与者默认 false 属 D18.2（T13 落地）。
 // - MYTERMINAL_L3_ENABLED：一键关 L3 → 全 passthrough（由 T10 引擎读取，false 时不调
-//   模型）。未设置/空串 → 默认 true。
+//   模型）。未设置/空串 → 参与者默认（见下方 cluster gate）。
 // - MYTERMINAL_L3_MODEL_PATH：覆盖 GGUF 路径。未设置/空串 → DEFAULT_L3_MODEL_PATH。
 //   模型分发绝对路径（installationRoot 派生）随框架安装分发时确定；此处给稳定文件名默认。
 
 /** 框架默认本地模型文件名（D8.3 已决：Qwen3.5-2B GGUF Q4_K_M；T12 实测 max ctx=256K ≥ 26K）。 */
 export const DEFAULT_L3_MODEL_PATH = 'Qwen3.5-2B-Q4_K_M.gguf';
 
-/** L3 是否启用（env 优先，未设置默认 true）。 */
+// ── D18.2 参与者层面 cluster gate ────────────────────────────────────────────
+//
+// cluster 参与者（server.cluster 非 null）L3 默认关闭，避免 N×1.1GB RAM 乘散。
+// enabled = env.MYTERMINAL_L3_ENABLED ?? (server.cluster ? false : true)。
+// 引导时（server.start）读一次 server.cluster 后 `setL3ClusterMode` 定一次，不随成员
+// 增减翻转，不进每请求热路径（runL3 每请求只读 `l3Enabled()`，无 cluster 判断）。
+
+/** 参与者默认（D18.2）：standalone 默认开；cluster 参与者默认关。 */
+let clusterDefault = true;
+
+/** D18.2 参与者层面 gate：clustered=true（cluster 参与者）→ L3 默认关；false → 默认开。 */
+export function setL3ClusterMode(clustered: boolean): void {
+  clusterDefault = clustered ? false : true;
+}
+
+/** 重置为 standalone 默认（测试隔离）。 */
+export function resetL3ClusterMode(): void {
+  clusterDefault = true;
+}
+
+/** L3 是否启用（env 优先；env 未设置 → 参与者默认 clusterDefault）。 */
 export function l3Enabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.MYTERMINAL_L3_ENABLED?.trim();
-  if (!raw) return true; // 未设置或空串 → 默认 true
+  if (!raw) return clusterDefault; // 未设置/空串 → 参与者默认（D18.2）
   return /^(1|true|yes|on)$/i.test(raw);
 }
 

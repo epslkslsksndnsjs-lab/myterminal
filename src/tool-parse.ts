@@ -519,6 +519,18 @@ const SUBAGENT_STATUS_RESULT_SCHEMA: JsonSchema = {
 };
 
 /**
+ * D18.3.1.3 指针型 result（磁盘溢出引用）防御性识别。
+ * 大响应在客户端 harness 溢出落盘后，data.result 可能变成引用（而非内联数据）。
+ * 此为防御性场景——正常流程 shaper 在客户端溢出前于服务端见完整内联内容（D15 照常截断）。
+ * 识别：result 是对象且带 `type` 字段、值为引用语义（reference/pointer）。
+ */
+function isPointerResult(result: unknown): boolean {
+  if (!isPlainObject(result)) return false;
+  const type = (result as JsonObject).type;
+  return typeof type === 'string' && /reference|pointer/i.test(type);
+}
+
+/**
  * 工具响应整形入口（D13：包住最终装饰响应，含 decorateContinuation 后的长任务结构）。
  *
  * 执行顺序（T03 + T04 #32）：
@@ -543,6 +555,10 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
   if (rawResult === null || rawResult === undefined || typeof rawResult !== 'object' || Array.isArray(rawResult)) {
     base = response;
     shaping = { applied: false, reason: 'non-object' };
+  } else if (isPointerResult(rawResult)) {
+    // D18.3.1.3 指针型 result（磁盘溢出引用）→ 不透明 passthrough，不解析不 strip
+    base = response;
+    shaping = { applied: false, reason: 'passthrough' };
   } else {
     const resolved = resolveShape(toolName, ctx.resolveTool(toolName));
 

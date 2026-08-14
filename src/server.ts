@@ -7,6 +7,7 @@ import { buildOpenApi } from './openapi.js';
 import { createBuiltinTools } from './core-tools.js';
 import { ExtensionService } from './extensions.js';
 import { MyTerminalMcpTransport } from './mcp.js';
+import { setL3ClusterMode } from './l3/registry.js';
 import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
@@ -363,6 +364,8 @@ export class MyTerminalRuntime {
     });
     if (this.config.port === 0) {
       await this.becomeStandaloneLeader(0);
+      // D18.2：standalone（无 cluster）→ L3 默认开
+      setL3ClusterMode(false);
       this.publishWorkspaceRuntime();
       this.startConfiguredPassiveLock();
       this.startResumeMonitor();
@@ -371,6 +374,8 @@ export class MyTerminalRuntime {
       return;
     }
     this.cluster = new PortClusterRegistry(path.dirname(this.config.settingsPath), this.config.host, this.config.port);
+    // D18.2：cluster 参与者 → L3 默认关（避免 N×1.1GB RAM 乘散）；env 可覆盖，注册时定一次
+    setL3ClusterMode(true);
     this.clusterMember = this.cluster.register({
       pid: process.pid,
       appVersion: CURRENT_VERSION,
