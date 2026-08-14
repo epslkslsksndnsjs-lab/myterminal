@@ -53,9 +53,19 @@ export function l3Enabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return /^(1|true|yes|on)$/i.test(raw);
 }
 
+/** 安装根 models 目录（#94 W3-02 fetch 落盘目标与 #93 W3-01 解析链同源；'models' 字面量仅此一处）。 */
+function modelsDirPath(): string {
+  return path.join(installationRoot(), 'models');
+}
+
+/** 默认模型在安装根 models 目录下的完整路径（无存在性检查——fetch 落盘目标可能尚不存在）。 */
+export function modelFilePath(): string {
+  return path.join(modelsDirPath(), DEFAULT_L3_MODEL_PATH);
+}
+
 /** 安装根 models 目录下的默认模型（存在才返回；#93 W3-01 接线 installationRoot 为安装根来源）。 */
 function installedModelPath(): string | undefined {
-  const candidate = path.join(installationRoot(), 'models', DEFAULT_L3_MODEL_PATH);
+  const candidate = modelFilePath();
   return existsSync(candidate) ? candidate : undefined;
 }
 

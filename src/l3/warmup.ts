@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { JsonObject, JsonSchema } from '../types.js';
-import { getL3Adapter, l3Enabled } from './registry.js';
+import { getL3Adapter, l3Enabled, l3ModelPath } from './registry.js';
 import { buildInstruction } from './prompt.js';
 import { L3_MAX_TOKENS } from './engine.js';
 import { LlamaLocalAdapter } from './llama-adapter.js';
@@ -159,7 +159,8 @@ export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = 
           return;
         }
       }
-      // 全失败仅记日志（D-6）：不抛错不阻断；首调走既有 isReady/失败矩阵 fail-open
+      // 全失败仅记日志（D-6）：不抛错不阻断；首调走既有 isReady/失败矩阵 fail-open。
+      // 模型缺失的 fetch 提示由 #95 missing 早退路径承担（D-8 唯一提示处，91 整合建议⑤）。
       setL3Health('failed', adapter.id);
       log(`L3 warmup failed after ${WARMUP_MAX_RETRIES + 1} attempts; first L3 call will lazy-load (fail-open)`, 'error');
     } catch (error) {
