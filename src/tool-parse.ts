@@ -397,15 +397,45 @@ function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObjec
   };
 }
 
+// ── D16 主动精简（find_files / search_text，0050 A1 / W1-01 #74）：count + 截断 totalCount ──
+//
+// 补遗3 权威矩阵要求这两个工具主动精简（count + truncated 时 totalCount）。handler 原生返回
+// { matches, truncated }；find_files 额外上报 totalMatches（截断前真实匹配总量，core-tools.ts）。
+// reducer 规则（D16.1/16.2 + D17 静默）：
+// - matches 数组 → count（实际长度）
+// - truncated === true 且 totalMatches 为 number → totalCount（真实总量）
+// - totalMatches 为 handler 内部上报字段：一律剥除，统一为 totalCount（绝不泄漏进结果，D17）
+// - 结构不符（无 matches 数组）→ 原样 fail-open，不抛错（D11）
+// - search_text 超时截断（timedOut）总量未知 → 无 totalMatches，只附 count，绝不伪造 totalCount
+// 不发射分页：这两个工具 handler 无 offset/limit 翻页语义（find_files limit 是帽非页），矩阵
+// 亦只要求 count/totalCount（分页归属 message_* 等 A4 票）。
+function reduceCollectionCount(result: JsonObject): JsonObject {
+  const matches = result.matches;
+  if (!Array.isArray(matches)) return result; // 结构不符 → 原样（防御）
+  const out: JsonObject = {};
+  for (const [key, value] of Object.entries(result)) {
+    if (key === 'totalMatches') continue; // handler 内部上报字段：剥除，统一 totalCount（D17 静默）
+    out[key] = value;
+  }
+  out.count = matches.length; // D16.1：数组实际长度
+  if (out.truncated === true && typeof result.totalMatches === 'number') {
+    out.totalCount = result.totalMatches; // D16.2：截断且总量已知 → 真实总量
+  }
+  return out;
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪（复用同一 denoiseCommandResult reducer）。
 // T07：session_list 主动精简（D15 前半）。T08：session_history 嵌套 ToolResponse → 摘要
 // （D15 ⑨ 解法）；read_file_range 截断在 handler（core-tools.ts，防全文件进内存，不在此注册）。
+// W1-01（#74）：find_files / search_text 主动精简（D16 count/totalCount，0050 A1）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
   ['session_history', { reduce: reduceSessionHistory }],
+  ['find_files', { reduce: reduceCollectionCount }],
+  ['search_text', { reduce: reduceCollectionCount }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],

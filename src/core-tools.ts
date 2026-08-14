@@ -223,8 +223,10 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const query = asString(input.query, 'query').toLowerCase();
       const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
       const files = await walkFiles(resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.'), { limit: 10_000 });
-      const matches = files.map((file) => relative(config, file)).filter((file) => file.toLowerCase().includes(query)).slice(0, limit);
-      return { matches, truncated: matches.length === limit };
+      const matches = files.map((file) => relative(config, file)).filter((file) => file.toLowerCase().includes(query));
+      // totalMatches：截断前的真实匹配总量（D16.2 totalCount 的唯一合法来源；W1-01 #74 的
+      // reduceCollectionCount 剥除并统一为 totalCount，绝不泄漏进模型上下文，D17）
+      return { matches: matches.slice(0, limit), truncated: matches.length >= limit, totalMatches: matches.length };
     },
   });
   add({
