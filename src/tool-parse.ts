@@ -1,5 +1,7 @@
 import type { InvocationContext, JsonObject, JsonSchema, ShapingAudit, ToolDefinition, ToolResponse } from './types.js';
+import type { LocalModelAdapter } from './l3/adapter.js';
 import { runL3 } from './l3/engine.js';
+import { getL3Adapter } from './l3/registry.js';
 export type { ShapingAudit } from './types.js';
 
 /**
@@ -69,12 +71,31 @@ export type ToolShape = {
 
 // ── 预算门（D6 护栏2 / Q3）─────────────────────────────────────────────────────
 //
-// 进 L3 前量 estimateTokens(safeRaw) ≤ RAW_BUDGET_TOKENS，超限 → 不调模型，审计记
+// 进 L3 前量 estimateTokens(safeRaw) ≤ 运行时预算门槛，超限 → 不调模型，审计记
 // reason `over-budget`：纯 schema 条目直接 passthrough；D-4 双条目（W2-01 #84）回落 L1。
-// 阈值公式 RAW_BUDGET_TOKENS = min(24000, L3_ctx − 2048)。T12 实测 Qwen3.5-2B
-// max ctx = 262144（256K）≥ 26048 → min(24000, 262144−2048) = 24000，门槛维持 24K
-// （不降门槛、不升档；证据 .scratch/adr0047-tickets/t12-probe/eval.mjs）。
+// 阈值公式（0050 H2 / P2-01 #97）：门槛 = min(RAW_BUDGET_TOKENS, L3_ctx − 2048)，L3_ctx
+// 运行时取 L3 适配器 ctx（contextSize 优先，trainContextSize 兜底；均未知 → 默认 256K）。
+// T12 实测 Qwen3.5-2B max ctx = 262144（256K）、运行时窗口 32768（32K）→ 两档均得
+// min(24000, …) = 24000，门槛维持 24K 不变（当前模型零行为变化）；小 ctx 模型自动降门槛
+// （证据 .scratch/adr0047-tickets/t12-probe/eval.mjs）。
 export const RAW_BUDGET_TOKENS = 24000;
+
+/** 门槛公式兜底 ctx：T12 实测 Qwen3.5-2B max ctx（256K；adapter 未暴露 ctx 时维持 24K）。 */
+const L3_CTX_DEFAULT = 262144;
+
+/** 门槛公式输出预留：L3 maxTokens 上限 2048（D6 护栏1），budget + reserve = ctx 硬约束。 */
+const L3_CTX_OUTPUT_RESERVE = 2048;
+
+/**
+ * 运行时预算门槛（0050 H2 / P2-01 #97）：min(24000, L3_ctx − 2048)。
+ * adapter 缺省 → 取 registry 当前单例（与 runL3 同一 adapter 源）；ctx 取 contextSize
+ * （运行时窗口）优先、trainContextSize（模型 max）兜底、均未知 → 默认 256K（维持 24K）。
+ */
+export function l3BudgetTokens(adapter?: LocalModelAdapter): number {
+  const src = adapter ?? getL3Adapter();
+  const ctx = src?.contextSize ?? src?.trainContextSize ?? L3_CTX_DEFAULT;
+  return Math.min(RAW_BUDGET_TOKENS, ctx - L3_CTX_OUTPUT_RESERVE);
+}
 
 /**
  * 语言感知 token 估算（D6/Q3）：中文≈chars×1.5、英文≈chars÷4（无 tokenizer 时用启发式）。
@@ -1016,7 +1037,7 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
     } else if (resolved.kind === 'l3') {
       // 预算门（D6 护栏2 / Q3）：超门绝不进 L3。纯 schema 条目 → passthrough 记 over-budget；
       // 双条目（reduce+schema）→ D-4 超门回落 L1 reduce（「fail-open 回 L1」）
-      if (estimateTokens(JSON.stringify(rawResult)) > RAW_BUDGET_TOKENS) {
+      if (estimateTokens(JSON.stringify(rawResult)) > l3BudgetTokens()) {
         if (resolved.fallbackReduce) {
           ({ base, shaping } = applyL1Reducer(response, rawResult as JsonObject, resolved.fallbackReduce, ctx, 'over-budget'));
         } else {
@@ -1073,7 +1094,7 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
       shapedOperation = cached.op;
       cacheReason = cached.reason;
     } else {
-      if (estimateTokens(opJson) > RAW_BUDGET_TOKENS) {
+      if (estimateTokens(opJson) > l3BudgetTokens()) {
         // Q7 嵌套预算门：超大嵌套 fail-open 回原始 operation（外层 task_poll 结构保留），
         // 不让超大嵌套进 L3、也不绕过预算门
         shapedOperation = op;
@@ -1121,7 +1142,7 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
   // 验收」两条铁律；Q5 全丢 / 模型不可用 / 超时 / 配额 / 解析失败 → 原样 passthrough 不伪造。
   if (toolName === 'subagent_status' && isSubagentCompletedResult(rawResult)) {
     const text = (rawResult as JsonObject).result as string;
-    if (estimateTokens(text) > RAW_BUDGET_TOKENS) {
+    if (estimateTokens(text) > l3BudgetTokens()) {
       // 超预算门（D6 护栏2）→ fail-open passthrough，reason=over-budget（不调模型）
       base = response;
       shaping = { applied: false, reason: 'over-budget' };

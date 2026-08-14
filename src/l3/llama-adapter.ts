@@ -38,6 +38,12 @@ export class LlamaLocalAdapter implements LocalModelAdapter {
 
   /** 解析后的 GGUF 路径（public：warmup 缺失探测读取，#95 W3-03）。 */
   readonly modelPath: string;
+
+  /** 模型 max ctx（T12 探测实测 262144 = 256K ≥ 26K；预算门公式兜底档，见 tool-parse.ts）。 */
+  readonly trainContextSize = 262144;
+
+  /** 运行时 ctx 窗口（D6：26K 硬约束 + 余量；预算门公式首选档）。 */
+  readonly contextSize = L3_CONTEXT_SIZE;
   private loaded = false;
   private llama: any;
   private model: any;

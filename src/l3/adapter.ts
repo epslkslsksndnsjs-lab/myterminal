@@ -38,6 +38,10 @@ export interface LocalModelAdapter {
   readonly id: string;
   /** L3 硬要求：必须 true（结构化/JSON 输出能力）。 */
   readonly supportsStructuredOutput: boolean;
+  /** 模型最大 ctx（trainContextSize，token；未知 → undefined）。预算门兜底（0050 H2 / #97）。 */
+  readonly trainContextSize?: number;
+  /** 运行时 ctx 窗口（contextSize，token；未知 → undefined）。预算门首选（0050 H2 / #97）。 */
+  readonly contextSize?: number;
   /** 冷加载 / 模型存在性检查。 */
   isReady(): Promise<boolean>;
   /** 单发结构化解析。 */
