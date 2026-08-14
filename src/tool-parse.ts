@@ -375,11 +375,18 @@ function summarizeNestedResult(nr: ToolResponse): JsonObject {
 }
 
 /**
- * D15/T08 主动精简 reducer（session_history）：把每条 audit entry 的 `data.result`
- * （完整嵌套 ToolResponse）替换为摘要，消除递归嵌套爆炸。输入
+ * D15/T08 + W1-07（#80，0050 D1/D2）主动精简 reducer（session_history）：把每条 audit entry 的
+ * `data.result`（完整嵌套 ToolResponse）替换为摘要，消除递归嵌套爆炸；并补齐 count/totalCount/
+ * truncated + 可恢复分页（与 reduceSessionList 同构）。输入
  * `data.result = { history: { total, offset, nextOffset?, entries: [...] } }`
- * （store.ts:606，非扁平）。结构不符（无 history / 无 entries）→ 原样 fail-open。
+ * （store.ts:606，非扁平）。结构不符（无 history）→ 原样 fail-open。
  * 仅替换 `entry.data.result`，保全 `entry.data.tool` / `entry.data.ok` 等审计元信息。
+ * W1-07 规则（D16.1/16.2 + D15.2/③）：
+ * - count === entries.length；totalCount === history.total（真实总量）
+ * - entries 被截断（total > offset + count）→ truncated:true + 内部 pagination{nextCall}
+ *   （L2 剥离后发射 data.continuation.pagination）；nextCall.offset 复用 history.nextOffset
+ *   （可恢复翻页，不重算、不丢数据；缺失时防御性回退 offset + count）
+ * - entries 非数组（畸形）→ 原样保全，不注入任何计数/分页字段（fail-open，绝不伪造）
  */
 function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObject {
   const history = isPlainObject(result.history) ? (result.history as JsonObject) : undefined;
@@ -388,7 +395,7 @@ function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObjec
 
   let summarized = 0;
   // 非数组 entries（畸形）→ 原样保全（fail-open，绝不把 null/非数组改写成 []）
-  const entries = entriesIn === null ? history.entries : entriesIn.map((entry) => {
+  const mapped = entriesIn === null ? null : entriesIn.map((entry) => {
     if (!isPlainObject(entry)) return entry; // 非对象条目原样保全（防御）
     const entryData = isPlainObject(entry.data) ? (entry.data as JsonObject) : undefined;
     if (!entryData) return entry;
@@ -402,16 +409,37 @@ function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObjec
     // 非 ToolResponse 包裹（如 read_file 几行小结果）→ 保留原样（ADR：<500 chars 不丢）
     return entry;
   });
+  const entries = mapped === null ? history.entries : mapped;
 
   const reducedHistory = { ...history, entries };
   const reduced = { ...result, history: reducedHistory };
 
   const originalSize = JSON.stringify(result).length;
   const reducedSize = JSON.stringify(reduced).length;
-  return {
-    ...reduced,
-    __reduction: { fieldsReduced: summarized, entriesTruncated: 0, originalSize, reducedSize },
-  };
+  const reduction: JsonObject = { fieldsReduced: summarized, entriesTruncated: 0, originalSize, reducedSize };
+  const out: JsonObject = { ...reduced, __reduction: reduction };
+
+  if (mapped !== null) {
+    const total = typeof history.total === 'number' ? history.total : mapped.length;
+    const offset = typeof history.offset === 'number' ? history.offset : 0;
+    const count = mapped.length;
+    const truncated = total > offset + count;
+    out.count = count; // D16.1：数组实际长度
+    out.totalCount = total; // D16.2：真实总量（history.total）
+    out.truncated = truncated;
+    reduction.entriesTruncated = truncated ? Math.max(0, total - count) : 0;
+    if (truncated) {
+      // D15.2/③ 可恢复翻页：nextCall.offset 复用 history.nextOffset（store.ts:606），不丢数据
+      const next = typeof history.nextOffset === 'number' && history.nextOffset > offset
+        ? history.nextOffset
+        : offset + count;
+      out.pagination = {
+        truncated,
+        nextCall: { tool: 'session_history', input: { offset: next, limit: count }, purpose: 'fetch next page of session history' },
+      };
+    }
+  }
+  return out;
 }
 
 // ── D16 主动精简（find_files / search_text，0050 A1 / W1-01 #74）：count + 截断 totalCount ──
