@@ -9,7 +9,8 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
-import { shapeToolResponse, type ShapingAudit } from './tool-parse.js';
+import { clearOperationCache, shapeToolResponse, type ShapingAudit } from './tool-parse.js';
+import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
 const RESERVED_NAMES = new Set(['extension_discover', 'extension_register', 'extension_call']);
@@ -639,6 +640,8 @@ export class ExtensionService {
     const shaped = await this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
     task.response = shaped.response;
     this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, shaped.response, problem, shaped.shaping);
+    // ADR-0050 E1（#81 W1-08）：task 完成 → 清该 taskId 的 Q8 operation 缓存条目
+    clearOperationCache(task.id);
     this.trimBackgroundTasks();
   }
 
@@ -650,6 +653,8 @@ export class ExtensionService {
     const shaped = await this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
     task.response = shaped.response;
     this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping);
+    // ADR-0050 E1（#81 W1-08）：task 失败（终态）同样清该 taskId 的缓存条目
+    clearOperationCache(task.id);
     this.trimBackgroundTasks();
   }
 
@@ -666,7 +671,11 @@ export class ExtensionService {
   private trimBackgroundTasks(): void {
     const cutoff = Date.now() - BACKGROUND_TASK_RETENTION_MS;
     for (const task of this.backgroundTasks.values()) {
-      if (task.status !== 'running' && task.completedAt && Date.parse(task.completedAt) < cutoff) this.backgroundTasks.delete(task.id);
+      if (task.status !== 'running' && task.completedAt && Date.parse(task.completedAt) < cutoff) {
+        // ADR-0050 E1（#81 W1-08）：任务删除 → 顺带清该 taskId 的 Q8 缓存条目（删任务不清缓存的缺口）
+        clearOperationCache(task.id);
+        this.backgroundTasks.delete(task.id);
+      }
     }
     const completed = [...this.backgroundTasks.values()]
       .filter((task) => task.status !== 'running')
@@ -676,6 +685,8 @@ export class ExtensionService {
     for (const task of completed) {
       if (this.backgroundTasks.size <= BACKGROUND_TASK_MAX_COUNT && retainedBytes <= BACKGROUND_TASK_MAX_BYTES) break;
       retainedBytes -= responseBytes(task);
+      // ADR-0050 E1（#81 W1-08）：计数/字节驱逐删除 → 同样清缓存条目
+      clearOperationCache(task.id);
       this.backgroundTasks.delete(task.id);
     }
   }
@@ -728,7 +739,11 @@ export class ExtensionService {
     if (builtin) {
       const normalized = this.normalizeAliases(args, builtin.aliases);
       const errors = validateJsonSchema(builtin.inputSchema, normalized); if (errors.length) throw new MyTerminalError('INVALID_INPUT', errors.join('; '));
-      return await builtin.invoke(normalized, context);
+      const result = await builtin.invoke(normalized, context);
+      // ADR-0050 E2（#81 W1-08）：会话结束（session_release / session_unregister 成功）
+      // → 清该会话 L3 配额（D6 护栏3「会话结束从 Map 删除」）。仅接线，不改原语语义。
+      if ((name === 'session_release' || name === 'session_unregister') && context.authenticatedSession) clearL3Quota(context.authenticatedSession.id);
+      return result;
     }
     const custom = this.store.listExtensions().find((item) => item.name === name);
     if (!custom) throw new MyTerminalError('NOT_FOUND', `Extension not found: ${name}`);

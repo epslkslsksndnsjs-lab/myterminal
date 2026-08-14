@@ -7,7 +7,8 @@ import { buildOpenApi } from './openapi.js';
 import { createBuiltinTools } from './core-tools.js';
 import { ExtensionService } from './extensions.js';
 import { MyTerminalMcpTransport } from './mcp.js';
-import { setL3ClusterMode } from './l3/registry.js';
+import { clearL3Quota } from './l3/engine.js';
+import { resetL3Adapter, setL3ClusterMode } from './l3/registry.js';
 import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
@@ -539,6 +540,10 @@ export class MyTerminalRuntime {
     // Otherwise a detached command can keep a close request open and continue
     // mutating the workspace after the runtime lease has been released.
     await this.extensions.shutdown();
+    // ADR-0050 E2/E3（#81 W1-08）：运行时关闭 → 全量清 L3 配额 + 释放 L3 适配器单例
+    // （D6 护栏3「会话结束从 Map 删除」全量面；D8.2「进程退出/会话结束释放」）
+    clearL3Quota();
+    resetL3Adapter();
     await publicClosed;
     await this.mcp.close();
     if (this.clusterMcp) await this.clusterMcp.close();
