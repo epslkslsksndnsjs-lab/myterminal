@@ -9,7 +9,7 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
-import { clearOperationCache, shapeToolResponse, type ShapingAudit } from './tool-parse.js';
+import { clearOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
 import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
@@ -214,6 +214,7 @@ export class ExtensionService {
     result: unknown,
     error?: { code: string; message?: string },
     shaping?: ShapingAudit,
+    auditRecord?: ShapingAuditRecord,
   ): void {
     if (this.closedActionIds.has(actionId)) return;
     let finalError = error;
@@ -225,6 +226,9 @@ export class ExtensionService {
       id: actionId, timestamp: new Date(started).toISOString(), completedAt, source, action, status, durationMs: Date.now() - started, error: finalError,
       workspace: this.config.workspaceDir, session: sessionId, args, result,
       ...(shaping ? { shaping } : {}),
+      // D7 双版本审计（0050 F1 / W1-09）：raw/shaped 只进审计链（JSONL），
+      // 模型可见通道（session_history / session_context）读取时剥除（D17）。
+      ...(auditRecord ? { rawResult: auditRecord.rawResult, shapedResult: auditRecord.shapedResult } : {}),
     };
     const persisted = this.store.auditEvent(sessionId, event);
     this.onAudit?.(persisted);
@@ -245,19 +249,23 @@ export class ExtensionService {
     response: ToolResponse,
     sessionId: string | undefined,
     transport: InvocationContext['transport'],
-  ): Promise<{ response: ToolResponse; shaping: ShapingAudit | undefined }> {
+  ): Promise<{ response: ToolResponse; shaping: ShapingAudit | undefined; auditRecord?: ShapingAuditRecord }> {
     if (transport === 'subagent') return { response, shaping: undefined };
     let shaping: ShapingAudit | undefined;
+    let auditRecord: ShapingAuditRecord | undefined;
     try {
       const shaped = await shapeToolResponse(response, {
         transport,
         sessionId,
         resolveTool: (name) => this.resolveTool(name),
-        audit: (record) => { shaping = record.shaping; },
+        audit: (record) => { shaping = record.shaping; auditRecord = record; },
       });
-      return { response: shaped, shaping };
+      return { response: shaped, shaping, auditRecord };
     } catch {
-      return { response, shaping: { applied: false, reason: 'reducer-threw' } };
+      // 逃逸级 fail-open（D11）：shaper 内部失败（reducer-threw / cap-threw / l3-* / nested-*）
+      // 已就地分类并随 audit 记录带出（tool-parse.ts 各 catch）；能逃逸到此的只剩意外引擎错误，
+      // 如实记 engine-error——不再一律误标 reducer-threw（0050 F1 附带 a）。
+      return { response, shaping: { applied: false, reason: 'engine-error' } };
     }
   }
 
@@ -308,14 +316,14 @@ export class ExtensionService {
       // ADR-0047（#29）：withAudit 出口统一过 shaper（subagent 通道除外，D2 不整形），
       // 审计记录整形后响应 + shaping 原因（D7）。
       const shaped = await this.applyShape(response, sessionId, source);
-      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', shaped.response, undefined, shaped.shaping);
+      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', shaped.response, undefined, shaped.shaping, shaped.auditRecord);
       return shaped.response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const response = await handlers.onError({ actionId, started, auditError }, error);
       const status = handlers.errorStatus?.(auditError) ?? 'failed';
       const shaped = await this.applyShape(response, sessionId, source);
-      this.finishAudit(sessionId, actionId, source, action, args, started, status, shaped.response, auditError, shaped.shaping);
+      this.finishAudit(sessionId, actionId, source, action, args, started, status, shaped.response, auditError, shaped.shaping, shaped.auditRecord);
       return shaped.response;
     } finally {
       if (!this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
@@ -486,7 +494,7 @@ export class ExtensionService {
       if (input.tool === 'task_poll') {
         if (!authenticated) throw new MyTerminalError('IDENTITY_REQUIRED', 'task_poll requires an authenticated session.');
         const shaped = await this.applyShape(this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id), authenticated.id, context.transport);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, shaped.response.ok ? 'completed' : 'failed', shaped.response, shaped.response.error, shaped.shaping);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, shaped.response.ok ? 'completed' : 'failed', shaped.response, shaped.response.error, shaped.shaping, shaped.auditRecord);
         return shaped.response;
       }
       const operation = this.trackOperation(actionId, controller, this.invokeTool(input.tool, args, invocationContext));
@@ -516,7 +524,7 @@ export class ExtensionService {
         if (!problem) this.store.completeContinuationCall(authenticated.id, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
         const shaped = await this.applyShape(this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id), authenticated.id, context.transport);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping, shaped.auditRecord);
         return shaped.response;
       }
       const result = await operation;
@@ -532,7 +540,7 @@ export class ExtensionService {
         if (!problem) this.store.completeContinuationCall(sessionId, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
         const shaped = await this.applyShape(this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId), sessionId, context.transport);
-        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping);
+        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping, shaped.auditRecord);
         return shaped.response;
       }
       return (await this.applyShape(this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId), sessionId, context.transport)).response;
@@ -541,7 +549,7 @@ export class ExtensionService {
       const isPolicyRejection = auditError.code === 'NEXT_CALL_REQUIRED' || auditError.code === 'CONTINUATION_PLAN_REQUIRED';
       const failed = failure(error);
       const shaped = await this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport);
-      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', shaped.response, auditError, shaped.shaping);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', shaped.response, auditError, shaped.shaping, shaped.auditRecord);
       return shaped.response;
     } finally {
       if (!detached && !this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
@@ -639,7 +647,7 @@ export class ExtensionService {
     // ADR-0047（#29）：完成态在存储前整形（D18.2 执行点），完成审计记 shaping 原因（D7）
     const shaped = await this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
     task.response = shaped.response;
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, shaped.response, problem, shaped.shaping);
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, shaped.response, problem, shaped.shaping, shaped.auditRecord);
     // ADR-0050 E1（#81 W1-08）：task 完成 → 清该 taskId 的 Q8 operation 缓存条目
     clearOperationCache(task.id);
     this.trimBackgroundTasks();
@@ -652,7 +660,7 @@ export class ExtensionService {
     task.completedAt = new Date().toISOString();
     const shaped = await this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
     task.response = shaped.response;
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping);
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping, shaped.auditRecord);
     // ADR-0050 E1（#81 W1-08）：task 失败（终态）同样清该 taskId 的缓存条目
     clearOperationCache(task.id);
     this.trimBackgroundTasks();

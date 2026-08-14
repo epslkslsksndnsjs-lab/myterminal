@@ -432,15 +432,17 @@ function reduceSessionHistory(result: JsonObject, _ctx: ShapeContext): JsonObjec
     if (!isPlainObject(entry)) return entry; // 非对象条目原样保全（防御）
     const entryData = isPlainObject(entry.data) ? (entry.data as JsonObject) : undefined;
     if (!entryData) return entry;
-    const nr = entryData.result;
-    if (nr === null || nr === undefined) return entry; // 无嵌套 result → 原样
+    // W1-09（0050 F1）：raw/shaped 双版本只进审计链（JSONL），模型可见的 session_history 出口剥除（D17）
+    const strippedData = stripAuditRawFields(entryData);
+    const nr = strippedData.result;
+    if (nr === null || nr === undefined) return strippedData === entryData ? entry : { ...entry, data: strippedData }; // 无嵌套 result → 仅剥 raw
     if (isNestedToolResponse(nr)) {
       // 完整嵌套 ToolResponse → 替换为摘要（消除递归嵌套）
       summarized++;
-      return { ...entry, data: { ...entryData, result: summarizeNestedResult(nr) } };
+      return { ...entry, data: { ...strippedData, result: summarizeNestedResult(nr) } };
     }
     // 非 ToolResponse 包裹（如 read_file 几行小结果）→ 保留原样（ADR：<500 chars 不丢）
-    return entry;
+    return strippedData === entryData ? entry : { ...entry, data: strippedData };
   });
   const entries = mapped === null ? history.entries : mapped;
 
@@ -849,32 +851,6 @@ function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): Re
   return { kind: 'passthrough' };
 }
 
-/**
- * D-4 双条目回落：L3 未走/失败 → 回落 L1 reduce（补遗3「fail-open 回 L1」的唯一自洽读法）。
- * 与 L1 分支同形（applyCountRule + 重建 response）；denoise 型 reducer 不产
- * pagination/__reduction（execute_cli 唯一 dual 条目即 denoise），故不发射分页、不分剥。
- * 回落发生 → applied:true（L1 结果真实生效），L3 未走/失败原因一并记审计（W2-01 语义：
- * 「超预算门 → 回落 L1 reduce，审计 reason=over-budget（回落发生则 applied:true）」）。
- * 回落 reducer 自身抛错 → 原样 passthrough（D11 fail-open，记 reducer-threw）。
- */
-async function fallbackToL1Reduce(
-  reduce: ToolReducer,
-  response: ToolResponse,
-  rawResult: JsonObject,
-  ctx: ShapeContext,
-  reason?: ShapingReason,
-): Promise<{ base: ToolResponse; shaping: ShapingAudit }> {
-  try {
-    const reduced = applyCountRule(reduce(rawResult, ctx));
-    return {
-      base: { ...response, data: { ...(response.data ?? {}), result: reduced } },
-      shaping: reason ? { applied: true, reason } : { applied: true },
-    };
-  } catch {
-    return { base: response, shaping: { applied: false, reason: 'reducer-threw' } };
-  }
-}
-
 // ── D13 递归（task_poll 嵌套 operation 整形）+ Q6/Q7/Q8 护栏 ──────────────────
 //
 // D13：当 tool==='task_poll' 且 data.result.operation 是完整 ToolResponse 时，递归整形
@@ -915,6 +891,22 @@ function hashString(s: string): string {
     h = Math.imul(h, 0x01000193);
   }
   return (h >>> 0).toString(36);
+}
+
+/**
+ * W1-09 (#82) / 0050 F1：模型可见通道剥除 D7 双版本审计的 raw/shaped 字段。
+ * raw 只进审计链（JSONL）；session_history 出口（reduceSessionHistory）与
+ * projectContext（context-projector recentToolCalls）读取历史时必须剥除，绝不进模型上下文（D17）。
+ * 无 raw/shaped 字段 → 返回原对象（零拷贝）。
+ */
+export function stripAuditRawFields<T extends JsonObject>(data: T): T {
+  if (!('rawResult' in data) && !('shapedResult' in data)) return data;
+  const out: JsonObject = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (key === 'rawResult' || key === 'shapedResult') continue;
+    out[key] = value;
+  }
+  return out as T;
 }
 
 /**
@@ -1153,8 +1145,12 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
       ...base,
       data: { ...(base.data ?? {}), result: { ...result, operation: shapedOperation } },
     };
-    // Q7/Q6 fail-open 原因记外层审计（递归未发生的情形，嵌套审计缺失，须由外层兜底）
-    if (cacheReason === 'nested-over-budget') shaping = { applied: false, reason: 'nested-over-budget' };
+    // 外层审计如实记录嵌套整形结果（0050 F1 附带 b，W1-09 #82）：
+    // - cacheReason === undefined：嵌套整形成功（Q8 缓存命中或本轮递归完成）→ applied:true，
+    //   不再恒记 passthrough
+    // - Q7/Q6 fail-open 原因记外层审计（递归未发生的情形，嵌套审计缺失，须由外层兜底）
+    if (cacheReason === undefined) shaping = { applied: true };
+    else if (cacheReason === 'nested-over-budget') shaping = { applied: false, reason: 'nested-over-budget' };
     else if (cacheReason === 'nested-recursion-threw') shaping = { applied: false, reason: 'nested-recursion-threw' };
   }
 

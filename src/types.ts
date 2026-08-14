@@ -41,6 +41,11 @@ export type ToolAuditEvent = {
   result?: unknown;
   /** ADR-0047：整形审计（T01 #29 起）。`{ applied, reason? }` 只进审计、永不进模型上下文（D17）。 */
   shaping?: ShapingAudit;
+  /** ADR-0051 W1-09 (#82) / 0050 F1：D7 双版本审计——整形前原始版与整形后版。
+   *  rawResult 含完整未截断 error（D12 诊断保全）；只进审计链（JSONL），模型可见通道
+   *  （session_history / session_context）读取时剥除，绝不进模型上下文（D17）。 */
+  rawResult?: unknown;
+  shapedResult?: unknown;
 };
 
 export type TaskPackage = {
