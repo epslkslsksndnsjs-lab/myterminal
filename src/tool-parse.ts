@@ -21,10 +21,14 @@ export type { ShapingAudit } from './types.js';
  * 嵌套审计（递归调用自身产嵌套 raw/shaped + 外层全量 response 快照）。
  */
 
-/** 整形介入原因（D7/D11 权威枚举；T03/T04 实际产生 passthrough / over-budget / non-object / reducer-threw / cap-threw / 成功 applied） */
+/** 整形介入原因（D7/D11 权威枚举；T03/T04 实际产生 passthrough / over-budget / non-object / reducer-threw / cap-threw / 成功 applied；L3 细分归 T14 #44） */
 export type ShapingReason =
   | 'reducer-threw'
+  | 'l3-unavailable'
   | 'l3-unavailable-timeout'
+  | 'l3-parse-error'
+  | 'q5-rejected'
+  | 'engine-error'
   | 'non-object'
   | 'over-budget'
   | 'nested-over-budget'

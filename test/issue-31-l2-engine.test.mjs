@@ -82,7 +82,7 @@ test('T03-AC1b: 内联 ToolDefinition.shapeResult 优先于中心表（L1）', a
   TOOL_SHAPES.delete('inline_probe');
 });
 
-test('T03-AC1c: 中心表 schema→L3 路由分支可达（注入 unavailable fake → l3-unavailable-timeout）', async () => {
+test('T03-AC1c: 中心表 schema→L3 路由分支可达（注入 unavailable fake → l3-unavailable）', async () => {
   // T12 起默认 adapter 改为真模型 LlamaLocalAdapter（supportsStructuredOutput=true），
   // 故「模型不可用」场景须显式注入 unavailable fake（与 issue-38/45 同法），不依赖旧默认。
   registerAdapterFactory(() => ({
@@ -96,7 +96,7 @@ test('T03-AC1c: 中心表 schema→L3 路由分支可达（注入 unavailable fa
   const shaped = await shapeToolResponse(resp, ctx);
   assert.strictEqual(shaped, resp, 'unavailable adapter 下 fail-open 原样');
   assert.equal(getRecord().shaping.applied, false);
-  assert.equal(getRecord().shaping.reason, 'l3-unavailable-timeout');
+  assert.equal(getRecord().shaping.reason, 'l3-unavailable');
   TOOL_SHAPES.delete('t03_l3_small');
   resetL3Adapter();
 });

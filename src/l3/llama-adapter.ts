@@ -1,5 +1,6 @@
 import type { JsonObject } from '../types.js';
 import type { LocalModelAdapter, StructuredRequest, StructuredResult } from './adapter.js';
+import { L3_SYSTEM_PROMPT } from './prompt.js';
 
 /**
  * ADR-0047 D8.3 — node-llama-cpp 具体实现（L3 唯一推荐运行时，T12）。
@@ -20,16 +21,6 @@ import type { LocalModelAdapter, StructuredRequest, StructuredResult } from './a
  * 真模型（~1.3GB GGUF）不进自动化测试：测试经 `registerAdapterFactory` 注入 fake adapter
  * （见 test/issue-37）；本 adapter 的正确性由 T12 探测脚本 + 20 条微评测实证。
  */
-
-/** D8.4 SYSTEM（prompt 模板规则，T13 可随评测迭代；adapter 接口不变）。 */
-const SYSTEM_PROMPT = [
-  '你是工具结果解析器。把给定的工具原始返回按目标 JSON Schema 抽取为结构化对象。',
-  '规则：',
-  '1. 只输出 schema 中声明的字段，绝不发明新字段',
-  '2. 字段值必须直接来自原始返回文本（原样保留：不翻译、不改写、不总结、不推断）',
-  '3. 原始返回中不存在的字段：标量 → 省略该字段；数组 → 输出空数组',
-  '4. 只输出 JSON 本体，不输出任何解释文字或思考过程',
-].join('\n');
 
 /** 运行时 L3 context 窗口（26K 硬约束 + 余量；见文件头注释）。 */
 const L3_CONTEXT_SIZE = 32768;
@@ -94,7 +85,7 @@ export class LlamaLocalAdapter implements LocalModelAdapter {
     this.session = new native.LlamaChatSession({
       contextSequence: this.context.getSequence(),
       chatWrapper: new native.QwenChatWrapper({ variation: '3.5', thoughts: 'discourage' }),
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: L3_SYSTEM_PROMPT,
     });
     this.loaded = true;
   }

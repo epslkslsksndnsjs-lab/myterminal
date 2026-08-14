@@ -180,14 +180,14 @@ test('T11-fail-open: Q5 全字段皆丢（模型幻觉）→ 整体 fail-open pa
   const shaped = await shapeStatus(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, 'Q5 全丢 fail-open 原样');
   assert.equal(getRecord().shaping.applied, false);
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.reason, 'q5-rejected');
 });
 
-test('T11-fail-open: 模型不可用 → passthrough + l3-unavailable-timeout', async () => {
+test('T11-fail-open: 模型不可用 → passthrough + l3-unavailable', async () => {
   injectFake({ ready: false });
   const { ctx, getRecord } = makeCtx();
   const raw = makeStatusResult({ status: 'completed', result: 'hello' });
   const shaped = await shapeStatus(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, '模型不可用 fail-open 原样');
-  assert.equal(getRecord().shaping.reason, 'l3-unavailable-timeout');
+  assert.equal(getRecord().shaping.reason, 'l3-unavailable');
 });

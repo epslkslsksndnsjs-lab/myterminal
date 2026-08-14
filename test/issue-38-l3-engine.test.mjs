@@ -163,14 +163,14 @@ test('T10-AC6b: 超时路径 — fake finishReason=timeout → passthrough + l3-
   assertNoMarkers(shaped);
 });
 
-test('T10-AC6c: 不可用路径 — supportsStructuredOutput=false → passthrough + l3-unavailable-timeout', async () => {
+test('T10-AC6c: 不可用路径 — supportsStructuredOutput=false → passthrough + l3-unavailable', async () => {
   TOOL_SHAPES.set(PROBE, { schema: SCHEMA });
   injectFake({ ready: false });
   const { ctx, getRecord } = makeCtx();
   const raw = { name: 'alice' };
   const shaped = await shapeRaw(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, '不可用 fail-open 原样');
-  assert.equal(getRecord().shaping.reason, 'l3-unavailable-timeout');
+  assert.equal(getRecord().shaping.reason, 'l3-unavailable');
 });
 
 test('T10-AC6d: 超预算路径 — 预算门拦截，不调模型 + over-budget', async () => {
@@ -265,7 +265,7 @@ test('T10-AC4d: 值存在性 — string 精确匹配（子串不误命中：red 
   assert.equal(getRecord().shaping.applied, true, '仍有 name 字段');
 });
 
-test('T10-AC4c: 全字段皆丢 → 整体 fail-open passthrough', async () => {
+test('T10-AC4c: 全字段皆丢 → 整体 fail-open passthrough（q5-rejected）', async () => {
   TOOL_SHAPES.set(PROBE, { schema: SCHEMA });
   injectFake({ object: { name: 'nonexistent', count: 999 } });
   const { ctx, getRecord } = makeCtx();
@@ -273,14 +273,14 @@ test('T10-AC4c: 全字段皆丢 → 整体 fail-open passthrough', async () => {
   const shaped = await shapeRaw(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, '全丢 → 整体 fail-open 原样');
   assert.equal(getRecord().shaping.applied, false);
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.reason, 'q5-rejected');
 });
 
 // ───────────────────────────────────────────────────────────
 // AC5 + env 旋钮：reason 枚举 + MYTERMINAL_L3_ENABLED 一键关
 // ───────────────────────────────────────────────────────────
 
-test('T10-AC5: 审计 reason 枚举完整（l3-unavailable-timeout / over-budget / quota / passthrough）', async () => {
+test('T10-AC5: 审计 reason 枚举完整（l3-unavailable-timeout / over-budget / quota / q5-rejected）', async () => {
   TOOL_SHAPES.set(PROBE, { schema: SCHEMA });
 
   // l3-unavailable-timeout
@@ -304,11 +304,11 @@ test('T10-AC5: 审计 reason 枚举完整（l3-unavailable-timeout / over-budget
   await shapeRaw(raw, qctx);
   assert.equal(qrec().shaping.reason, 'quota');
 
-  // passthrough（Q5 全丢）
+  // q5-rejected（Q5 全丢）
   injectFake({ object: { name: 'nonexistent' } });
   ({ ctx, getRecord } = makeCtx('s-r4'));
   await shapeRaw(raw, ctx);
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.reason, 'q5-rejected');
 });
 
 test('T10-env: MYTERMINAL_L3_ENABLED=false 一键关 L3 → passthrough（不调模型、不耗配额）', async () => {
