@@ -126,6 +126,9 @@ function explicitIdentity(input: JsonObject): SessionIdentity | undefined {
 export class ExtensionService {
   private readonly activeActions = new Map<string, { sessionId: string; action: string; source: InvocationContext['transport']; args: JsonObject; startedAt: number }>();
   private readonly backgroundTasks = new Map<string, BackgroundTask>();
+  // ADR-0051 增补-01（#100）：在飞后台任务完成链（completeBackgroundTask / failBackgroundTask
+  // 的 promise）。close 排空时与 operation 一起等待；settler 落定即从集合移除。
+  private readonly backgroundSettlers = new Set<Promise<void>>();
   private readonly closedActionIds = new Set<string>();
   private readonly operationControllers = new Map<string, AbortController>();
   private readonly operationPromises = new Map<string, Promise<JsonObject>>();
@@ -146,17 +149,21 @@ export class ExtensionService {
 
   activeActionCount(): number { return this.activeActions.size; }
 
-  async shutdown(graceMs = 4_000): Promise<void> {
+  async shutdown(graceMs = 5_000): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.accepting = false;
     clearInterval(this.maintenanceTimer);
     this.shutdownPromise = (async () => {
       for (const controller of this.operationControllers.values()) controller.abort();
+      // ADR-0051 增补-01（#100）：close 排空——在飞 operation 与其后台任务完成链
+      // （completeBackgroundTask / failBackgroundTask，含 applyShape → finishAudit 落盘）
+      // 一起等，窗口上限 graceMs（默认 5s）；超限后由下方强制收尾兜底，不阻塞关闭。
       const operations = [...this.operationPromises.values()];
-      if (operations.length) {
+      const settlers = [...this.backgroundSettlers];
+      if (operations.length || settlers.length) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
-          Promise.allSettled(operations),
+          Promise.allSettled([...operations, ...settlers]),
           new Promise<void>((resolve) => { timer = setTimeout(resolve, graceMs); }),
         ]);
         if (timer) clearTimeout(timer);
@@ -509,9 +516,16 @@ export class ExtensionService {
           detached = true;
           const task: BackgroundTask = { id: actionId, sessionId: authenticated.id, tool: input.tool, input: structuredClone(args), source: context.transport, startedAt: started, status: 'running' };
           this.backgroundTasks.set(task.id, task);
-          void operation.then(
+          // ADR-0051 增补-01（#100）：完成链入排空集合，落定即移除。rejection 由
+          // shutdown 的 allSettled 兜底；非关闭路径下显式吞掉，避免 unhandled 噪音。
+          const settler = operation.then(
             (result) => this.completeBackgroundTask(task, result),
             (error: unknown) => this.failBackgroundTask(task, error),
+          );
+          this.backgroundSettlers.add(settler);
+          void settler.then(
+            () => this.backgroundSettlers.delete(settler),
+            () => this.backgroundSettlers.delete(settler),
           );
           return (await this.applyShape(this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
             reason: 'background_task_running',
@@ -641,13 +655,18 @@ export class ExtensionService {
     if (task.status !== 'running') return;
     const problem = resultProblem(result);
     if (!problem) this.store.completeContinuationCall(task.sessionId, task.tool, task.input);
-    task.status = this.resultToAuditStatus(problem);
-    task.completedAt = new Date().toISOString();
+    const status = this.resultToAuditStatus(problem);
     const base: ToolResponse = problem ? { ok: false, data: { tool: task.tool, result }, error: problem } : { ok: true, data: { tool: task.tool, result } };
     // ADR-0047（#29）：完成态在存储前整形（D18.2 执行点），完成审计记 shaping 原因（D7）
     const shaped = await this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
+    // ADR-0051 增补-01（#100）：先落审计、后翻终态——task_poll 观察到终态 ⟹ 审计已可读。
+    // 消除观察方随即删 state 目录（或 close 后清理）时 appendHistory 的 ENOENT 竞态
+    // （W1-08-E1a/E1b 全量并行必现根因）。
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, status, shaped.response, problem, shaped.shaping, shaped.auditRecord);
+    if (task.status !== 'running') return; // shutdown 超限强制收尾（failed）→ 不覆盖其终态
+    task.status = status;
+    task.completedAt = new Date().toISOString();
     task.response = shaped.response;
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, shaped.response, problem, shaped.shaping, shaped.auditRecord);
     // ADR-0050 E1（#81 W1-08）：task 完成 → 清该 taskId 的 Q8 operation 缓存条目
     clearOperationCache(task.id);
     this.trimBackgroundTasks();
@@ -656,11 +675,13 @@ export class ExtensionService {
   private async failBackgroundTask(task: BackgroundTask, error: unknown): Promise<void> {
     if (task.status !== 'running') return;
     const auditError = this.deriveAuditError(error);
+    const shaped = await this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
+    // ADR-0051 增补-01（#100）：先落审计、后翻终态（同 completeBackgroundTask，见上）
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping, shaped.auditRecord);
+    if (task.status !== 'running') return; // shutdown 超限强制收尾（failed）→ 不覆盖其终态
     task.status = 'failed';
     task.completedAt = new Date().toISOString();
-    const shaped = await this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
     task.response = shaped.response;
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping, shaped.auditRecord);
     // ADR-0050 E1（#81 W1-08）：task 失败（终态）同样清该 taskId 的缓存条目
     clearOperationCache(task.id);
     this.trimBackgroundTasks();
