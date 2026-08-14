@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import type { JsonObject, JsonSchema } from '../types.js';
-import { getL3Adapter, l3Enabled, l3ModelPath } from './registry.js';
+import { getL3Adapter, l3Enabled } from './registry.js'; // A4-10：l3ModelPath 死导入删除（warmup 不直接解析模型路径）
 import { buildInstruction } from './prompt.js';
 import { L3_MAX_TOKENS } from './engine.js';
 import { LlamaLocalAdapter } from './llama-adapter.js';
@@ -63,9 +63,17 @@ export function l3WarmupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
 /** 进程内预热门闩（幂等：重复 start 只预热一次，防并发加载 2×1.3GB RAM 乘散）。 */
 let warmupStarted = false;
 
-/** 重置预热门闩（server.close「下次启动自动预热」/ 测试隔离）。 */
+/**
+ * 预热代际计数（增补-10 #109 R10）：start 捕获当前代、IIFE 写状态前校验代际、
+ * close（resetL3Warmup）递增代际使在飞旧 IIFE 失效——消除 close→start 同进程
+ * 旧预热 IIFE 回写 stale ready 覆盖新 loading 的竞态。
+ */
+let warmupGeneration = 0;
+
+/** 重置预热门闩（server.close「下次启动自动预热」/ 测试隔离）。递增代际使在飞旧预热 IIFE 失效。 */
 export function resetL3Warmup(): void {
   warmupStarted = false;
+  warmupGeneration++;
 }
 
 // ── D-8 就绪状态（#95 W3-03：三通道对人可见、对模型静默）────────────────────────
@@ -140,6 +148,8 @@ export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = 
   }
   warmupStarted = true;
   setL3Health('loading', adapter.id);
+  const generation = warmupGeneration; // 本代捕获（R10）：close→start 后旧 IIFE 校验不过
+  const isCurrentGeneration = () => generation === warmupGeneration;
   void (async () => {
     const startedAt = Date.now();
     try {
@@ -154,6 +164,7 @@ export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = 
           temperature: 0,
         });
         if (probe.object !== null && typeof probe.object === 'object' && !Array.isArray(probe.object)) {
+          if (!isCurrentGeneration()) return; // R10：代际失效——旧 IIFE 不回写 stale ready
           setL3Health('ready', adapter.id, Date.now() - startedAt);
           log(`L3 warmup ready (${Date.now() - startedAt}ms)`, 'info');
           return;
@@ -161,9 +172,11 @@ export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = 
       }
       // 全失败仅记日志（D-6）：不抛错不阻断；首调走既有 isReady/失败矩阵 fail-open。
       // 模型缺失的 fetch 提示由 #95 missing 早退路径承担（D-8 唯一提示处，91 整合建议⑤）。
+      if (!isCurrentGeneration()) return; // R10：代际失效——不回写 stale failed
       setL3Health('failed', adapter.id);
       log(`L3 warmup failed after ${WARMUP_MAX_RETRIES + 1} attempts; first L3 call will lazy-load (fail-open)`, 'error');
     } catch (error) {
+      if (!isCurrentGeneration()) return; // R10：代际失效——不回写 stale failed
       setL3Health('failed', adapter.id);
       log(`L3 warmup error: ${error instanceof Error ? error.message : String(error)}`, 'error');
     }

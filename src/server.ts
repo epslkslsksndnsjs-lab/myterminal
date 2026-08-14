@@ -8,6 +8,7 @@ import { createBuiltinTools } from './core-tools.js';
 import { ExtensionService } from './extensions.js';
 import { MyTerminalMcpTransport } from './mcp.js';
 import { clearL3Quota } from './l3/engine.js';
+import { clearOperationCache } from './tool-parse.js';
 import { resetL3Adapter, setL3ClusterMode } from './l3/registry.js';
 import { l3Health as l3HealthSnapshot, resetL3Health, resetL3Warmup, startL3Warmup, type L3HealthSnapshot } from './l3/warmup.js';
 import { ClusterExtensionRouter } from './cluster-router.js';
@@ -550,6 +551,9 @@ export class MyTerminalRuntime {
     // （D6 护栏3「会话结束从 Map 删除」全量面；D8.2「进程退出/会话结束释放」）
     clearL3Quota();
     resetL3Adapter();
+    // 增补-10（#109 R15）：关闭收尾 → 全量清 operationCache（Q8 生命周期全清面，
+    // 与 extensions.shutdown 内全清互为兜底：shutdown 管排空窗口，此处管关闭后）
+    clearOperationCache();
     // ADR-0051 D-6（#91 W2-08）：释放预热门闩——「下次启动自动预热」（D-8.1）
     resetL3Warmup();
     // ADR-0051 D-8（#95 W3-03）：重置就绪状态——下次启动从 loading 重新走状态机

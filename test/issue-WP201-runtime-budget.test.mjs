@@ -217,3 +217,23 @@ test('WP201-AC4: subagent_status result 子字段超降门槛（~7.5K tokens > 6
   assert.equal(getRecord().shaping.applied, false);
   assert.equal(getRecord().shaping.reason, 'over-budget');
 });
+
+// ───────────────────────────────────────────────────────────
+// AC5（增补-10 #109 R2）：L3 禁用态 l3BudgetTokens 短路 — 零 adapter 构造
+// ───────────────────────────────────────────────────────────
+
+test('WP201-AC5: L3 禁用态 l3BudgetTokens 短路 — 直接返回常量门槛，零 adapter 构造（R2）', () => {
+  const prev = process.env.MYTERMINAL_L3_ENABLED;
+  process.env.MYTERMINAL_L3_ENABLED = 'false';
+  try {
+    // 工厂若被调用即抛错 → 任何构造路径都会炸掉本测试
+    registerAdapterFactory(() => { throw new Error('L3 禁用态不得构造 adapter'); });
+    resetL3Adapter();
+    assert.equal(l3BudgetTokens(), RAW_BUDGET_TOKENS, '禁用态直接返回常量门槛（不解析 adapter ctx）');
+    assert.equal(l3BudgetTokens(), RAW_BUDGET_TOKENS, '重复调用仍短路（无副作用）');
+  } finally {
+    if (prev === undefined) delete process.env.MYTERMINAL_L3_ENABLED;
+    else process.env.MYTERMINAL_L3_ENABLED = prev;
+    resetL3Adapter(); // 清掉抛错 factory，防 bun 共享 worker 下污染其他文件
+  }
+});

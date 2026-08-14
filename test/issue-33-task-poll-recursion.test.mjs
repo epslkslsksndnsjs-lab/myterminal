@@ -361,3 +361,29 @@ test('T05-AC9c: 畸形 operation（缺 data）→ 不递归、passthrough 保全
   const outer = records[records.length - 1];
   assert.equal(outer.shaping.reason, 'passthrough', '畸形 operation 走 passthrough');
 });
+
+// ───────────────────────────────────────────────────────────
+// AC6（增补-10 #109 R15）：clearOperationCache 全清 — 清后同 key 递归重跑（生命周期全清）
+// ───────────────────────────────────────────────────────────
+
+test('T05-AC6: clearOperationCache() 全清 → 同 key 嵌套缓存失效，递归重跑（Q8 生命周期全清面）', async () => {
+  clearOperationCache();
+  // 只计嵌套工具（git_status）的 resolve：外层 task_poll 每次都会 resolve（Q8 缓存的是
+  // 嵌套 operation 整形结果，外层无缓存面）——口径与原 T05-AC6（nestedResolveCount）一致。
+  let nestedResolves = 0;
+  const { ctx } = makeCtxCollect();
+  ctx.resolveTool = (name) => { if (name === 'git_status') nestedResolves += 1; return undefined; };
+  // 嵌套用纯 L1 工具（git_status）：不触发 L3，缓存行为可确定观察
+  const nested = { ok: true, data: { tool: 'git_status', result: { branch: 'main', dirty: false } } };
+  const resp = makeTaskPoll(nested);
+
+  await shapeToolResponse(resp, ctx);
+  assert.equal(nestedResolves, 1, '首次：嵌套 git_status resolve 一次');
+
+  await shapeToolResponse(resp, ctx);
+  assert.equal(nestedResolves, 1, 'Q8 命中：同 key 缓存直返，嵌套不再 resolve');
+
+  clearOperationCache();
+  await shapeToolResponse(resp, ctx);
+  assert.equal(nestedResolves, 2, '全清后：同 key 重新递归（缓存已清空）');
+});

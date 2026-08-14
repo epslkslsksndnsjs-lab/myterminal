@@ -89,8 +89,8 @@ export function l3ModelPath(env: NodeJS.ProcessEnv = process.env): string {
 let adapterSingleton: LocalModelAdapter | undefined;
 let adapterFactory: ((modelPath: string) => LocalModelAdapter) | undefined;
 
-/** 注册 adapter 工厂（测试注入 fake；默认走 LlamaLocalAdapter）。工厂入参为已解析的模型路径
- * （l3ModelPath 解析链结果，getL3Adapter 懒加载时传入——AC4 fake 断言路径用）。 */
+/** @internal 测试注入接缝（A4-11）：注册 adapter 工厂（测试注入 fake；默认走 LlamaLocalAdapter）。
+ * 工厂入参为已解析的模型路径（l3ModelPath 解析链结果，getL3Adapter 懒加载时传入——AC4 fake 断言路径用）。 */
 export function registerAdapterFactory(factory: (modelPath: string) => LocalModelAdapter): void {
   adapterFactory = factory;
 }
@@ -111,7 +111,7 @@ export function resetL3Adapter(): void {
 }
 
 /**
- * 只释放单例、保留注入工厂（#101 增补-02 测试隔离专用）。
+ * @internal 测试接缝（A4-13）：只释放单例、保留注入工厂（#101 增补-02 测试隔离专用）。
  *
  * bun test 以共享 worker 池并行跑文件（同进程线程），模块级状态跨文件可见：文件 A
  * afterEach 的裸 resetL3Adapter 会清掉同 worker 文件 B 刚注入的 fake factory

@@ -1,7 +1,7 @@
 import type { InvocationContext, JsonObject, JsonSchema, ShapingAudit, ToolDefinition, ToolResponse } from './types.js';
 import type { LocalModelAdapter } from './l3/adapter.js';
 import { runL3 } from './l3/engine.js';
-import { getL3Adapter } from './l3/registry.js';
+import { getL3Adapter, l3Enabled } from './l3/registry.js';
 export type { ShapingAudit } from './types.js';
 
 /**
@@ -92,6 +92,9 @@ const L3_CTX_OUTPUT_RESERVE = 2048;
  * （运行时窗口）优先、trainContextSize（模型 max）兜底、均未知 → 默认 256K（维持 24K）。
  */
 export function l3BudgetTokens(adapter?: LocalModelAdapter): number {
+  // 增补-10（#109 R2）：L3 禁用态（env 关 / cluster 参与者默认关）短路——直接返回常量门槛，
+  // 零 adapter 构造、零 ctx 解析（禁用态预算门不再触碰 registry 单例）。
+  if (!l3Enabled()) return RAW_BUDGET_TOKENS;
   const src = adapter ?? getL3Adapter();
   const ctx = src?.contextSize ?? src?.trainContextSize ?? L3_CTX_DEFAULT;
   return Math.min(RAW_BUDGET_TOKENS, ctx - L3_CTX_OUTPUT_RESERVE);
@@ -136,7 +139,8 @@ export const ERROR_DETAILS_MAX_CHARS = 6000;
 const ENV_ERROR_MESSAGE_MAX_CHARS = 'MYTERMINAL_ERROR_MESSAGE_MAX_CHARS';
 const ENV_ERROR_DETAILS_MAX_CHARS = 'MYTERMINAL_ERROR_DETAILS_MAX_CHARS';
 
-/** env 旋钮解析（D6 配额同构）：env 优先；未设置/空/非法（非数字/负）→ 回落 fallback。 */
+/** env 旋钮解析（D6 配额同构）：env 优先；未设置/空/非法（非数字/负）→ 回落 fallback。
+ *  '0' 合法（#43-6 备案）：置 0 → 长度帽为 0 → 信息全清（空串），勿误配为「禁用」语义。 */
 function capFromEnv(envName: string, fallback: number): number {
   const raw = process.env[envName]?.trim();
   if (raw && /^\d+$/.test(raw)) {
@@ -950,7 +954,7 @@ function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): Re
 //   与 D11 fail-open 一致，审计记 nested-recursion-threw。
 // Q8：按 operation 身份缓存已整形结果（key = taskId + raw 内容哈希）；同 key 再次 poll
 //   直接返回缓存版，不重复触发 L3、不重复计 D6 配额；缓存随 task 完成/会话结束清理
-//   （clearOperationCache）。
+//   （clearOperationCache，extensions 按任务接线）+ 生命周期全清（shutdown/close，增补-10 R15）。
 // Q10：D7 审计覆盖嵌套 operation——递归调用自身即产生嵌套 raw/shaped 审计；外层再抓
 //   全量 response 前后快照，双层覆盖。
 
@@ -1141,7 +1145,8 @@ function applyL1Reducer(
  * 执行顺序（T03 + T04 #32）：
  *  - 路由判定（resolveShape）→ L1 reducer / L3(预算门) / passthrough
  *  - L1 被动/主动 reducer（零模型）→ D16 count 规则 → 重建 response（只动 data.result）
- *  - D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽，
+ *  - D12 失败双帽（#32）：除 subagent 通道（D2 豁免——extensions.applyShape 早退原样返回，
+ *    不套 D12，见 extensions.ts）外全通道通用套用 error.message / error.details 长度帽，
  *    continuation 子键保全（Q4）；ok / error.code / error.retryable / events /
  *    data.tool / data.continuation 原样不动（D9/D11）
  *  - D7 双版本审计：rawResult 保留未截断完整 error（诊断保全）、shapedResult 为截断版 + shaping.reason
@@ -1297,7 +1302,8 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
     }
   }
 
-  // D12 失败双帽（#32）：全通道通用套用 error.message / error.details 长度帽（continuation 子键保全）。
+  // D12 失败双帽（#32）：除 subagent 通道（D2 豁免，见 applyShape 早退）外全通道通用套用
+  // error.message / error.details 长度帽（continuation 子键保全）。
   // D7 审计：rawResult 保留未截断完整 error（诊断保全），shapedResult 为截断版。
   // D11 fail-open：帽步骤自身异常 → 原样 passthrough（base），绝不阻断（与 L1 reducer 同形态）。
   let shaped: ToolResponse;

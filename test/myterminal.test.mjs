@@ -1632,6 +1632,30 @@ test('TUI snapshots are referentially cached until a runtime revision changes', 
   } finally { fs.rmSync(dirs.workspaceDir, { recursive: true, force: true }); }
 });
 
+test('TUI renderRevision changes when L3 status transitions loading → ready (R14)', () => {
+  // fake runtime：duck-typed 最小实现（仅 renderRevision 所需成员；WorkspaceDiffTracker 只存 config）
+  let l3 = { status: 'loading', modelId: 'qwen3.5-2b' };
+  const fakeRuntime = {
+    config: {},
+    store: { revision: () => 'r1', snapshotForTui: () => ({}) },
+    runtimeLogRevision: () => 1,
+    runtimeHealth: () => ({ phase: 'active' }),
+    l3Health: () => l3,
+    logs: [],
+  };
+  const controller = new TuiController(fakeRuntime, async () => { throw new Error('not used'); });
+  const loadingRevision = controller.renderRevision();
+  l3 = { status: 'ready', modelId: 'qwen3.5-2b', warmLatencyMs: 42 };
+  assert.notEqual(controller.renderRevision(), loadingRevision, 'loading→ready 状态迁移反映到 renderRevision（活通道刷新可感知）');
+});
+
+test('L3 operation cache full-clear is wired on extension shutdown and server close (R15)', () => {
+  const extensions = fs.readFileSync(new URL('../src/extensions.ts', import.meta.url), 'utf8');
+  const server = fs.readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+  assert.match(extensions, /clearOperationCache\(\)/, 'shutdown 强制收尾全清（无参调用）');
+  assert.match(server, /clearOperationCache\(\)/, 'server.close 全清（无参调用）');
+});
+
 test('runtime logs rotate at bounded size and tail pages avoid loading the full file', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myterminal-log-rotation-'));
   const configDir = path.join(root, 'config');

@@ -178,6 +178,9 @@ export class ExtensionService {
       for (const [id, action] of [...this.activeActions]) {
         this.finishAudit(action.sessionId, id, action.source, action.action, action.args, action.startedAt, 'failed', { ok: false, error }, error);
       }
+      // 增补-10（#109 R15）：强制收尾完成 → 清空 operationCache 全量（Q8 生命周期全清面）。
+      // 放在排空之后调用，避免排空窗口内在飞 applyShape 重新填充的条目残留。
+      clearOperationCache();
     })();
     return this.shutdownPromise;
   }

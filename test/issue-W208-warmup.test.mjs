@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MyTerminalRuntime } from '../dist/server.js';
-import { startL3Warmup, resetL3Warmup, WARMUP_MAX_RETRIES } from '../dist/l3/warmup.js';
+import { startL3Warmup, resetL3Warmup, WARMUP_MAX_RETRIES, l3Health } from '../dist/l3/warmup.js';
 import {
   registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance, getL3Adapter,
   setL3ClusterMode, resetL3ClusterMode,
@@ -291,4 +291,43 @@ test('W2-08-AC5: 预热成功 → registry 单例即预热实例，后续真实�
   assert.equal(completeCalls(), 2, '真实调用复用预热实例（计数连续）');
   assert.deepEqual(shaped.data.result, { name: 'alice', count: 7 }, 'Q5 后结果原样');
   assert.equal(getRecord().shaping.applied, true);
+});
+
+// ───────────────────────────────────────────────────────────
+// AC6（增补-10 #109 R10）：代际计数 — close→start 后旧预热 IIFE 不回写 stale 状态
+// ───────────────────────────────────────────────────────────
+
+test('W2-08-AC6: close→start 后旧 IIFE 代际失效 — stale ready 不回写覆盖新状态（R10）', async () => {
+  const gate = makeDeferred(); // isReady 公共闸门（两个 IIFE 都挂在这里）
+  const staleGate = makeDeferred(); // 旧 IIFE 的 complete 慢闸门（call #1）
+  const oldRecorder = makeLogRecorder();
+  const newRecorder = makeLogRecorder();
+  injectFake({ gate });
+  // complete 行为按调用次序：call #1（旧 IIFE，先注册先恢复）→ 挂 staleGate 后成功（stale ready 源）；
+  // call ≥2（新 IIFE）→ 立即失败（新代写入 failed）
+  const adapter = getL3Adapter();
+  let calls = 0;
+  adapter.complete = async () => {
+    calls += 1;
+    if (calls === 1) { await staleGate.promise; return { object: { ok: true }, finishReason: 'stop', latencyMs: 1, modelId: 'w208-fake' }; }
+    return { object: null, finishReason: 'error', latencyMs: 1, modelId: 'w208-fake' };
+  };
+
+  // 旧代：start（isReady 挂起在 gate 上，IIFE 在飞）
+  startL3Warmup(oldRecorder.log, [5, 10, 15]);
+  assert.equal(gate.released, false, '旧预热在飞（isReady 未放行）');
+  // close 语义：resetL3Warmup 递增代际 → 旧 IIFE 失效
+  resetL3Warmup();
+  // 新代：start（同 adapter 单例，isReady 仍挂起）
+  startL3Warmup(newRecorder.log, [5, 10, 15]);
+
+  // 放行 isReady：旧 IIFE 进 complete#1 挂 staleGate；新 IIFE complete#2 快失败 → 写 failed
+  gate.release();
+  await pollUntil(() => l3Health()?.status === 'failed', '新代预热失败 → 状态 failed');
+  // 放行旧 IIFE：若无代际失效，此处 stale ready 将覆盖 failed
+  staleGate.release();
+  await sleep(100);
+
+  assert.equal(l3Health()?.status, 'failed', '旧 IIFE 的 stale ready 不回写（代际失效）');
+  assert.ok(!oldRecorder.entries.some((e) => e.message.includes('L3 warmup ready')), '旧 IIFE 不产生 ready 日志');
 });

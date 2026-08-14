@@ -12,6 +12,9 @@
 
 import { test, afterEach } from 'bun:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   DEFAULT_L3_MODEL_PATH,
   l3Enabled,
@@ -20,6 +23,18 @@ import {
   getL3Adapter,
   resetL3Adapter, resetL3AdapterInstance,
 } from '../dist/l3/registry.js';
+
+// 增补-10（#109 R16）：显式控制前提——MYTERMINAL_HOME 指向临时目录，使「安装根 models 优先」
+// 第二档与「裸文件名回落」第一档断言确定化（#96 fetch 真实落盘 models 后不再无预警转红）。
+const SAVED_HOME = process.env.MYTERMINAL_HOME;
+
+/** 在临时 MYTERMINAL_HOME 下执行断言（finally 恢复原值；防跨 worker 泄漏）。 */
+function withTempHome(fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'myterminal-issue37-'));
+  const models = path.join(root, 'models');
+  process.env.MYTERMINAL_HOME = root;
+  try { return fn({ root, models }); } finally { process.env.MYTERMINAL_HOME = SAVED_HOME; }
+}
 
 /** 三路径 fake adapter（成功 / 超时 / 不可用）。 */
 function fakeAdapter({ ready = true, mode = 'success' } = {}) {
@@ -65,10 +80,24 @@ test('AC2 MYTERMINAL_L3_ENABLED falsy/其他 → false（一键关 L3）', () =>
 });
 
 test('AC2 MYTERMINAL_L3_MODEL_PATH 默认 + 覆盖', () => {
-  assert.strictEqual(l3ModelPath({}), DEFAULT_L3_MODEL_PATH);
-  assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '' }), DEFAULT_L3_MODEL_PATH);
-  assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '   ' }), DEFAULT_L3_MODEL_PATH);
-  assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '/custom/Qwen3.5-3B-Q4_K_M.gguf' }), '/custom/Qwen3.5-3B-Q4_K_M.gguf');
+  // 第一档断言容错（R16）：空临时 HOME → 安装根无模型 → 裸文件名回落确定化（不再依赖真实安装根）
+  withTempHome(() => {
+    assert.strictEqual(l3ModelPath({}), DEFAULT_L3_MODEL_PATH);
+    assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '' }), DEFAULT_L3_MODEL_PATH);
+    assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '   ' }), DEFAULT_L3_MODEL_PATH);
+    assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '/custom/Qwen3.5-3B-Q4_K_M.gguf' }), '/custom/Qwen3.5-3B-Q4_K_M.gguf');
+  });
+});
+
+test('AC2 安装根 models 优先（第二档）：临时 models 目录注入验证（R16）', () => {
+  withTempHome(({ root, models }) => {
+    fs.mkdirSync(models, { recursive: true });
+    fs.writeFileSync(path.join(models, DEFAULT_L3_MODEL_PATH), 'not-a-real-model');
+    const expected = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+    assert.strictEqual(l3ModelPath({}), expected, '安装根 models 目录命中 → 优先于裸文件名回落');
+    // env 覆盖仍压过安装根（解析链 env > 安装根 > 裸文件名）
+    assert.strictEqual(l3ModelPath({ MYTERMINAL_L3_MODEL_PATH: '/custom/x.gguf' }), '/custom/x.gguf');
+  });
 });
 
 // ── AC3：单例懒加载常驻 + reset 释放 ─────────────────────────────────────────
