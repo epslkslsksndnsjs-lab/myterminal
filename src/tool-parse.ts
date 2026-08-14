@@ -237,16 +237,41 @@ function denoiseCommandResult(result: JsonObject): JsonObject {
   return out;
 }
 
-// ── P2-03（#99，0050 H5 / ADR-0047 D16.3）：git_log 聚合字段 commitCount ──────
+// ── P2-03（#99，0050 H5 / ADR-0047 D16.3）+ 增补-08（#107）：git_log 聚合字段 commitCount ──
 //
 // D-10 原则4：派生字段一律代码后置补、不进任何 L3 schema。git_log 已豁免 L3（增补-04
-// #103，同 git_diff 先例回 L1 被动去噪）→ 本 reducer 是 L1 主路径唯一出口：denoise 超集，
-// 结果含 commits 数组即恒补 commitCount（无 L3 成功路径故无「重复补」问题）。commits
-// 非数组 → 原样 fail-open（D11，绝不伪造）；D17 静默：只加派生数值，无任何层标记。
+// #103，同 git_diff 先例回 L1 被动去噪）→ 本 reducer 是 L1 主路径唯一出口：denoise 超集。
+// 增补-08（#107，A2 F2 / A5a F2 落地）：生产化——handler 裸 runCommand（--oneline 字符串，
+// 永不产 commits 数组），旧实现 commitCount 在生产路径恒不出现。修法：
+// - 已有 commits 数组（结构化/扩展路径）→ 恒补 commitCount（原契约保持）
+// - 无 commits 数组 + stdout 为 string 且非空 + 非截断态 → 逐行派生 commits（{ hash, subject }，
+//   行首 token=hash、其余=subject，对齐 W2-03 AC5 语义等价 fixture 同形）+ commitCount
+// - count 与 commitCount 并存（A5b F6）：D16.1 count 由 applyCountRule 对派生数组自动补，
+//   两者同值（=== commits 长度），口径由测试锁定
+// - 截断态（truncated:true）→ 不派生：stdout 被输出帽截断时可见行数 ≠ 真实总量，
+//   派生会伪造总量感（D16.2「截断必附真实总量」不可满足时不附，绝不伪造）
+// - stdout 缺失/非 string/空/纯空白 → 原样 fail-open（D11，绝不伪造）；D17 静默：
+//   只加派生数值，无任何层标记。
 function reduceGitLogAggregates(result: JsonObject): JsonObject {
   const out = denoiseCommandResult(result);
   if (Array.isArray(out.commits)) {
-    out.commitCount = out.commits.length; // D16.3：commitCount === commits 数组长度
+    out.commitCount = out.commits.length; // D16.3：commitCount === commits 数组长度（原契约）
+    return out;
+  }
+  // 生产路径：git log --oneline 逐行 `hash subject` → 派生 commits + commitCount。
+  // 截断态/无 stdout/非 string/空白 → 不派生（fail-open，绝不伪造）。
+  if (out.truncated !== true && typeof out.stdout === 'string' && out.stdout.trim() !== '') {
+    const commits: JsonObject[] = [];
+    for (const rawLine of out.stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (line === '') continue; // 空行跳过（末尾换行不产生额外提交）
+      const sp = line.indexOf(' ');
+      commits.push(sp >= 0
+        ? { hash: line.slice(0, sp), subject: line.slice(sp + 1).trim() }
+        : { hash: line, subject: '' }); // 无空格行（如纯 hash 格式）→ subject 空串
+    }
+    out.commits = commits;
+    out.commitCount = commits.length; // D16.3：commitCount === commits 行数（#107 生产化）
   }
   return out;
 }

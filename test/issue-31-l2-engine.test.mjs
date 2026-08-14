@@ -105,9 +105,11 @@ test('T03-AC1c: 中心表 schema→L3 路由分支可达（注入 unavailable fa
 // AC2：6 工具 CommandResult 被动去噪（复用同一 reducer）
 // ───────────────────────────────────────────────────────────
 
-const SIX_TOOLS = ['execute_cli', 'git_status', 'git_diff', 'git_log', 'git_show', 'run_checks'];
+const SIX_TOOLS = ['execute_cli', 'git_status', 'git_diff', 'git_show', 'run_checks'];
+// 增补-08（#107）：git_log 从 6 工具统一形状拆出——reduceGitLogAggregates 生产化后
+// 额外派生 commits/commitCount/count（stdout 逐行），不再是纯 5 字段 denoise。
 
-test('T03-AC2: 6 工具 CommandResult 被动去噪（剥 5 噪声字段，保留 5 真实字段）', async () => {
+test('T03-AC2: 5 工具 CommandResult 被动去噪（剥 5 噪声字段，保留 5 真实字段）', async () => {
   for (const tool of SIX_TOOLS) {
     const { ctx, getRecord } = makeCtx();
     const resp = { ok: true, data: { tool, result: { ...FULL_COMMAND_RESULT } } };
@@ -122,6 +124,21 @@ test('T03-AC2: 6 工具 CommandResult 被动去噪（剥 5 噪声字段，保留
     assert.equal(getRecord().shaping.applied, true, `${tool} applied:true`);
     assertNoShapingMarkers(shaped);
   }
+});
+
+test('T03-AC2b2: git_log 生产化派生（增补-08 #107）— denoise 超集 + commits/commitCount/count', async () => {
+  const { ctx, getRecord } = makeCtx();
+  const resp = { ok: true, data: { tool: 'git_log', result: { ...FULL_COMMAND_RESULT } } };
+  const shaped = await shapeToolResponse(resp, ctx);
+  const r = shaped.data.result;
+  assert.deepEqual(Object.keys(r).sort(), ['count', 'commitCount', 'commits', 'durationMs', 'exitCode', 'stderr', 'stdout', 'truncated'].sort(), 'git_log = denoise 5 字段 + 派生 3 字段');
+  assert.deepEqual(r.commits, [{ hash: 'hi', subject: '' }], 'stdout 逐行派生（无空格行 → subject 空串）');
+  assert.equal(r.commitCount, 1, 'commitCount === commits 行数');
+  assert.equal(r.count, 1, 'D16.1 count 与 commitCount 并存同值');
+  for (const noise of COMMAND_RESULT_NOISE) assert.equal(r[noise], undefined, `噪声字段 ${noise} 已剥除`);
+  assert.equal(r.stdout, 'hi', '真实数据 stdout 保留');
+  assert.equal(getRecord().shaping.applied, true, 'applied:true');
+  assertNoShapingMarkers(shaped);
 });
 
 test('T03-AC2b: 失败结果同样去噪（ok:false 仍整形 data.result，error 不动）', async () => {

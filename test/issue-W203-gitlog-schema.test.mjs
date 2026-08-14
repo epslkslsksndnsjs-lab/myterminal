@@ -10,12 +10,13 @@
 //   AC1  豁免登记：git_log 注册 L1-only——reduce 保留、无 schema 字段（L3 永不进入）、
 //        与 git_diff 先例同形（同一 denoiseCommandResult）
 //   AC2  L3 永不调用：fake adapter 就绪且结构化返回合法对象 → 仍不调模型（callCount 0），
-//        结果 = L1 denoise（5 真实字段，噪声键剥除），审计 applied:true 无 reason
+//        结果 = L1 denoise + 增补-08（#107）生产化派生（commits/commitCount/count 并存，
+//        噪声键剥除），审计 applied:true 无 reason
 //   AC3  adapter 状态轮换（不可用 / 成功 / 抛错）→ 一律不调模型，L1 denoise（L1-only
 //        无 L3 失败矩阵：unavailable / timeout / parse-error / quota / engine-error /
 //        passthrough / over-budget 全部不存在）
 //   AC4  运行时探测：actions 通道真实调用 git_log（fake adapter 注入）→ L3 永不调用，
-//        结果 = L1 denoise，真实数据保全
+//        结果 = L1 denoise + 派生字段，真实数据保全（#107 AC1 生产路径实测）
 //   D17  全路径无层标记（递归扫描）
 //
 // 测试方式：单测直接驱动 shapeToolResponse（../dist/tool-parse.js）+ 注入 fake adapter
@@ -110,13 +111,21 @@ function gitLogStructuredObject() {
   };
 }
 
-/** L1 denoise 断言复用：真实数据保全 + 噪声键剥除 + 审计 applied:true 无 reason。 */
+/** L1 denoise 断言复用：真实数据保全 + 噪声键剥除 + 增补-08（#107）派生 + 审计 applied:true 无 reason。 */
+const GIT_LOG_DERIVED_KEYS = ['count', 'commitCount', 'commits', 'durationMs', 'exitCode', 'stderr', 'stdout', 'truncated'].sort();
+
 function assertDenoisedResult(shaped, expectedStdout, getRecord, label = '') {
   const r = shaped.data.result;
-  assert.deepEqual(Object.keys(r).sort(), DENOISED_KEYS, `${label}结果 = L1 denoise（5 真实字段）`);
+  assert.deepEqual(Object.keys(r).sort(), GIT_LOG_DERIVED_KEYS, `${label}结果 = L1 denoise + 生产化派生（8 字段，增补-08 #107）`);
   assert.equal(r.exitCode, 0, `${label}exitCode 保留`);
   assert.equal(r.stdout, expectedStdout, `${label}stdout 原样保全（未被结构化替换）`);
   assert.equal(r.stderr, '', `${label}stderr 保留`);
+  assert.deepEqual(r.commits, [
+    { hash: 'a1b2c3d', subject: 'fix typo' },
+    { hash: 'f6e5d4c', subject: 'feat: add thing' },
+  ], `${label}stdout 逐行派生 commits（{hash, subject}）`);
+  assert.equal(r.commitCount, 2, `${label}commitCount === commits 行数`);
+  assert.equal(r.count, 2, `${label}count 与 commitCount 并存同值（A5b F6 口径锁定）`);
   for (const noise of COMMAND_RESULT_NOISE) assert.equal(r[noise], undefined, `${label}噪声键剥除 ${noise}`);
   assert.equal(getRecord().shaping.applied, true, `${label}L1 整形 applied:true`);
   assert.equal(getRecord().shaping.reason, undefined, `${label}L1-only 无 L3 失败 reason`);
@@ -256,6 +265,12 @@ test('W2-03-AC4: 运行时探测 — 真实 git_log 调用（fake adapter 注入
     assert.equal(result.exitCode, 0, 'L1 denoise：exitCode 保留');
     assert.ok(result.stdout.includes('probe commit'), 'stdout 保留真实提交数据（未被结构化替换）');
     assert.equal('command' in result, false, '噪声键剥除');
+    // 增补-08（#107）AC1：生产路径派生生效——真实 git 仓库 1 个提交 → commits/commitCount/count
+    assert.equal(result.commitCount, 1, '生产路径 commitCount === 真实提交行数（#107 AC1）');
+    assert.equal(result.count, 1, 'count 与 commitCount 并存同值');
+    assert.equal(result.commits.length, 1, 'commits 派生');
+    assert.equal(result.commits[0].subject, 'probe commit', 'subject 取 oneline 行 subject 段');
+    assert.ok(/^[0-9a-f]+$/.test(result.commits[0].hash), 'hash 取 oneline 行首 token（hex）');
     assertNoMarkers(result);
   } finally {
     await server.close();

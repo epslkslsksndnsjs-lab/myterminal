@@ -4,7 +4,13 @@
 //   AC1  git_log L1-only：commitCount === commits 数组长度（恒补——git_log 已豁免 L3
 //        （增补-04 #103），reduceGitLogAggregates 是 L1 主路径唯一出口，无回落概念）；
 //        adapter 就绪 + 结构化返回合法对象 → 仍不调模型（callCount 0，L3 永不进入）
-//   AC2  git_log：真实 CommandResult raw（无 commits）→ 不伪造 commitCount（D11）
+//   AC2  git_log 生产化（增补-08 #107）：真实 CommandResult raw（stdout 逐行 `hash subject`）
+//        → 派生 commits + commitCount（=== 行数）；count 与 commitCount 并存同值（A5b F6
+//        口径锁定）；stdout 原样保留（追加派生、不替换）
+//   AC2b git_log fail-open 保持：stdout 缺失 / 非 string / 空 → 不派生 commits/commitCount
+//        （D11 绝不伪造）
+//   AC2c git_log 截断态（truncated:true）：stdout 可见行数 ≠ 真实总量 → 不派生（绝不伪造
+//        总量感；D16.2「截断必附真实总量」不可满足时不附）
 //   AC3  session_history：toolBreakdown（按 entry.data.tool 分组计数）/
 //        errorCount（ok:false 条目数）；嵌套 ToolResponse 摘要条目 tool 仍参与分组
 //   AC4  session_history 畸形（无 history / entries 非数组）→ fail-open，不注入聚合字段
@@ -162,17 +168,60 @@ test('WP203-AC1: git_log L1-only — commitCount 恒补（=== commits 数组长�
 });
 
 // ───────────────────────────────────────────────────────────
-// AC2：git_log 真实 CommandResult raw（无 commits）不伪造
+// AC2：git_log 生产化 — 真实 CommandResult raw → 派生 commits + commitCount + count 并存
 // ───────────────────────────────────────────────────────────
 
-test('WP203-AC2: git_log — 真实 CommandResult raw（无 commits）不伪造 commitCount', async () => {
+test('WP203-AC2: git_log — 真实 CommandResult raw（stdout 逐行）→ 派生 commits + commitCount + count 并存', async () => {
   const { ctx } = makeCtx();
   const shaped = await shapeToolResponse(makeResponse('git_log', gitLogRaw()), ctx);
 
   const r = shaped.data.result;
-  assert.equal('commitCount' in r, false, '无 commits 数组 → 不伪造 commitCount（D11 绝不伪造纪律）');
-  assert.equal(r.stdout, 'a1b2c3d fix typo\nf6e5d4c feat: add thing', 'stdout 保留');
+  assert.deepEqual(r.commits, [
+    { hash: 'a1b2c3d', subject: 'fix typo' },
+    { hash: 'f6e5d4c', subject: 'feat: add thing' },
+  ], 'stdout 按行派生 commits（{hash, subject}，首 token=hash）');
+  assert.equal(r.commitCount, 2, 'D16.3：commitCount === commits 行数（生产路径生效，增补-08 #107）');
+  assert.equal(r.count, 2, 'D16.1：count 与 commitCount 并存同值（A5b F6 口径锁定）');
+  assert.equal(r.stdout, 'a1b2c3d fix typo\nf6e5d4c feat: add thing', 'stdout 原样保留（追加派生、不替换）');
   assert.equal('command' in r, false, '噪声键剥除');
+  assertNoMarkers(shaped);
+});
+
+// ───────────────────────────────────────────────────────────
+// AC2b：git_log fail-open 保持 — 无 stdout 不伪造
+// ───────────────────────────────────────────────────────────
+
+test('WP203-AC2b: git_log — stdout 缺失 / 非 string / 空 → 不派生 commits/commitCount（fail-open）', async () => {
+  const cases = [
+    { label: 'stdout 缺失', raw: { exitCode: 0, stderr: '', truncated: false, durationMs: 12 } },
+    { label: 'stdout 非 string', raw: { exitCode: 0, stdout: 42, stderr: '', truncated: false, durationMs: 12 } },
+    { label: 'stdout 空串', raw: { exitCode: 0, stdout: '', stderr: '', truncated: false, durationMs: 12 } },
+    { label: 'stdout 纯空白', raw: { exitCode: 0, stdout: '  \n\t', stderr: '', truncated: false, durationMs: 12 } },
+  ];
+  for (const { label, raw } of cases) {
+    const { ctx } = makeCtx();
+    const shaped = await shapeToolResponse(makeResponse('git_log', raw), ctx);
+    const r = shaped.data.result;
+    assert.equal('commits' in r, false, `${label} → 不派生 commits（D11 绝不伪造）`);
+    assert.equal('commitCount' in r, false, `${label} → 不派生 commitCount（D11 绝不伪造）`);
+    assert.equal('count' in r, false, `${label} → 无数组不触发 D16.1 count`);
+    assertNoMarkers(shaped);
+  }
+});
+
+// ───────────────────────────────────────────────────────────
+// AC2c：git_log 截断态不派生（总量不可知，绝不伪造总量感）
+// ───────────────────────────────────────────────────────────
+
+test('WP203-AC2c: git_log — truncated:true（stdout 被输出帽截断）→ 不派生 commits/commitCount', async () => {
+  const { ctx } = makeCtx();
+  const shaped = await shapeToolResponse(makeResponse('git_log', { ...gitLogRaw(), truncated: true }), ctx);
+
+  const r = shaped.data.result;
+  assert.equal(r.truncated, true, 'truncated 原样保留');
+  assert.equal('commits' in r, false, '截断态可见行数 ≠ 真实总量 → 不派生 commits');
+  assert.equal('commitCount' in r, false, '截断态不派生 commitCount（绝不伪造总量感）');
+  assert.equal(r.stdout, 'a1b2c3d fix typo\nf6e5d4c feat: add thing', 'stdout 原样保留');
   assertNoMarkers(shaped);
 });
 
