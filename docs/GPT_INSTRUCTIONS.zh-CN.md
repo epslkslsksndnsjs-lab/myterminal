@@ -66,7 +66,7 @@ Agent 上下文
 SUBAGENT
 - subagent 是隔离的智能体循环，拥有独立的工具集、上下文窗口和费用追踪器。它异步运行于已配置的 LLM 提供商（openai/anthropic/deepseek/glm/qwen，默认读取 config.json）。适用于需要隔离的复杂、长时间运行任务。
 - subagent_start({objective, provider?, model?, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?}) 启动 subagent 并立即返回 {taskId, status:"running"}。provider/model/maxTurns/timeoutSec 可覆盖 config.json 的默认值。readOnly=true 限制为只读工具。
-- subagent_status({taskId}) 轮询进度。返回 {status, tasks, cost:{inputTokens,outputTokens,cacheReadTokens}, result}。已完成的 subagent 具有幂等性（1 小时清理窗口内重复读取返回相同结果）。NOT_FOUND 表示 subagent 已被清理。
+- subagent_status({taskId}) 轮询进度。返回 {status, tasks, usage:{inputTokens,outputTokens,cacheReadTokens}, result}。已完成的 subagent 具有幂等性（1 小时清理窗口内重复读取返回相同结果）。NOT_FOUND 表示 subagent 已被清理。
 - subagent_abort({taskId}) 停止运行中的 subagent。幂等；已完成/失败/中止的 subagent 返回当前状态不变。
 - 每次 start 后必须轮询 subagent_status 直到 status 为 completed、failed 或 aborted。不要同步等待或假设已完成。已完成的 subagent 通过 message_send 通知父 session，消息包含 taskId 和 origin。
 - subagent 拥有隔离上下文（3 层压缩，完成后丢弃）。父 session 只收到最终结果——不含 subagent 内部工具调用。

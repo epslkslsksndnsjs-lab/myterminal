@@ -982,3 +982,118 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 | 开发约束 | 见本文件 §3 |
 | 贡献指南 | [CONTRIBUTING.md](./CONTRIBUTING.md) |
 | 安全披露 | [SECURITY.md](./SECURITY.md) |
+
+---
+
+## 11. ADR-0047 T16 — 回归 + 文档同步汇总报告（票 #42，2026-08-15）
+
+- 基线：`wk-a4 @ 3105dc3`（ADR-0051 全 29 票整合 HEAD）
+- 性质：全量交付基线（T01–T15 收口验证 + 文档同步 + ADR 待实施清单核对 + D1–D18 落地报告）
+- 验收标准 5（用户端到端基线对比）由 #96 承接，本报告仅留链接位（见遗留项）
+
+### 一、验证结果（验收标准 1）
+
+| 门 | 命令 | 结果 |
+|---|---|---|
+| 全量测试 | `bun run build && bun test --timeout 120000 test/*.test.mjs` | **1184 pass / 0 fail**（103 文件，58.51s） |
+| 性能回归门 | `PERF_GATE_BLOCK=1 bun scripts/compare-perf.mjs`（median of 5） | **全 8 指标 PASS**，无回退 |
+| AC8 专项 | `bun test test/issue-102-observe-messages-perf.test.mjs` | **4 pass / 0 fail**（AC1 语义 + AC2 redact 单次 <500ms） |
+
+性能门指标（`PERF_GATE_BLOCK=1 bun scripts/compare-perf.mjs`，median of 5 样本、机器相关，复跑 ±10% 波动；当前 vs `scripts/perf-baseline.json`）：
+
+| 指标 | 基线 | 当前 | Δ |
+|---|---|---|---|
+| history.elapsedMs | 329.1 | 163.2 | **−50.4%** |
+| inbox.elapsedMs | 225.7 | 132.4 | **−41.3%** |
+| inbox.rssDeltaBytes（内存，informational） | 27.2 MB | 25.1 MB | −7.6% |
+| tui.snapshotMs | 2.01 | 1.06 | −47.5% |
+| issue63.context.firstMs | 146.6 | 17.3 | −88.2% |
+| issue63.context.repeat50Ms | 32.5 | 16.9 | −47.9% |
+| issue63.microCompact.elapsedMs | 1.57 | 1.15 | −26.5% |
+| issue63.timeline.elapsedMs | 0.17 | 0.09 | −48.3% |
+
+### 二、D1–D18 落地状态核对（验收标准 4；证据 = 3105dc3 实读源码）
+
+| 决策 | 内容 | 状态 | 落地证据 |
+|---|---|---|---|
+| D1 | 结果脏乱嵌套度路由，L1/L2/L3 三层 | ✅ | `tool-parse.ts` `resolveShape`（内联 shapeResult → 中心表 → passthrough）+ 20 函数 |
+| D2 | 主模型双通道覆盖（subagent 内部不整形） | ✅ | `extensions.ts` `applyShape` 接 actions/MCP 出口；subagent 内部上下文不整形 |
+| D2.1 | `subagent_status.result` L3-if-small 例外 | ✅ | `isSubagentCompletedResult`（仅 completed + 自由文本 + ≤24K）；W2-07(#90) D-13 旁挂式升级 |
+| D3 | 注册时静态声明 | ✅ | `TOOL_SHAPES` 中心表 16 条；运行时只查表（D3→D18.1 模式无关升级） |
+| D4 | 网页端 L3 放行 | ✅（代码） | L3 不按通道禁用；transport 感知超时 actions≤8s；**45s 实测归 #96** |
+| D5 | 中心表为主 + 可选内联 | ✅ | 16 条注册；`resolveShape` 第一级读内联 `shapeResult` |
+| D6 | L3 三重护栏 | ✅ | `l3TimeoutMs`（actions 8s/其他 20s）/ `estimateTokens`+`RAW_BUDGET_TOKENS=min(24000, ctx−2048)`（P2-01 #97 运行时化）/ `l3MaxPerSession`=50（engine.ts） |
+| D7 | 双版本审计 | ✅ | `ctx.audit({rawResult, shapedResult, shaping})`；`withAudit`→`finishAudit`；W1-09(#82) `stripAuditRawFields` 剥模型可见通道 |
+| D8 | 本地小模型设施 | ✅ | `src/l3/adapter.ts` + `llama-adapter.ts` + `registry.ts` + node-llama-cpp 依赖 |
+| D8.2 | 单例懒加载 + 上下文隔离 | ✅ | `getL3Adapter`/`resetL3Adapter` 单例（registry.ts） |
+| D8.3 | 模型选型硬约束 | ✅ | T12 真模型探测：Qwen3.5-2B max ctx=256K 回标；non-thinking/GBNF 由 llama-adapter 满足 |
+| D8.4 | prompt 模板 + 失败矩阵 | ✅ | `prompt.ts` `buildInstruction` + `engine.ts` `applyQ5`（字段白名单 + 值存在性） |
+| D9 | 只改 `data.result` | ✅ | shaper 只动 result；events/error/ok 原样；MCP `events`（checkpoint_due/CHECKPOINT_REQUIRED）透传 |
+| D10 | 中心表主注册表（非回退） | ✅ | 同 D5 |
+| D11 | 失败静默 passthrough + 仅审计 | ✅ | `shaping.reason`（reducer-threw/over-budget/quota/passthrough…）只进审计；全失败矩阵 fail-open |
+| D12 | 错误长度帽（message+details 双帽） | ✅ | `capError`/`capErrorResponse`（2000/6000）；P2-02(#98) env 旋钮 `MYTERMINAL_ERROR_MESSAGE_MAX_CHARS`/`MYTERMINAL_ERROR_DETAILS_MAX_CHARS`；`continuation` 子键保全（Q4 双分支） |
+| D13 | task_poll 递归 + continuation 保全 | ✅ | `isNestedOperation` 递归 `operation.data.result` + `operation.error`；保全 `operation.ok`/`data.tool`；Q6 整体回退 / Q7 嵌套预算门 / Q8 身份缓存（operationCache） |
+| D14 | L3 面向脏乱嵌套（≤24K） | ✅ | 预算门内小脏数据走 L3；超门 fail-open 回 L1（L2 悖论落地，D-4 兜底） |
+| D15 | 主动精简 reducer | ✅ | `reduceSessionList`/`reduceSessionHistory`/`reduceMessageConversation` 等（摘要替换 + count/分页）；`read_file_range` handler 流式截断（0051 D-16 A6 豁免登记） |
+| D16 | 派生字段标准化（count/totalCount） | ✅ | `applyCountRule` 强制 count/totalCount；D16.3 聚合 opt-in（P2-03 #99：search_text fileCount/uniqueFiles、git_log commitCount） |
+| D17 | 跨层统一静默 | ✅ | 无 `_shapedBy` 等层标记；诚实性只经 count/totalCount/continuation 原生字段 |
+| D18 | 运行时模式正交（mode-agnostic/多进程/MCP） | ✅ | 不读模式标志；cluster 参与者 L3 默认关（`setL3ClusterMode`，0051 D-6）；MCP 自有工具完整 L1/L2/L3 + `isPointerResult`（T13） |
+
+**0051 修订决策核验**（全部 29 票整合 @3105dc3，1184/0）：
+
+- D-4 路由裁决（schema 优先、reduce 兜底）✅ `resolveShape` 双条目实现（L3 失败回落 L1 reduce）
+- D-3 L3 名单 10→7 ✅ #103 增补-04：git_status/git_log/git_show 豁免回 L1（无 schema → L3 永不进入），git_diff 先例
+- D-11 schema 实际注册 3 份：`EXECUTE_CLI_SCHEMA`、`RUN_CHECKS_SCHEMA`、`SUBAGENT_STATUS_RESULT_SCHEMA`（git_* 三份随豁免不注册）
+- D-12 git_show pathspec bug ✅ W2-04(#87) `core-tools.ts:472-476`：revision 移到 `--` 前，'-' 前缀例外逐字节保全
+- D-13 subagent_status 旁挂式 ✅ 抽取挂 `data.result.extracted`，`result` 字段原文不动（0048 D11 铁律）
+- D-7 分发 ✅ `l3ModelPath()` 链：env > 安装根 models 目录 > 裸文件名；`myterminal l3-model fetch`（sha256 钉死，幂等）
+- D-8 可见性三通道 ✅ fetch 输出 + `/health` l3 字段（server.ts:131）+ 启动日志（warmup.ts:138 缺失提示指向 fetch）
+- D-15 P2 三票全整合 ✅ #97（预算门运行时化）/ #98（D12 env 旋钮）/ #99（D16.3 聚合字段）
+
+### 三、ADR-0047「待实施检查清单」逐项核对（验收标准 3）
+
+已核对并**在 ADR 文档勾选**（docs/adr/0047，本地工作文档不入 git）：
+
+- 开工前 7 项：**6 项 [x] + 1 项 [~]**——D4「K5 45s 实测」为唯一遗留（代码侧 transport 感知超时已兜底；45s 协同实测属用户端到端范畴 → #96）
+- 补遗3 新增 4 项：**4 项全 [x]**（git_show/run_checks reducer、read_file_range 截断〔0051 D-16 A6 豁免登记〕、subagent_status L3-if-small〔D-13 旁挂式升级〕、真实键路径 reducer）
+
+### 四、docs 一致性核对（验收标准 2）
+
+逐段落核对 `docs/` 全部用户向文档（README[.zh-CN]、ACTIONS_SETUP[.zh-CN]、GPT_INSTRUCTIONS[.zh-CN]、MANUAL_INSTALL、PRIVACY[.zh-CN]、PROMPT_PLAYBOOK[.zh-CN]、SUBAGENT_SETUP[.zh-CN]、architecture.md）：
+
+- **结论：无工具结果字段级形状描述**——文档描述的都是控制流（continuation/nextCall/checkpoint/task_poll `status=running`）与信封结构（subagent_status {status, tasks, usage, result} 等），整形（D9/D17）不碰控制流、信封键不变（D-13 只旁挂新增 `extracted`）→ 与整形后形状天然一致
+- **修正 1（真实文档 bug）**：`docs/GPT_INSTRUCTIONS.zh-CN.md` subagent_status 信封字段 `cost` → `usage`（实现 `runner.ts:218` 为 `usage`，英文版正确）
+- **修正 2（D-7/D-8 可见面同步）**：`docs/MANUAL_INSTALL.md` 补「可选：L3 本地模型」节（EN + 中文）——`myterminal l3-model fetch`（幂等/sha256 钉死）、启动日志提示、`MYTERMINAL_L3_ENABLED`/`MYTERMINAL_L3_MODEL_PATH` 旋钮语义（与 registry.ts 实现一致）
+- 观察项（未改）：README/architecture 未记载 `/health` l3 字段与 L3 特性——非结果格式描述，超出本票修正范围；如需补记另行开票
+
+### 五、遗留项（验收标准 5）
+
+1. **用户端到端验收（基线对比）**：#96 承接（tool-returns/ 137 文件四窗对照）。对照表位置：TODO（调度窗回填 #96 对照表链接）
+2. D4「K5 45s 实测」同上归 #96。
+
+### 六、e2e 证据链接
+
+| 票 | 测试文件（@3105dc3，整合基线） |
+|---|---|
+| T01 #29 | test/issue-29-shaping-skeleton.test.mjs |
+| T02 #30 | test/issue-30-error-details-normalization.test.mjs |
+| T03 #31 | test/issue-31-l2-engine.test.mjs |
+| T04 #32 | test/issue-32-d12-error-caps.test.mjs |
+| T05 #33 | test/issue-33-task-poll-recursion.test.mjs |
+| T07 #35 | test/issue-35-session-list-trim.test.mjs |
+| T08 #36 | test/issue-36-session-history-summary.test.mjs |
+| T09 #37 | test/issue-37-l3-adapter-registry.test.mjs |
+| T10 #38 | test/issue-38-l3-engine.test.mjs |
+| T11 #45 | test/issue-45-subagent-status-l3.test.mjs |
+| T13 #40 | test/issue-40-mcp-cluster.test.mjs |
+| T14 #44 | test/issue-44-l3-prompt-failure-matrix.test.mjs |
+| T12/T15 | 检查点/探测票（T12 真模型探测归 T15 检查点验收） |
+| 0051 全 29 票 | 整合 HEAD `3105dc3`，全量 1184/0（逐票 hash 见 git log） |
+
+### 七、结论
+
+- 验收标准 1 ✅（1184/0 + 性能门 PASS + AC8 4/0）
+- 验收标准 2 ✅（逐段核对：天然一致 + 2 处修正）
+- 验收标准 3 ✅（ADR 清单逐项勾选，仅 D4 45s 实测遗留 → #96）
+- 验收标准 4 ✅（本报告即汇总）
+- 验收标准 5 ⏳（#96 承接，链接位 TODO）

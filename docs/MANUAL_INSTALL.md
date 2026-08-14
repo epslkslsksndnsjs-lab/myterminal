@@ -88,6 +88,27 @@ Expand-Archive $Asset -DestinationPath .\candidate -Force
 & .\candidate\myterminal.exe --verify-installation
 ```
 
+## Optional: L3 local model
+
+The tool-result shaping system's L3 layer uses a bundled local small model (Qwen GGUF) for free-text result extraction. The model is **not** part of the release archive; when it is missing, the first startup log prints a hint:
+
+```text
+L3 model missing at <path>: run `myterminal l3-model fetch` to download and enable L3
+```
+
+Download and enable it at any time (idempotent; re-running reports status):
+
+```bash
+myterminal l3-model fetch
+```
+
+The download is SHA-256-pinned. Until the fetch completes, L3 stays off and tool results fall back to the deterministic L1/L2 shaping layers (fail-open, no functional loss).
+
+Optional environment controls:
+
+- `MYTERMINAL_L3_ENABLED` — explicit override: `1`/`true`/`yes`/`on` forces L3 on; any other value forces it off. When unset, L3 is on for a standalone process and off for shared-port cluster participants.
+- `MYTERMINAL_L3_MODEL_PATH` — override the GGUF path. When unset, the resolver checks the install-root `models` directory, then falls back to the bare filename.
+
 ## Recovery
 
 - Re-running the same installer repairs an incomplete versioned layout.
@@ -155,6 +176,27 @@ myterminal
 ```
 
 安装器会校验 SHA-256，把程序写入 `%USERPROFILE%\MyTerminal\releases\v0.1.2`，原子更新 `current`，并把命令启动器目录加入用户 PATH。如果当前 PowerShell 尚未识别新命令，请重新打开终端。
+
+## 可选：L3 本地模型
+
+工具结果整形系统的 L3 层使用随框架分发的本地小模型（Qwen GGUF）做自由文本结果抽取。模型**不在**发布包内；缺失时首次启动日志会提示：
+
+```text
+L3 model missing at <path>: run `myterminal l3-model fetch` to download and enable L3
+```
+
+可随时下载启用（幂等；重复运行报告状态）：
+
+```bash
+myterminal l3-model fetch
+```
+
+下载以 SHA-256 钉死。fetch 完成前 L3 保持关闭，工具结果回落到确定性的 L1/L2 整形层（fail-open，功能不丢失）。
+
+可选环境变量：
+
+- `MYTERMINAL_L3_ENABLED` —— 显式开关：`1`/`true`/`yes`/`on` 强制开启；其他任意值强制关闭。未设置时，独立进程默认开启，共享端口的多进程参与者默认关闭。
+- `MYTERMINAL_L3_MODEL_PATH` —— 覆盖 GGUF 路径。未设置时按「安装根 models 目录 → 裸文件名」顺序解析。
 
 ## 恢复说明
 
