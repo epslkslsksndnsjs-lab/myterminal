@@ -54,6 +54,7 @@ export type ToolReducer = (result: JsonObject, ctx: ShapeContext) => JsonObject;
  * L1 中心注册表条目（D5/D10：主注册表）。
  * - `reduce` → L1 静态规则层（被动去噪 / 主动精简，零模型）
  * - `schema` → L3 模型层（脏乱/嵌套结果走本地小模型；引擎在 T10 落地，T03 阶段 fail-open）
+ * - 同时含 reduce+schema → D-4 双条目（W2-01 #84）：schema 优先、reduce 兜底
  * 未声明（无 reduce 无 schema）→ passthrough（绝不套壳）。
  */
 export type ToolShape = {
@@ -63,8 +64,8 @@ export type ToolShape = {
 
 // ── 预算门（D6 护栏2 / Q3）─────────────────────────────────────────────────────
 //
-// 进 L3 前量 estimateTokens(safeRaw) ≤ RAW_BUDGET_TOKENS，超限 → 直接 passthrough
-// （不调模型），审计记 reason `over-budget`。
+// 进 L3 前量 estimateTokens(safeRaw) ≤ RAW_BUDGET_TOKENS，超限 → 不调模型，审计记
+// reason `over-budget`：纯 schema 条目直接 passthrough；D-4 双条目（W2-01 #84）回落 L1。
 // 阈值公式 RAW_BUDGET_TOKENS = min(24000, L3_ctx − 2048)。T12 实测 Qwen3.5-2B
 // max ctx = 262144（256K）≥ 26048 → min(24000, 262144−2048) = 24000，门槛维持 24K
 // （不降门槛、不升档；证据 .scratch/adr0047-tickets/t12-probe/eval.mjs）。
@@ -653,6 +654,8 @@ function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): Json
 // W1-03（#76）：list_dir 主动精简（D16 count/totalCount + D15 截断分页，0050 A3）。
 // W1-04（#77）：message_inbox / message_list / message_conversation 主动精简 + 分页（0050 A4；
 // store 侧分页支持见 core-tools.ts / store.ts）。
+// W2-01（#84）：D-4 双条目路由（reduce+schema → schema 优先、reduce 兜底）；六真工具 schema
+// 注册归后续波2 票，本票以测试 probe 条目保证 kind:'l3' 分支可达（0050 B1 销项）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
@@ -684,20 +687,24 @@ export type ShapeContext = {
   audit: (record: ShapingAuditRecord) => void;
 };
 
-// ── L2 执行层：路由判定（解析顺序，D5/D3）─────────────────────────────────────
+// ── L2 执行层：路由判定（解析顺序，D5/D3 + D-4 双条目）────────────────────────
 //
 // 1) 内联 ToolDefinition.shapeResult → L1
-// 2) 中心表 TOOL_SHAPES：reduce → L1 / schema → L3
+// 2) 中心表 TOOL_SHAPES：
+//    - reduce+schema 双条目 → dual（D-4：schema 优先、reduce 兜底，W2-01 #84）
+//    - 仅 reduce → L1 / 仅 schema → L3
 // 3) 都无 → passthrough（D3 未声明工具原样放行）
 // 零额外运行时判断（D3/D18.1 mode-agnostic）；L1/L2 零模型。
 type ResolvedShape =
   | { kind: 'l1'; reduce: ToolReducer }
   | { kind: 'l3'; schema: JsonSchema }
+  | { kind: 'dual'; reduce: ToolReducer; schema: JsonSchema }
   | { kind: 'passthrough' };
 
 function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): ResolvedShape {
   if (toolDef?.shapeResult) return { kind: 'l1', reduce: toolDef.shapeResult };
   const shape = TOOL_SHAPES.get(toolName);
+  if (shape?.reduce && shape?.schema) return { kind: 'dual', reduce: shape.reduce, schema: shape.schema };
   if (shape?.reduce) return { kind: 'l1', reduce: shape.reduce };
   if (shape?.schema) return { kind: 'l3', schema: shape.schema };
   return { kind: 'passthrough' };
@@ -794,6 +801,70 @@ function isPointerResult(result: unknown): boolean {
 }
 
 /**
+ * L1 reducer 应用（D-4 双条目回落与纯 L1 共用）：applyCountRule + pagination/__reduction
+ * 内部提示剥离（绝不进模型上下文，D17）+ 审计精简详情。reducer 抛错 → fail-open 原样
+ * passthrough（reason=reducer-threw，D11）。
+ */
+function applyL1Reduce(response: ToolResponse, reduce: ToolReducer, rawResult: unknown, ctx: ShapeContext): { base: ToolResponse; shaping: ShapingAudit } {
+  try {
+    const reducedRaw = reduce(rawResult as JsonObject, ctx);
+    const reduced = applyCountRule(reducedRaw);
+    // 剥离 active-trim reducer 返回的内部提示（绝不进模型上下文，D17）：
+    //  - pagination → L2 合并发射 data.continuation.pagination
+    //  - __reduction → 写入审计精简详情
+    const pagination = (reduced as JsonObject).pagination;
+    const reduction = (reduced as JsonObject).__reduction;
+    delete (reduced as JsonObject).pagination;
+    delete (reduced as JsonObject).__reduction;
+    let base: ToolResponse = { ...response, data: { ...(response.data ?? {}), result: reduced } };
+    let shaping: ShapingAudit = { applied: true };
+    // D15/T07：L2 是唯一发射方——把 reducer 的 pagination 提示合并进 data.continuation
+    // （不覆盖 decorateContinuation 的控制流 continuation；控制流 continuation 在 extensions.ts
+    //  注入，此处只在其上叠加 pagination 子键）
+    if (pagination && isPlainObject(pagination) && !!(pagination as JsonObject).truncated) {
+      const p = pagination as JsonObject;
+      const existing = (base.data as JsonObject | undefined)?.continuation;
+      const paginationContinuation: JsonObject = {
+        pagination: {
+          truncated: true,
+          ...(p.nextCall ? { nextCall: p.nextCall } : {}),
+        },
+      };
+      (base.data as JsonObject).continuation = existing && isPlainObject(existing)
+        ? { ...(existing as JsonObject), ...paginationContinuation }
+        : paginationContinuation;
+    }
+    // D15/T07 审计：精简详情（raw 完整版已由 D7 保留）
+    if (reduction && isPlainObject(reduction)) {
+      const r = reduction as JsonObject;
+      shaping = {
+        ...shaping,
+        reduced: true,
+        fieldsReduced: typeof r.fieldsReduced === 'number' ? r.fieldsReduced : 0,
+        entriesTruncated: typeof r.entriesTruncated === 'number' ? r.entriesTruncated : 0,
+        originalSize: typeof r.originalSize === 'number' ? r.originalSize : 0,
+        reducedSize: typeof r.reducedSize === 'number' ? r.reducedSize : 0,
+      };
+    }
+    return { base, shaping };
+  } catch {
+    // D11 fail-open：reducer 抛错 → 原样 passthrough，记 reducer-threw
+    return { base: response, shaping: { applied: false, reason: 'reducer-threw' } };
+  }
+}
+
+/**
+ * D-4 双条目回落（W2-01 #84）：schema 优先失败后 L1 顶上。L1 reducer 自身抛错 →
+ * 原样 passthrough（reason=reducer-threw，D11）；成功 → applied:true + 注记 L3 失败原因
+ * （reason=失败矩阵 reason，审计记录 L3 为何跳过；D7 双版本审计语义）。
+ */
+function applyDualFallback(response: ToolResponse, reduce: ToolReducer, rawResult: unknown, ctx: ShapeContext, l3Reason: ShapingReason): { base: ToolResponse; shaping: ShapingAudit } {
+  const applied = applyL1Reduce(response, reduce, rawResult, ctx);
+  if (!applied.shaping.applied) return applied; // reducer-threw → D11 原样
+  return { base: applied.base, shaping: { ...applied.shaping, reason: l3Reason } };
+}
+
+/**
  * 工具响应整形入口（D13：包住最终装饰响应，含 decorateContinuation 后的长任务结构）。
  *
  * 执行顺序（T03 + T04 #32）：
@@ -828,71 +899,44 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
     if (resolved.kind === 'passthrough') {
       base = response;
       shaping = { applied: false, reason: 'passthrough' };
-    } else if (resolved.kind === 'l3') {
-      // 预算门（D6 护栏2 / Q3）：超门直接 passthrough，记 over-budget，绝不进 L3
+    } else if (resolved.kind === 'l3' || resolved.kind === 'dual') {
+      // D-4 双条目（W2-01 #84）：schema 优先、reduce 兜底——先过预算门走 L3；超门 / 配额
+      // 烧穿 / 模型不可用 / 超时 / Q5 拒识（失败矩阵各 reason）→ 回落 L1 reduce（补遗3
+      // 「fail-open 回 L1」唯一自洽读法）。纯 schema 条目失败 → passthrough（D11 原样，
+      // 现状保留）。链式（L1→L3 两段处理）永不实施（D2 双重整形禁忌）。回落审计：
+      // applied:true + reason=失败矩阵 reason（注记 L3 为何跳过，D7 双版本审计）。
       if (estimateTokens(JSON.stringify(rawResult)) > RAW_BUDGET_TOKENS) {
-        base = response;
-        shaping = { applied: false, reason: 'over-budget' };
+        // 预算门（D6 护栏2 / Q3）：超门不进 L3；双条目回落 L1，纯 schema 原样 passthrough
+        if (resolved.kind === 'dual') {
+          const applied = applyDualFallback(response, resolved.reduce, rawResult, ctx, 'over-budget');
+          base = applied.base;
+          shaping = applied.shaping;
+        } else {
+          base = response;
+          shaping = { applied: false, reason: 'over-budget' };
+        }
       } else {
         // T10：调 L3 引擎（护栏1 transport 感知超时 + 护栏3 会话配额 + Q5 字段白名单/值存在性
-        // 校验 + 调模型，全路径 fail-open）。成功 → 用 Q5 后结果替换 data.result；失败 → 原样
-        // passthrough + reason（l3-unavailable-timeout / quota / passthrough）。
+        // 校验 + 调模型，全路径 fail-open）。成功 → 用 Q5 后结果替换 data.result；失败 → 双条目
+        // 回落 L1 reduce / 纯 schema 原样 passthrough + reason（l3-unavailable-timeout / quota / ...）。
         const outcome = await runL3(rawResult as JsonObject, resolved.schema, ctx.transport, ctx.sessionId);
         if (outcome.shaped) {
           base = { ...response, data: { ...(response.data ?? {}), result: outcome.shaped } };
           shaping = { applied: true };
+        } else if (resolved.kind === 'dual') {
+          const applied = applyDualFallback(response, resolved.reduce, rawResult, ctx, outcome.reason ?? 'l3-unavailable');
+          base = applied.base;
+          shaping = applied.shaping;
         } else {
           base = response;
           shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
         }
       }
     } else {
-      // L1 被动/主动 reducer（零模型）
-      try {
-        const reducedRaw = resolved.reduce(rawResult as JsonObject, ctx);
-        const reduced = applyCountRule(reducedRaw);
-        // 剥离 active-trim reducer 返回的内部提示（绝不进模型上下文，D17）：
-        //  - pagination → L2 合并发射 data.continuation.pagination
-        //  - __reduction → 写入审计精简详情
-        const pagination = (reduced as JsonObject).pagination;
-        const reduction = (reduced as JsonObject).__reduction;
-        delete (reduced as JsonObject).pagination;
-        delete (reduced as JsonObject).__reduction;
-        base = { ...response, data: { ...(response.data ?? {}), result: reduced } };
-        shaping = { applied: true };
-        // D15/T07：L2 是唯一发射方——把 reducer 的 pagination 提示合并进 data.continuation
-        // （不覆盖 decorateContinuation 的控制流 continuation；控制流 continuation 在 extensions.ts 注入，
-        //  此处只在其上叠加 pagination 子键）
-        if (pagination && isPlainObject(pagination) && !!(pagination as JsonObject).truncated) {
-          const p = pagination as JsonObject;
-          const existing = (base.data as JsonObject | undefined)?.continuation;
-          const paginationContinuation: JsonObject = {
-            pagination: {
-              truncated: true,
-              ...(p.nextCall ? { nextCall: p.nextCall } : {}),
-            },
-          };
-          (base.data as JsonObject).continuation = existing && isPlainObject(existing)
-            ? { ...(existing as JsonObject), ...paginationContinuation }
-            : paginationContinuation;
-        }
-        // D15/T07 审计：精简详情（raw 完整版已由 D7 保留）
-        if (reduction && isPlainObject(reduction)) {
-          const r = reduction as JsonObject;
-          shaping = {
-            ...shaping,
-            reduced: true,
-            fieldsReduced: typeof r.fieldsReduced === 'number' ? r.fieldsReduced : 0,
-            entriesTruncated: typeof r.entriesTruncated === 'number' ? r.entriesTruncated : 0,
-            originalSize: typeof r.originalSize === 'number' ? r.originalSize : 0,
-            reducedSize: typeof r.reducedSize === 'number' ? r.reducedSize : 0,
-          };
-        }
-      } catch {
-        // D11 fail-open：reducer 抛错 → 原样 passthrough，记 reducer-threw
-        base = response;
-        shaping = { applied: false, reason: 'reducer-threw' };
-      }
+      // L1 被动/主动 reducer（零模型）；与 D-4 双条目回落共用同一执行路径（applyL1Reduce）
+      const applied = applyL1Reduce(response, resolved.reduce, rawResult, ctx);
+      base = applied.base;
+      shaping = applied.shaping;
     }
   }
 
