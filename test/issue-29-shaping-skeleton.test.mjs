@@ -171,7 +171,10 @@ test('T01-B: actions execute_cli 失败响应原样（error 三要素 + result �
   const server = await createRuntime();
   try {
     const identity = await registerRoot(server);
-    const exec = await actionsCall(server, 'execute_cli', { command: 'echo t01b-err >&2; exit 3' }, identity);
+    // win32 的 execute_cli 经 cmd /c batch 执行，`>&2;` 是 sh 语法（cmd 不识别 → 命令成功 → 200）；
+    // 平台门控等价失败命令：stderr 含 t01b-err + exit 3
+    const failCommand = process.platform === 'win32' ? 'echo t01b-err 1>&2 & exit /b 3' : 'echo t01b-err >&2; exit 3';
+    const exec = await actionsCall(server, 'execute_cli', { command: failCommand }, identity);
     // 失败响应 HTTP 400 是 sendAction 的既有映射（非整形行为）
     assert.equal(exec.status, 400);
     assert.equal(exec.body.ok, false);

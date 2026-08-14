@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import {
   fetchL3Model, L3_MODEL_SHA256, L3_MODEL_SOURCE_URL,
   runL3ModelFetchCli, formatFetchCompletion, sha256File,
@@ -308,7 +309,8 @@ test('AC5 错误路径：CLI 处理器返回 1 并输出失败原因', async () 
 // ── AC1：CLI 子命令注册（spawn node，遵循 cli-regression 手法）─────────────────
 
 test('AC1 CLI 帮助可见 l3-model fetch', () => {
-  const help = spawnSync('node', [CLI, '--help'], { encoding: 'utf8', timeout: 15_000 });
+  // 显式 env 遵循 cli-regression 手法：win32 下 spawnSync 不传 env 会异常退出（status null）
+  const help = spawnSync('node', [CLI, '--help'], { encoding: 'utf8', timeout: 15_000, env: { ...process.env } });
   assert.strictEqual(help.status, 0, help.stderr);
   assert.match(help.stdout, /l3-model fetch/);
 });
@@ -343,8 +345,9 @@ test('AC6 modelFilePath() === installationRoot()/models/DEFAULT（同源拼接�
 test('AC6 dev 推导：无 MYTERMINAL_HOME → 安装根 = dist 模块目录上级', () => {
   withEnv({ MYTERMINAL_HOME: undefined, MYTERMINAL_L3_MODEL_PATH: undefined }, () => {
     // dev 推导：dist/update.js 模块目录上级（installationRoot 以自身 import.meta.url 推导）；
-    // 经 dist/update.js 自身 URL 推导期望，不写死绝对路径
-    const expectedRoot = path.resolve(path.dirname(path.dirname(new URL('../dist/update.js', import.meta.url).pathname)));
+    // 经 dist/update.js 自身 URL 推导期望，不写死绝对路径。用 fileURLToPath（与 src 同语义）：
+    // .pathname 在 win32 带前导 `/`，path.resolve 会拼出 `D:\D:\...` 双盘符
+    const expectedRoot = path.resolve(path.dirname(path.dirname(fileURLToPath(new URL('../dist/update.js', import.meta.url)))));
     assert.strictEqual(installationRoot(), expectedRoot);
     assert.strictEqual(modelFilePath(), path.join(expectedRoot, 'models', DEFAULT_L3_MODEL_PATH));
   });

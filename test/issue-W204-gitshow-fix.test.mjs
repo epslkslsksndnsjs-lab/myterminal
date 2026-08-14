@@ -213,12 +213,14 @@ test('W2-04-AC6: bug 机制锁定 — `git show --stat --oneline -- <rev>` 恒�
     execFileSync('git', ['add', '-A'], { cwd: dir });
     execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
 
-    // 旧拼接：`--` 把 revision 当 pathspec → 恒空（D-12 修复对象，与 L3 无关，保留锁定）
+    // 旧拼接：`--` 把 revision 当 pathspec → 无文件 diffstat（D-12 修复对象，与 L3 无关，保留锁定）。
+    // git 版本差异：新版 git 会打印 oneline 头（如 `88b9f43 seed`）但 diffstat 仍恒空——
+    // 机制锁定取跨版本稳定不变量：旧拼接永不返回文件 diffstat。
     const buggy = execFileSync('git', ['show', '--stat', '--oneline', '--', 'HEAD'], { cwd: dir, encoding: 'utf8' });
-    assert.equal(buggy.trim(), '', '旧拼接按 revision 查询恒空（bug 机制）');
-    // 修复拼接：revision 在 `--` 前 → 非空
+    assert.ok(!buggy.includes('f.txt'), '旧拼接按 revision 查询无文件 diffstat（bug 机制）');
+    // 修复拼接：revision 在 `--` 前 → 含文件 diffstat
     const fixed = execFileSync('git', ['show', 'HEAD', '--stat', '--oneline'], { cwd: dir, encoding: 'utf8' });
-    assert.ok(fixed.trim().length > 0, '修复拼接返回非空 stdout');
+    assert.ok(fixed.includes('f.txt'), '修复拼接返回文件 diffstat');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

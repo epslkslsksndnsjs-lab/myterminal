@@ -141,7 +141,8 @@ test('W1-09 AC1: 审计 JSONL 保留 rawResult + shapedResult 双版本（raw �
 
     assert.ok(execAudit.data.shapedResult, 'D7：审计链保留整形后版 shapedResult');
     assert.equal(execAudit.data.shapedResult.data.result.command, undefined, 'shaped 已剥噪声（command）');
-    assert.equal(execAudit.data.shapedResult.data.result.stdout, 'w109-dual\n', 'shaped 真实数据字段保留');
+    // win32 下 echo 输出 CRLF——断言前归一化换行，语义（内容 + 尾随换行）不变
+    assert.equal(execAudit.data.shapedResult.data.result.stdout.replace(/\r\n/g, '\n'), 'w109-dual\n', 'shaped 真实数据字段保留');
 
     assert.equal(execAudit.data.result.data.result.command, undefined, 'result 保持整形后版（兼容字段）');
     assert.equal(execAudit.data.shaping.applied, true, 'shaping 审计照常');
