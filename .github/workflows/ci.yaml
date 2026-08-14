@@ -45,7 +45,28 @@ jobs:
           root="$RUNNER_TEMP/myterminal-installer-test"
           rm -rf "$root"
           mkdir -p "$root/release" "$root/home" "$root/downloads"
-          bun build --compile --minify src/cli.ts --outfile "$root/release/myterminal"
+          # node-llama-cpp 平台包是 optionalDeps，bun install 只装宿主平台一个；
+          # bun build --compile 会静态解析 compileLLamaCpp.js 里全部平台的 import()，
+          # 非宿主平台包必须 external（宿主包保留嵌入，L3 运行时不受影响）。
+          case "${{ runner.os }}" in
+            macOS)
+              case "$(uname -m)" in
+                arm64|aarch64) host_llama="@node-llama-cpp/mac-arm64-metal" ;;
+                *) host_llama="@node-llama-cpp/mac-x64" ;;
+              esac
+              ;;
+            *)
+              case "$(uname -m)" in
+                arm64|aarch64) host_llama="@node-llama-cpp/linux-arm64" ;;
+                *) host_llama="@node-llama-cpp/linux-x64" ;;
+              esac
+              ;;
+          esac
+          llama_external=()
+          for pkg in @node-llama-cpp/linux-arm64 @node-llama-cpp/linux-armv7l @node-llama-cpp/linux-riscv64 @node-llama-cpp/linux-x64 @node-llama-cpp/linux-x64-cuda @node-llama-cpp/linux-x64-cuda-ext @node-llama-cpp/linux-x64-vulkan @node-llama-cpp/mac-arm64-metal @node-llama-cpp/mac-x64 @node-llama-cpp/win-arm64 @node-llama-cpp/win-x64 @node-llama-cpp/win-x64-cuda @node-llama-cpp/win-x64-cuda-ext @node-llama-cpp/win-x64-vulkan; do
+            [[ "$pkg" == "$host_llama" ]] || llama_external+=(--external "$pkg")
+          done
+          bun build --compile --minify src/cli.ts "${llama_external[@]}" --outfile "$root/release/myterminal"
           if [[ "${{ runner.os }}" == "macOS" ]]; then
             asset="myterminal-darwin-$( [[ "$(uname -m)" == arm64 ]] && echo arm64 || echo x64 ).tar.gz"
             cp scripts/mac-one-shot-awake-lock.swift "$root/release/mac-one-shot-awake-lock.swift"
@@ -98,7 +119,25 @@ jobs:
           $downloads = Join-Path $root 'downloads'
           New-Item -ItemType Directory -Force -Path $release,$downloads | Out-Null
           $exe = Join-Path $release 'myterminal.exe'
-          bun build --compile --minify src/cli.ts --outfile $exe
+          # node-llama-cpp 平台包是 optionalDeps，bun install 只装宿主平台一个；
+          # bun build --compile 会静态解析 compileLLamaCpp.js 里全部平台的 import()，
+          # 非宿主平台包必须 external（宿主 win-x64 保留嵌入，L3 运行时不受影响）。
+          $llamaExternal = @(
+            '--external', '@node-llama-cpp/linux-arm64',
+            '--external', '@node-llama-cpp/linux-armv7l',
+            '--external', '@node-llama-cpp/linux-riscv64',
+            '--external', '@node-llama-cpp/linux-x64',
+            '--external', '@node-llama-cpp/linux-x64-cuda',
+            '--external', '@node-llama-cpp/linux-x64-cuda-ext',
+            '--external', '@node-llama-cpp/linux-x64-vulkan',
+            '--external', '@node-llama-cpp/mac-arm64-metal',
+            '--external', '@node-llama-cpp/mac-x64',
+            '--external', '@node-llama-cpp/win-arm64',
+            '--external', '@node-llama-cpp/win-x64-cuda',
+            '--external', '@node-llama-cpp/win-x64-cuda-ext',
+            '--external', '@node-llama-cpp/win-x64-vulkan'
+          )
+          bun build --compile --minify src/cli.ts @llamaExternal --outfile $exe
           if ($LASTEXITCODE -ne 0) { throw 'Windows binary build failed' }
           $asset = 'myterminal-windows-x64.zip'
           $archive = Join-Path $root $asset
