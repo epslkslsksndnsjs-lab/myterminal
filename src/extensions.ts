@@ -240,15 +240,15 @@ export class ExtensionService {
    * 任何失败 → fail-open 返回原始响应（D11），失败原因只进审计、绝不进结果（D17）。
    * subagent 通道（D2）不整形，原样返回。
    */
-  private applyShape(
+  private async applyShape(
     response: ToolResponse,
     sessionId: string | undefined,
     transport: InvocationContext['transport'],
-  ): { response: ToolResponse; shaping: ShapingAudit | undefined } {
+  ): Promise<{ response: ToolResponse; shaping: ShapingAudit | undefined }> {
     if (transport === 'subagent') return { response, shaping: undefined };
     let shaping: ShapingAudit | undefined;
     try {
-      const shaped = shapeToolResponse(response, {
+      const shaped = await shapeToolResponse(response, {
         transport,
         sessionId,
         resolveTool: (name) => this.resolveTool(name),
@@ -306,14 +306,14 @@ export class ExtensionService {
       const response = await handlers.onSuccess({ actionId, started });
       // ADR-0047（#29）：withAudit 出口统一过 shaper（subagent 通道除外，D2 不整形），
       // 审计记录整形后响应 + shaping 原因（D7）。
-      const shaped = this.applyShape(response, sessionId, source);
+      const shaped = await this.applyShape(response, sessionId, source);
       this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', shaped.response, undefined, shaped.shaping);
       return shaped.response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const response = await handlers.onError({ actionId, started, auditError }, error);
       const status = handlers.errorStatus?.(auditError) ?? 'failed';
-      const shaped = this.applyShape(response, sessionId, source);
+      const shaped = await this.applyShape(response, sessionId, source);
       this.finishAudit(sessionId, actionId, source, action, args, started, status, shaped.response, auditError, shaped.shaping);
       return shaped.response;
     } finally {
@@ -323,7 +323,7 @@ export class ExtensionService {
 
   async discover(input: JsonObject = {}, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
     // ADR-0047（#29）：守卫路径也经 shaper 出口（“所有工具响应经 shaper”）；shutdown 窗口无会话无审计，shaping 不落盘
-    if (!this.accepting) return this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport).response;
+    if (!this.accepting) return (await this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport)).response;
     let authenticated: { id: string } | undefined;
     try {
       authenticated = this.authenticate(input, context, true) ?? undefined;
@@ -334,10 +334,10 @@ export class ExtensionService {
     } catch (error) {
       const failed = failure(error);
       const sessionId = authenticated?.id;
-      return this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport).response;
+      return (await this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport)).response;
     }
     if (!authenticated) {
-      return this.applyShape({ ok: true, data: {
+      return (await this.applyShape({ ok: true, data: {
         agentMd: loadAgentMd(this.config.settingsPath),
         identityRequired: true,
         instructions: {
@@ -351,7 +351,7 @@ export class ExtensionService {
         },
         bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
         skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
-      } }, undefined, context.transport).response;
+      } }, undefined, context.transport)).response;
     }
     return this.withAudit(authenticated.id, context.transport, 'extension_discover', input, {
       onSuccess: () => {
@@ -409,7 +409,7 @@ export class ExtensionService {
   }
 
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
-    if (!this.accepting) return this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport).response;
+    if (!this.accepting) return (await this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport)).response;
     // ADR-0032 #30 修复：main 基线中 authenticate + beforeOrdinaryCall 同在方法级 try 内，
     // beginAudit 在其后（auditStarted=false）→ 两者抛错都不写 audit，只返回
     // attachEvents(failure(error), sessionId)。authenticate 抛时 sessionId 未赋值。
@@ -418,7 +418,7 @@ export class ExtensionService {
       authenticated = this.authenticate(input, context, false)!;
       this.store.beforeOrdinaryCall(authenticated.id);
     } catch (error) {
-      return this.applyShape(this.attachEvents(failure(error), authenticated?.id), authenticated?.id, context.transport).response;
+      return (await this.applyShape(this.attachEvents(failure(error), authenticated?.id), authenticated?.id, context.transport)).response;
     }
     const session = authenticated;
     return this.withAudit(session.id, context.transport, 'extension_register', input, {
@@ -458,7 +458,7 @@ export class ExtensionService {
   }
 
   async call(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
-    if (!this.accepting) return this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport).response;
+    if (!this.accepting) return (await this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport)).response;
     this.trimBackgroundTasks();
     let sessionId: string | undefined;
     const started = Date.now();
@@ -484,7 +484,7 @@ export class ExtensionService {
       }
       if (input.tool === 'task_poll') {
         if (!authenticated) throw new MyTerminalError('IDENTITY_REQUIRED', 'task_poll requires an authenticated session.');
-        const shaped = this.applyShape(this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id), authenticated.id, context.transport);
+        const shaped = await this.applyShape(this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id), authenticated.id, context.transport);
         this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, shaped.response.ok ? 'completed' : 'failed', shaped.response, shaped.response.error, shaped.shaping);
         return shaped.response;
       }
@@ -504,17 +504,17 @@ export class ExtensionService {
             (result) => this.completeBackgroundTask(task, result),
             (error: unknown) => this.failBackgroundTask(task, error),
           );
-          return this.applyShape(this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
+          return (await this.applyShape(this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
             reason: 'background_task_running',
             nextCall: { tool: 'task_poll', input: { taskId: task.id }, purpose: 'Confirm the detached operation completed before advancing the continuation plan.' },
-          }, context.transport), authenticated.id), authenticated.id, context.transport).response;
+          }, context.transport), authenticated.id), authenticated.id, context.transport)).response;
         }
         if (outcome.kind === 'error') throw outcome.error;
         const result = outcome.result;
         const problem = resultProblem(result);
         if (!problem) this.store.completeContinuationCall(authenticated.id, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
-        const shaped = this.applyShape(this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id), authenticated.id, context.transport);
+        const shaped = await this.applyShape(this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id), authenticated.id, context.transport);
         this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping);
         return shaped.response;
       }
@@ -530,16 +530,16 @@ export class ExtensionService {
         const problem = resultProblem(result);
         if (!problem) this.store.completeContinuationCall(sessionId, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
-        const shaped = this.applyShape(this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId), sessionId, context.transport);
+        const shaped = await this.applyShape(this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId), sessionId, context.transport);
         this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping);
         return shaped.response;
       }
-      return this.applyShape(this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId), sessionId, context.transport).response;
+      return (await this.applyShape(this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId), sessionId, context.transport)).response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const isPolicyRejection = auditError.code === 'NEXT_CALL_REQUIRED' || auditError.code === 'CONTINUATION_PLAN_REQUIRED';
       const failed = failure(error);
-      const shaped = this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport);
+      const shaped = await this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport);
       if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', shaped.response, auditError, shaped.shaping);
       return shaped.response;
     } finally {
@@ -628,7 +628,7 @@ export class ExtensionService {
     };
   }
 
-  private completeBackgroundTask(task: BackgroundTask, result: JsonObject): void {
+  private async completeBackgroundTask(task: BackgroundTask, result: JsonObject): Promise<void> {
     if (task.status !== 'running') return;
     const problem = resultProblem(result);
     if (!problem) this.store.completeContinuationCall(task.sessionId, task.tool, task.input);
@@ -636,18 +636,18 @@ export class ExtensionService {
     task.completedAt = new Date().toISOString();
     const base: ToolResponse = problem ? { ok: false, data: { tool: task.tool, result }, error: problem } : { ok: true, data: { tool: task.tool, result } };
     // ADR-0047（#29）：完成态在存储前整形（D18.2 执行点），完成审计记 shaping 原因（D7）
-    const shaped = this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
+    const shaped = await this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
     task.response = shaped.response;
     this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, shaped.response, problem, shaped.shaping);
     this.trimBackgroundTasks();
   }
 
-  private failBackgroundTask(task: BackgroundTask, error: unknown): void {
+  private async failBackgroundTask(task: BackgroundTask, error: unknown): Promise<void> {
     if (task.status !== 'running') return;
     const auditError = this.deriveAuditError(error);
     task.status = 'failed';
     task.completedAt = new Date().toISOString();
-    const shaped = this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
+    const shaped = await this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
     task.response = shaped.response;
     this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping);
     this.trimBackgroundTasks();

@@ -61,10 +61,10 @@ function ctx() {
   };
 }
 
-test('T07-AC1: reducible 长文本截断（保留头尾 + 标记）+ protected 字段不动', () => {
+test('T07-AC1: reducible 长文本截断（保留头尾 + 标记）+ protected 字段不动', async () => {
   const { ctx: c, getRecord } = ctx();
   const resp = makeResponse([makeSession(0, { long: true })], { total: 1 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
   const entry = shaped.data.result.sessions[0];
 
   // reducible 字段被截断并带标记，保留头尾
@@ -94,12 +94,12 @@ test('T07-AC1: reducible 长文本截断（保留头尾 + 标记）+ protected �
   assert.ok(rec.shaping.originalSize > rec.shaping.reducedSize, '原始体积应大于精简后');
 });
 
-test('T07-AC2: 限条目 20 + truncated:true + count/totalCount（真实总量）+ 分页 continuation', () => {
+test('T07-AC2: 限条目 20 + truncated:true + count/totalCount（真实总量）+ 分页 continuation', async () => {
   const { ctx: c } = ctx();
   const all = Array.from({ length: 25 }, (_, i) => makeSession(i));
   const page1 = all.slice(0, 20); // handler 已切片
   const resp = makeResponse(page1, { total: 25 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   assert.equal(shaped.data.result.sessions.length, 20, '限条目默认 20');
   assert.equal(shaped.data.result.count, 20);
@@ -114,11 +114,11 @@ test('T07-AC2: 限条目 20 + truncated:true + count/totalCount（真实总量�
   assert.equal(cont.pagination.nextCall.purpose, 'fetch next page of sessions');
 });
 
-test('T07-AC3: 单页（total ≤ limit）不截断、无 nextCall、不发射 pagination', () => {
+test('T07-AC3: 单页（total ≤ limit）不截断、无 nextCall、不发射 pagination', async () => {
   const { ctx: c } = ctx();
   const sessions = Array.from({ length: 15 }, (_, i) => makeSession(i));
   const resp = makeResponse(sessions, { total: 15 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   assert.equal(shaped.data.result.sessions.length, 15);
   assert.equal(shaped.data.result.count, 15);
@@ -127,12 +127,12 @@ test('T07-AC3: 单页（total ≤ limit）不截断、无 nextCall、不发射 p
   assert.equal(shaped.data.continuation, undefined, '单页不应发射 pagination continuation');
 });
 
-test('T07-AC4: 翻页（offset=20）count=本页、totalCount 仍真实总量', () => {
+test('T07-AC4: 翻页（offset=20）count=本页、totalCount 仍真实总量', async () => {
   const { ctx: c } = ctx();
   const all = Array.from({ length: 25 }, (_, i) => makeSession(i));
   const page2 = all.slice(20, 40); // handler 已切片：5 条
   const resp = makeResponse(page2, { total: 25, offset: 20, limit: 20 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   assert.equal(shaped.data.result.sessions.length, 5, '第二页 5 条');
   assert.equal(shaped.data.result.count, 5);
@@ -141,24 +141,24 @@ test('T07-AC4: 翻页（offset=20）count=本页、totalCount 仍真实总量', 
   assert.equal(shaped.data.continuation, undefined, '末页不发射 pagination');
 });
 
-test('T07-AC5: D17 静默 — data.result 无 pagination / __reduction 层标记', () => {
+test('T07-AC5: D17 静默 — data.result 无 pagination / __reduction 层标记', async () => {
   const { ctx: c } = ctx();
   const all = Array.from({ length: 25 }, (_, i) => makeSession(i, { long: true }));
   const page1 = all.slice(0, 20);
   const resp = makeResponse(page1, { total: 25 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   assert.equal('pagination' in shaped.data.result, false, 'data.result 不得含 pagination');
   assert.equal('__reduction' in shaped.data.result, false, 'data.result 不得含 __reduction');
   assert.equal('_shapedBy' in shaped.data.result, false, '不得含层标记');
 });
 
-test('T07-AC6: 审计精简详情完整（entriesTruncated / 体积差）', () => {
+test('T07-AC6: 审计精简详情完整（entriesTruncated / 体积差）', async () => {
   const { ctx: c, getRecord } = ctx();
   const all = Array.from({ length: 25 }, (_, i) => makeSession(i, { long: true }));
   const page1 = all.slice(0, 20);
   const resp = makeResponse(page1, { total: 25 });
-  shapeToolResponse(resp, c);
+  await shapeToolResponse(resp, c);
 
   const rec = getRecord();
   assert.equal(rec.shaping.entriesTruncated, 5, '应记录被分页省略的 5 条');
@@ -168,7 +168,7 @@ test('T07-AC6: 审计精简详情完整（entriesTruncated / 体积差）', () =
   assert.ok(rec.shaping.originalSize >= rec.shaping.reducedSize);
 });
 
-test('T07-AC7: data.continuation 合并 — 不覆盖控制流 continuation，叠加 pagination 子键', () => {
+test('T07-AC7: data.continuation 合并 — 不覆盖控制流 continuation，叠加 pagination 子键', async () => {
   const { ctx: c } = ctx();
   const all = Array.from({ length: 25 }, (_, i) => makeSession(i));
   const page1 = all.slice(0, 20);
@@ -182,7 +182,7 @@ test('T07-AC7: data.continuation 合并 — 不覆盖控制流 continuation，�
     instruction: 'immediately execute nextCall',
   };
   const resp = makeResponse(page1, { total: 25, continuation: controlFlow });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   const cont = shaped.data.continuation;
   assert.ok(cont, 'continuation 应存在');
@@ -195,16 +195,16 @@ test('T07-AC7: data.continuation 合并 — 不覆盖控制流 continuation，�
   assert.equal(cont.pagination.nextCall.tool, 'session_list', '分页 nextCall 独立');
 });
 
-test('T07-AC8: 防御 — 畸形 result（缺 sessions / 非对象条目）不抛、fail-open', () => {
+test('T07-AC8: 防御 — 畸形 result（缺 sessions / 非对象条目）不抛、fail-open', async () => {
   const { ctx: c, getRecord } = ctx();
   // 缺 sessions
-  const r1 = shapeToolResponse({ ok: true, data: { tool: 'session_list', result: { total: 0, page: { offset: 0, limit: 20 } } } }, c);
+  const r1 = await shapeToolResponse({ ok: true, data: { tool: 'session_list', result: { total: 0, page: { offset: 0, limit: 20 } } } }, c);
   assert.equal(r1.data.result.sessions.length, 0);
   assert.equal(r1.data.result.totalCount, 0);
   assert.equal(getRecord().shaping.applied, true);
 
   // 非对象条目
-  const r2 = shapeToolResponse({ ok: true, data: { tool: 'session_list', result: { sessions: [null, 42, makeSession(0)], total: 3, page: { offset: 0, limit: 20 } } } }, c);
+  const r2 = await shapeToolResponse({ ok: true, data: { tool: 'session_list', result: { sessions: [null, 42, makeSession(0)], total: 3, page: { offset: 0, limit: 20 } } } }, c);
   assert.equal(r2.data.result.sessions.length, 3, '非对象条目原样保全');
   assert.equal(r2.data.result.count, 3);
 });

@@ -1,4 +1,5 @@
 import type { InvocationContext, JsonObject, JsonSchema, ShapingAudit, ToolDefinition, ToolResponse } from './types.js';
+import { runL3 } from './l3/engine.js';
 export type { ShapingAudit } from './types.js';
 
 /**
@@ -508,7 +509,7 @@ export function clearOperationCache(taskId?: string): void {
  *  - D17 静默：结果中绝不插入层标记
  *  - D11 fail-open：reducer 抛错 / 非对象 / 超预算 → 原样 passthrough，原因只进审计
  */
-export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): ToolResponse {
+export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): Promise<ToolResponse> {
   const toolName = typeof response.data?.tool === 'string' ? response.data.tool : '';
   const rawResult = response.data?.result;
 
@@ -532,9 +533,17 @@ export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): To
         base = response;
         shaping = { applied: false, reason: 'over-budget' };
       } else {
-        // L3 引擎在 T10 落地；T03/T04 阶段 schema 工具 fail-open passthrough（零模型底线，绝不伪造）
-        base = response;
-        shaping = { applied: false, reason: 'passthrough' };
+        // T10：调 L3 引擎（护栏1 transport 感知超时 + 护栏3 会话配额 + Q5 字段白名单/值存在性
+        // 校验 + 调模型，全路径 fail-open）。成功 → 用 Q5 后结果替换 data.result；失败 → 原样
+        // passthrough + reason（l3-unavailable-timeout / quota / passthrough）。
+        const outcome = await runL3(rawResult as JsonObject, resolved.schema, ctx.transport, ctx.sessionId);
+        if (outcome.shaped) {
+          base = { ...response, data: { ...(response.data ?? {}), result: outcome.shaped } };
+          shaping = { applied: true };
+        } else {
+          base = response;
+          shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
+        }
       }
     } else {
       // L1 被动/主动 reducer（零模型）
@@ -614,7 +623,7 @@ export function shapeToolResponse(response: ToolResponse, ctx: ShapeContext): To
         try {
           // Q6 try/catch：递归整形嵌套 operation（L2 路由 operation.data.result + D12 帽
           // operation.error，保全 operation.ok / data.tool）；递归调用自身亦产嵌套审计（Q10）
-          shapedOperation = shapeToolResponse(op, ctx);
+          shapedOperation = await shapeToolResponse(op, ctx);
         } catch {
           // Q6 fail-open：递归层任一异常 → 用原始 operation 整体替换，绝不返回半成品
           shapedOperation = op;

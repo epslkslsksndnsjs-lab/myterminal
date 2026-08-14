@@ -54,7 +54,7 @@ const FULL_COMMAND_RESULT = {
 // 常量
 // ───────────────────────────────────────────────────────────
 
-test('T04-const: ERROR_MESSAGE_MAX_CHARS=2000 / ERROR_DETAILS_MAX_CHARS=6000', () => {
+test('T04-const: ERROR_MESSAGE_MAX_CHARS=2000 / ERROR_DETAILS_MAX_CHARS=6000', async () => {
   assert.equal(ERROR_MESSAGE_MAX_CHARS, 2000);
   assert.equal(ERROR_DETAILS_MAX_CHARS, 6000);
 });
@@ -63,11 +63,11 @@ test('T04-const: ERROR_MESSAGE_MAX_CHARS=2000 / ERROR_DETAILS_MAX_CHARS=6000', (
 // AC1：小错误不变（回归安全）
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC1: 小错误（message<2000、无 details）逐字段不变，返回同一 error 引用', () => {
+test('T04-AC1: 小错误（message<2000、无 details）逐字段不变，返回同一 error 引用', async () => {
   const { ctx } = makeCtx();
   const error = { code: 'NON_ZERO_EXIT', message: 'boom', retryable: false };
   const resp = { ok: false, data: { tool: 'execute_cli', result: {} }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.deepEqual(shaped.error, error, '小错误三要素原样（D9/D12 不误伤）');
   assert.strictEqual(shaped.error, error, '无截断时返回同一 error 引用（无副作用）');
 });
@@ -76,11 +76,11 @@ test('T04-AC1: 小错误（message<2000、无 details）逐字段不变，返回
 // AC2：error.message 截断
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC2: error.message > 2000 截断到 2000，code/retryable 不动', () => {
+test('T04-AC2: error.message > 2000 截断到 2000，code/retryable 不动', async () => {
   const { ctx } = makeCtx();
   const error = { code: 'X', message: 'm'.repeat(5000), retryable: true };
   const resp = { ok: false, data: { tool: 'workspace_info', result: { path: '/tmp' } }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.equal(shaped.error.message.length, 2000);
   assert.equal(shaped.error.code, 'X');
   assert.equal(shaped.error.retryable, true);
@@ -88,7 +88,7 @@ test('T04-AC2: error.message > 2000 截断到 2000，code/retryable 不动', () 
   assert.equal(shaped.error.message.length, ERROR_MESSAGE_MAX_CHARS);
 });
 
-test('T04-unit: capError 纯函数 — message 截断且不改 code/retryable', () => {
+test('T04-unit: capError 纯函数 — message 截断且不改 code/retryable', async () => {
   const capped = capError({ code: 'X', message: 'a'.repeat(5000), retryable: false });
   assert.equal(capped.message.length, 2000);
   assert.equal(capped.code, 'X');
@@ -99,11 +99,11 @@ test('T04-unit: capError 纯函数 — message 截断且不改 code/retryable', 
 // AC3：error.details 为 string → 截断（Q4 双分支一）
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC3: error.details string > 6000 截断到 6000（Q4 双分支一）', () => {
+test('T04-AC3: error.details string > 6000 截断到 6000（Q4 双分支一）', async () => {
   const { ctx } = makeCtx();
   const error = { code: 'X', message: 'm', retryable: false, details: 'd'.repeat(9000) };
   const resp = { ok: false, data: { tool: 'workspace_info', result: {} }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.equal(typeof shaped.error.details, 'string');
   assert.equal(shaped.error.details.length, 6000);
 });
@@ -112,7 +112,7 @@ test('T04-AC3: error.details string > 6000 截断到 6000（Q4 双分支一）',
 // AC4：error.details object — 逐顶层 string 值截断 + continuation 保全 + 顺序保全
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC4: error.details object — 逐 string 值截断 + continuation 子键保全 + 顺序保全', () => {
+test('T04-AC4: error.details object — 逐 string 值截断 + continuation 子键保全 + 顺序保全', async () => {
   const { ctx } = makeCtx();
   const continuation = {
     status: 'working', mustContinue: true, taskComplete: false, continuationMode: 'adaptive',
@@ -129,7 +129,7 @@ test('T04-AC4: error.details object — 逐 string 值截断 + continuation 子�
     },
   };
   const resp = { ok: false, data: { tool: 'workspace_info', result: {} }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   const d = shaped.error.details;
   assert.equal(d.text.length, 6000, 'text 截断');
   assert.equal(d.stack.length, 6000, 'stack 截断');
@@ -143,11 +143,11 @@ test('T04-AC4: error.details object — 逐 string 值截断 + continuation 子�
 // AC5：D7 双版本审计（raw 完整 / shaped 截断）
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC5: D7 双版本审计 — raw 保留未截断完整 error，shaped 为截断版', () => {
+test('T04-AC5: D7 双版本审计 — raw 保留未截断完整 error，shaped 为截断版', async () => {
   const { ctx, getRecord } = makeCtx();
   const error = { code: 'X', message: 'm'.repeat(5000), retryable: false, details: 'd'.repeat(9000) };
   const resp = { ok: false, data: { tool: 'workspace_info', result: {} }, error };
-  shapeToolResponse(resp, ctx);
+  await shapeToolResponse(resp, ctx);
   const rec = getRecord();
   assert.equal(rec.rawResult.error.message.length, 5000, 'raw 保留完整 message');
   assert.equal(rec.rawResult.error.details.length, 9000, 'raw 保留完整 details');
@@ -159,20 +159,20 @@ test('T04-AC5: D7 双版本审计 — raw 保留未截断完整 error，shaped �
 // AC6：全通道通用（passthrough / L1 均套帽）
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC6a: passthrough 工具（workspace_info）仍套 D12 帽', () => {
+test('T04-AC6a: passthrough 工具（workspace_info）仍套 D12 帽', async () => {
   const { ctx, getRecord } = makeCtx();
   const error = { code: 'X', message: 'm'.repeat(5000), retryable: false };
   const resp = { ok: false, data: { tool: 'workspace_info', result: { path: '/tmp' } }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.equal(shaped.error.message.length, 2000);
   assert.equal(getRecord().shaping.applied, false, 'result 仍是 passthrough，但 error 已帽');
 });
 
-test('T04-AC6b: L1 路径（execute_cli 去噪）同时帽 error', () => {
+test('T04-AC6b: L1 路径（execute_cli 去噪）同时帽 error', async () => {
   const { ctx, getRecord } = makeCtx();
   const error = { code: 'NON_ZERO_EXIT', message: 'm'.repeat(5000), retryable: false };
   const resp = { ok: false, data: { tool: 'execute_cli', result: { ...FULL_COMMAND_RESULT, exitCode: 3 } }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.equal(shaped.data.result.command, undefined, 'L1 去噪仍生效');
   assert.equal(shaped.data.result.exitCode, 3);
   assert.equal(shaped.error.message.length, 2000, 'L1 路径 error 同时被帽');
@@ -183,11 +183,11 @@ test('T04-AC6b: L1 路径（execute_cli 去噪）同时帽 error', () => {
 // AC7：D17 静默（无层标记）
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC7: D17 静默 — 截断后结果 / error 无层标记', () => {
+test('T04-AC7: D17 静默 — 截断后结果 / error 无层标记', async () => {
   const { ctx } = makeCtx();
   const error = { code: 'X', message: 'm'.repeat(5000), retryable: false, details: { text: 't'.repeat(9000) } };
   const resp = { ok: false, data: { tool: 'workspace_info', result: {} }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assertNoShapingMarkers(shaped);
 });
 
@@ -195,7 +195,7 @@ test('T04-AC7: D17 静默 — 截断后结果 / error 无层标记', () => {
 // AC8（P4 修复）：error.details 为数组 → 顶层 string 元素截断，非 string 原样
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC8: error.details 为数组 → 顶层 string 元素截到 6000，非 string 元素原样（P4）', () => {
+test('T04-AC8: error.details 为数组 → 顶层 string 元素截到 6000，非 string 元素原样（P4）', async () => {
   const error = {
     code: 'X', message: 'boom', retryable: false,
     details: ['a'.repeat(9000), 'short', 42, { nested: 'b'.repeat(9000) }],
@@ -213,13 +213,13 @@ test('T04-AC8: error.details 为数组 → 顶层 string 元素截到 6000，非
 // AC9（P3 修复）：畸形 error（缺 message）→ shaper 不抛、fail-open 记 cap-threw
 // ───────────────────────────────────────────────────────────
 
-test('T04-AC9: 畸形 error（缺 message）经 shapeToolResponse 不抛、fail-open 记 cap-threw（P3）', () => {
+test('T04-AC9: 畸形 error（缺 message）经 shapeToolResponse 不抛、fail-open 记 cap-threw（P3）', async () => {
   const { ctx, getRecord } = makeCtx();
   // 缺 message（扩展/三方工具可能返回）；未修复前 capError 会对 undefined.length 抛 TypeError
   const resp = { ok: false, error: { code: 'X', retryable: false }, data: { tool: 'execute_cli', result: 'not-object' } };
   let threw = false;
   let shaped;
-  try { shaped = shapeToolResponse(resp, ctx); } catch { threw = true; }
+  try { shaped = await shapeToolResponse(resp, ctx); } catch { threw = true; }
   assert.equal(threw, false, 'D11 fail-open：帽步骤异常绝不阻断模型');
   assert.strictEqual(shaped, resp, '异常时原样 passthrough（base，error 未损坏）');
   assert.equal(getRecord().shaping.reason, 'cap-threw', '帽异常原因记 audit（不误标 reducer-threw）');

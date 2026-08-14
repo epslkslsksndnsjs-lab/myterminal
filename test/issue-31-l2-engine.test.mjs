@@ -56,16 +56,16 @@ const FULL_COMMAND_RESULT = {
 // AC1：路由判定（解析顺序）
 // ───────────────────────────────────────────────────────────
 
-test('T03-AC1a: 未声明工具原样 passthrough（reason=passthrough）', () => {
+test('T03-AC1a: 未声明工具原样 passthrough（reason=passthrough）', async () => {
   const { ctx, getRecord } = makeCtx();
   const resp = { ok: true, data: { tool: 'workspace_info', result: { path: '/tmp' } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.strictEqual(shaped, resp, '未声明工具必须原样返回');
   assert.equal(getRecord().shaping.applied, false);
   assert.equal(getRecord().shaping.reason, 'passthrough');
 });
 
-test('T03-AC1b: 内联 ToolDefinition.shapeResult 优先于中心表（L1）', () => {
+test('T03-AC1b: 内联 ToolDefinition.shapeResult 优先于中心表（L1）', async () => {
   const seen = [];
   const { ctx, getRecord } = makeCtx({
     inline_probe: { name: 'inline_probe', shapeResult: (r) => { seen.push('inline'); return { ...r, inlined: true }; } },
@@ -73,7 +73,7 @@ test('T03-AC1b: 内联 ToolDefinition.shapeResult 优先于中心表（L1）', (
   // 即便中心表也注册了同名的 reduce，内联应胜出
   TOOL_SHAPES.set('inline_probe', { reduce: (r) => ({ ...r, table: true }) });
   const resp = { ok: true, data: { tool: 'inline_probe', result: { x: 1 } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.deepEqual(seen, ['inline'], '内联 reducer 被调用');
   assert.equal(shaped.data.result.inlined, true, '内联 reducer 生效');
   assert.equal(shaped.data.result.table, undefined, '中心表 reducer 未被调用');
@@ -81,14 +81,14 @@ test('T03-AC1b: 内联 ToolDefinition.shapeResult 优先于中心表（L1）', (
   TOOL_SHAPES.delete('inline_probe');
 });
 
-test('T03-AC1c: 中心表 schema→L3 路由分支可达（L3 引擎 T10 落地前 fail-open passthrough）', () => {
+test('T03-AC1c: 中心表 schema→L3 路由分支可达（T10 后走 L3 引擎，默认 unavailable → l3-unavailable-timeout）', async () => {
   const { ctx, getRecord } = makeCtx();
   TOOL_SHAPES.set('t03_l3_small', { schema: { type: 'object' } });
   const resp = { ok: true, data: { tool: 't03_l3_small', result: { a: 'hi' } } };
-  const shaped = shapeToolResponse(resp, ctx);
-  assert.strictEqual(shaped, resp, 'L3 未落地前 schema 工具 fail-open 原样');
+  const shaped = await shapeToolResponse(resp, ctx);
+  assert.strictEqual(shaped, resp, '默认 unavailable adapter（无注入）下 fail-open 原样');
   assert.equal(getRecord().shaping.applied, false);
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.reason, 'l3-unavailable-timeout');
   TOOL_SHAPES.delete('t03_l3_small');
 });
 
@@ -98,11 +98,11 @@ test('T03-AC1c: 中心表 schema→L3 路由分支可达（L3 引擎 T10 落地�
 
 const SIX_TOOLS = ['execute_cli', 'git_status', 'git_diff', 'git_log', 'git_show', 'run_checks'];
 
-test('T03-AC2: 6 工具 CommandResult 被动去噪（剥 5 噪声字段，保留 5 真实字段）', () => {
+test('T03-AC2: 6 工具 CommandResult 被动去噪（剥 5 噪声字段，保留 5 真实字段）', async () => {
   for (const tool of SIX_TOOLS) {
     const { ctx, getRecord } = makeCtx();
     const resp = { ok: true, data: { tool, result: { ...FULL_COMMAND_RESULT } } };
-    const shaped = shapeToolResponse(resp, ctx);
+    const shaped = await shapeToolResponse(resp, ctx);
     const keys = Object.keys(shaped.data.result).sort();
     assert.deepEqual(keys, DENOISED_KEYS, `${tool} 去噪后仅留 5 真实字段`);
     for (const noise of COMMAND_RESULT_NOISE) {
@@ -115,22 +115,22 @@ test('T03-AC2: 6 工具 CommandResult 被动去噪（剥 5 噪声字段，保留
   }
 });
 
-test('T03-AC2b: 失败结果同样去噪（ok:false 仍整形 data.result，error 不动）', () => {
+test('T03-AC2b: 失败结果同样去噪（ok:false 仍整形 data.result，error 不动）', async () => {
   const { ctx, getRecord } = makeCtx();
   const error = { code: 'NON_ZERO_EXIT', message: 'boom', retryable: false };
   const resp = { ok: false, data: { tool: 'execute_cli', result: { ...FULL_COMMAND_RESULT, exitCode: 3 } }, error };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.deepEqual(Object.keys(shaped.data.result).sort(), DENOISED_KEYS, '失败结果同样去噪');
   assert.equal(shaped.data.result.exitCode, 3);
   assert.deepEqual(shaped.error, error, 'error 三要素原样（D9）');
   assert.equal(getRecord().shaping.applied, true);
 });
 
-test('T03-AC2c: reducer 抛错 → fail-open passthrough（reason=reducer-threw）', () => {
+test('T03-AC2c: reducer 抛错 → fail-open passthrough（reason=reducer-threw）', async () => {
   TOOL_SHAPES.set('t03_throw', { reduce: () => { throw new Error('kaboom'); } });
   const { ctx, getRecord } = makeCtx();
   const resp = { ok: true, data: { tool: 't03_throw', result: { x: 1 } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.strictEqual(shaped, resp, 'reducer 抛错必须原样返回（D11 fail-open）');
   assert.equal(getRecord().shaping.applied, false);
   assert.equal(getRecord().shaping.reason, 'reducer-threw');
@@ -141,7 +141,7 @@ test('T03-AC2c: reducer 抛错 → fail-open passthrough（reason=reducer-threw�
 // AC3：预算门 estimateTokens + RAW_BUDGET_TOKENS
 // ───────────────────────────────────────────────────────────
 
-test('T03-AC3a: estimateTokens 语言感知（中文≈×1.5、英文≈÷4）', () => {
+test('T03-AC3a: estimateTokens 语言感知（中文≈×1.5、英文≈÷4）', async () => {
   assert.equal(estimateTokens(''), 0);
   assert.equal(estimateTokens('aaaa'), 1, '4 拉丁 → ceil(4/4)=1');
   assert.equal(estimateTokens('中'), 2, '1 CJK → ceil(1.5)=2');
@@ -149,16 +149,16 @@ test('T03-AC3a: estimateTokens 语言感知（中文≈×1.5、英文≈÷4）',
   assert.equal(estimateTokens('ab中'), 2, '2 拉丁 + 1 CJK → ceil(0.5+1.5)=2');
 });
 
-test('T03-AC3b: RAW_BUDGET_TOKENS = 24000（pre-T11 公式默认值）', () => {
+test('T03-AC3b: RAW_BUDGET_TOKENS = 24000（pre-T11 公式默认值）', async () => {
   assert.equal(RAW_BUDGET_TOKENS, 24000);
 });
 
-test('T03-AC3c: L3 schema 工具超预算门 → passthrough（reason=over-budget）', () => {
+test('T03-AC3c: L3 schema 工具超预算门 → passthrough（reason=over-budget）', async () => {
   const { ctx, getRecord } = makeCtx();
   TOOL_SHAPES.set('t03_l3_big', { schema: { type: 'object' } });
   const big = 'x'.repeat(200000); // 200000 拉丁 → ≈50000 tokens > 24000
   const resp = { ok: true, data: { tool: 't03_l3_big', result: { big } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.strictEqual(shaped, resp, '超预算必须原样（不调模型）');
   assert.equal(getRecord().shaping.applied, false);
   assert.equal(getRecord().shaping.reason, 'over-budget');
@@ -169,21 +169,21 @@ test('T03-AC3c: L3 schema 工具超预算门 → passthrough（reason=over-budge
 // AC5：D16 count 引擎规则
 // ───────────────────────────────────────────────────────────
 
-test('T03-AC5: reducer 产出数组自动补 count', () => {
+test('T03-AC5: reducer 产出数组自动补 count', async () => {
   TOOL_SHAPES.set('t03_count_probe', { reduce: (r) => ({ matches: r.items }) });
   const { ctx, getRecord } = makeCtx();
   const resp = { ok: true, data: { tool: 't03_count_probe', result: { items: [1, 2, 3] } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.deepEqual(shaped.data.result.matches, [1, 2, 3]);
   assert.equal(shaped.data.result.count, 3, '数组自动补 count');
   assert.equal(getRecord().shaping.applied, true);
   TOOL_SHAPES.delete('t03_count_probe');
 });
 
-test('T03-AC5b: CommandResult（非数组结果）不触发 count', () => {
+test('T03-AC5b: CommandResult（非数组结果）不触发 count', async () => {
   const { ctx, getRecord } = makeCtx();
   const resp = { ok: true, data: { tool: 'execute_cli', result: { ...FULL_COMMAND_RESULT } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.equal(shaped.data.result.count, undefined, '对象结果无 count（仅数组触发）');
   assert.equal(getRecord().shaping.applied, true);
 });
@@ -192,10 +192,10 @@ test('T03-AC5b: CommandResult（非数组结果）不触发 count', () => {
 // AC4：D7 双版本审计 + D17 静默
 // ───────────────────────────────────────────────────────────
 
-test('T03-AC4: D7 双版本审计（raw 含噪声 / shaped 已去噪 / shaping.reason）+ D17 静默', () => {
+test('T03-AC4: D7 双版本审计（raw 含噪声 / shaped 已去噪 / shaping.reason）+ D17 静默', async () => {
   const { ctx, getRecord } = makeCtx();
   const resp = { ok: true, data: { tool: 'execute_cli', result: { ...FULL_COMMAND_RESULT } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   const record = getRecord();
   // raw 保留原始（含噪声）
   assert.equal(record.rawResult.data.result.command, 'echo hi', 'raw 保留噪声 command');

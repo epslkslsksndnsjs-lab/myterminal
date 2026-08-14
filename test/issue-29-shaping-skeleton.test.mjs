@@ -111,10 +111,10 @@ test('T01-1: TOOL_SHAPES 注册表 + shapeToolResponse(response, ctx) 签名就�
   assert.equal(shapeToolResponse.length, 2, '签名应为 shapeToolResponse(response, ctx)');
 });
 
-test('T01-2: shapeToolResponse passthrough 契约（ctx 五要素 + audit 收 passthrough）', () => {
+test('T01-2: shapeToolResponse passthrough 契约（ctx 五要素 + audit 收 passthrough）', async () => {
   const response = { ok: true, data: { tool: 'workspace_info', result: { path: '/tmp' } } };
   let record;
-  const shaped = shapeToolResponse(response, {
+  const shaped = await shapeToolResponse(response, {
     transport: 'actions',
     sessionId: 's-test-1',
     resolveTool: (name) => (name === 'workspace_info' ? { name, title: 't', description: 'd', inputSchema: {}, annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }, invoke: async () => ({}) } : undefined),

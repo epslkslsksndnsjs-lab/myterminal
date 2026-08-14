@@ -63,11 +63,11 @@ function ctx() {
   };
 }
 
-test('T08-AC1: 嵌套完整 ToolResponse → 摘要，消除递归嵌套爆炸', () => {
+test('T08-AC1: 嵌套完整 ToolResponse → 摘要，消除递归嵌套爆炸', async () => {
   const { ctx: c, getRecord } = ctx();
   const big = auditEntry('read_file', true, { session: { id: 's', name: HUGE, log: HUGE } });
   const resp = makeResponse([createdEntry(), big], { total: 2 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   const entries = shaped.data.result.history.entries;
   const bigShaped = entries[1];
@@ -91,22 +91,22 @@ test('T08-AC1: 嵌套完整 ToolResponse → 摘要，消除递归嵌套爆炸',
   assert.ok(rec.shaping.originalSize > rec.shaping.reducedSize + HUGE.length / 2, '精简幅度应巨大');
 });
 
-test('T08-AC2: 非 ToolResponse 包裹的小结果保留原样', () => {
+test('T08-AC2: 非 ToolResponse 包裹的小结果保留原样', async () => {
   const { ctx: c } = ctx();
   // 模拟历史上的小结果输出（非 ToolResponse 形态，如 read_file 几行字符串）
   const smallEntry = { ...createdEntry(), type: 'tool_audit', data: { id: 'a', tool: 'read_file', ok: true, result: 'line1\nline2\nline3' } };
   const resp = makeResponse([smallEntry], { total: 1 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   // result 原样（字符串不被动），不摘要化
   assert.equal(shaped.data.result.history.entries[0].data.result, 'line1\nline2\nline3', '非 ToolResponse 小结果保留原样');
 });
 
-test('T08-AC3: audit 级 tool/ok 保全，仅 data.result 被替换', () => {
+test('T08-AC3: audit 级 tool/ok 保全，仅 data.result 被替换', async () => {
   const { ctx: c } = ctx();
   const big = auditEntry('session_register', false, { id: 's' }, { errorCode: 'E_PERM' });
   const resp = makeResponse([big], { total: 1 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   const entry = shaped.data.result.history.entries[0];
   // audit 级元信息原样
@@ -118,13 +118,13 @@ test('T08-AC3: audit 级 tool/ok 保全，仅 data.result 被替换', () => {
   assert.equal(entry.data.result.errorCode, 'E_PERM', '摘要 errorCode');
 });
 
-test('T08-AC4: entryCount? — 嵌套 result 自身含 history/entries 报条目数', () => {
+test('T08-AC4: entryCount? — 嵌套 result 自身含 history/entries 报条目数', async () => {
   const { ctx: c } = ctx();
   // 嵌套一次 session_history 调用：inner result = { history: { entries: [5 条] } }
   const nestedHistory = { history: { total: 5, offset: 0, entries: [1, 2, 3, 4, 5].map((i) => ({ i })) } };
   const big = auditEntry('session_history', true, nestedHistory);
   const resp = makeResponse([big], { total: 1 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   const summary = shaped.data.result.history.entries[0].data.result;
   assert.equal(summary.entryCount, 5, '嵌套 history 条目数应上报');
@@ -133,22 +133,22 @@ test('T08-AC4: entryCount? — 嵌套 result 自身含 history/entries 报条目
   assert.ok(!JSON.stringify(summary).includes('"history"'), '摘要不得含完整嵌套 history');
 });
 
-test('T08-AC5: errorCode? — 嵌套 ok:false 附 error.code', () => {
+test('T08-AC5: errorCode? — 嵌套 ok:false 附 error.code', async () => {
   const { ctx: c } = ctx();
   const big = auditEntry('write_file', false, { id: 'f' }, { errorCode: 'E_NOENT' });
   const resp = makeResponse([big], { total: 1 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   const summary = shaped.data.result.history.entries[0].data.result;
   assert.equal(summary.ok, false);
   assert.equal(summary.errorCode, 'E_NOENT', '失败附 errorCode');
 });
 
-test('T08-AC6: D17 静默 — data.result / 摘要内无 pagination / __reduction 层标记', () => {
+test('T08-AC6: D17 静默 — data.result / 摘要内无 pagination / __reduction 层标记', async () => {
   const { ctx: c } = ctx();
   const big = auditEntry('read_file', true, { session: { id: 's', name: HUGE } });
   const resp = makeResponse([big, big], { total: 2 });
-  const shaped = shapeToolResponse(resp, c);
+  const shaped = await shapeToolResponse(resp, c);
 
   assert.equal('pagination' in shaped.data.result, false, 'data.result 不得含 pagination');
   assert.equal('__reduction' in shaped.data.result, false, 'data.result 不得含 __reduction');
@@ -159,30 +159,30 @@ test('T08-AC6: D17 静默 — data.result / 摘要内无 pagination / __reductio
   assert.equal('__reduction' in summary, false);
 });
 
-test('T08-AC7: 审计精简详情（fieldsReduced / 体积差）', () => {
+test('T08-AC7: 审计精简详情（fieldsReduced / 体积差）', async () => {
   const { ctx: c, getRecord } = ctx();
   const big = auditEntry('read_file', true, { session: { id: 's', name: HUGE } });
   const resp = makeResponse([createdEntry(), big, big], { total: 3 });
-  shapeToolResponse(resp, c);
+  await shapeToolResponse(resp, c);
 
   const rec = getRecord();
   assert.equal(rec.shaping.fieldsReduced, 2, '2 条嵌套 result 被摘要化');
   assert.ok(rec.shaping.originalSize > rec.shaping.reducedSize, '原始体积应远大于精简后');
 });
 
-test('T08-AC8: 防御 — 畸形 result 不抛、fail-open', () => {
+test('T08-AC8: 防御 — 畸形 result 不抛、fail-open', async () => {
   const { ctx: c, getRecord } = ctx();
   // 缺 history
-  const r1 = shapeToolResponse({ ok: true, data: { tool: 'session_history', result: { total: 0, entries: [] } } }, c);
+  const r1 = await shapeToolResponse({ ok: true, data: { tool: 'session_history', result: { total: 0, entries: [] } } }, c);
   assert.equal('history' in r1.data.result, false, '无 history 时结构原样（不注入）');
   assert.equal(getRecord().shaping.applied, true);
 
   // entries 非数组
-  const r2 = shapeToolResponse(makeResponse(null, { total: 0 }), c);
+  const r2 = await shapeToolResponse(makeResponse(null, { total: 0 }), c);
   assert.equal(r2.data.result.history.entries, null, '非数组 entries 原样');
 
   // entry 非对象 / 无 data.result
   const weird = makeResponse([null, createdEntry(), { type: 'x', data: { id: 1 } }], { total: 3 });
-  const r3 = shapeToolResponse(weird, c);
+  const r3 = await shapeToolResponse(weird, c);
   assert.equal(r3.data.result.history.entries.length, 3, '非对象/无 data.result 的 entry 原样保全');
 });

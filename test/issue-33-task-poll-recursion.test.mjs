@@ -82,12 +82,12 @@ function nestedExecuteCli(result = FULL_COMMAND_RESULT, ok = true) {
 // AC1：D13 递归去噪
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC1: task_poll 嵌套 execute_cli → data.result 走 L1 去噪（D13 递归）', () => {
+test('T05-AC1: task_poll 嵌套 execute_cli → data.result 走 L1 去噪（D13 递归）', async () => {
   clearOperationCache();
   const { ctx } = makeCtxCollect();
   const nested = nestedExecuteCli({ ...FULL_COMMAND_RESULT, exitCode: 0 });
   const resp = makeTaskPoll(nested);
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
 
   const op = shaped.data.result.operation;
   assert.equal(op.data.tool, 'execute_cli', '嵌套 data.tool 保全');
@@ -104,12 +104,12 @@ test('T05-AC1: task_poll 嵌套 execute_cli → data.result 走 L1 去噪（D13 
 // AC2：保全 operation.ok / data.tool
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC2: 递归后 operation.ok 与 data.tool 原样不动（长任务成败信号 / 工具身份）', () => {
+test('T05-AC2: 递归后 operation.ok 与 data.tool 原样不动（长任务成败信号 / 工具身份）', async () => {
   clearOperationCache();
   const { ctx } = makeCtxCollect();
   const nested = nestedExecuteCli({ ...FULL_COMMAND_RESULT, exitCode: 3 }, false);
   const resp = makeTaskPoll(nested);
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
 
   const op = shaped.data.result.operation;
   assert.equal(op.ok, false, 'operation.ok 原样（失败态）');
@@ -124,7 +124,7 @@ test('T05-AC2: 递归后 operation.ok 与 data.tool 原样不动（长任务成�
 // AC3：嵌套 error 走 D12 双帽 + continuation 保全
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC3: 嵌套 operation.error 走 D12 帽（message 截断）+ continuation 子键保全', () => {
+test('T05-AC3: 嵌套 operation.error 走 D12 帽（message 截断）+ continuation 子键保全', async () => {
   clearOperationCache();
   const { ctx } = makeCtxCollect();
   const continuation = {
@@ -140,7 +140,7 @@ test('T05-AC3: 嵌套 operation.error 走 D12 帽（message 截断）+ continuat
     },
   };
   const resp = makeTaskPoll(nested);
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
 
   const err = shaped.data.result.operation.error;
   assert.equal(err.message.length, ERROR_MESSAGE_MAX_CHARS, '嵌套 error.message 截断');
@@ -154,14 +154,14 @@ test('T05-AC3: 嵌套 operation.error 走 D12 帽（message 截断）+ continuat
 // AC4：Q7 嵌套预算门 fail-open
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC4: 嵌套 raw 超 RAW_BUDGET_TOKENS → 该嵌套层 fail-open 回原始 operation，外层保留，记 nested-over-budget', () => {
+test('T05-AC4: 嵌套 raw 超 RAW_BUDGET_TOKENS → 该嵌套层 fail-open 回原始 operation，外层保留，记 nested-over-budget', async () => {
   clearOperationCache();
   const { ctx, records } = makeCtxCollect();
   // 超大嵌套结果：~100K latin chars → estimateTokens ≈ 25K > 24K
   const bigResult = { big: 'x'.repeat(100000) };
   const nested = nestedExecuteCli(bigResult, true);
   const resp = makeTaskPoll(nested);
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
 
   // 嵌套 operation 原样回退（同引用，未整形）
   assert.strictEqual(shaped.data.result.operation, nested, 'Q7：超大嵌套回退原始 operation（同引用）');
@@ -179,7 +179,7 @@ test('T05-AC4: 嵌套 raw 超 RAW_BUDGET_TOKENS → 该嵌套层 fail-open 回�
 // AC5：Q6 递归 fail-open
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC5: 递归层异常 → 整层回退原始 operation（绝不半成品），记 nested-recursion-threw', () => {
+test('T05-AC5: 递归层异常 → 整层回退原始 operation（绝不半成品），记 nested-recursion-threw', async () => {
   clearOperationCache();
   // 仅当审计嵌套 operation（data.tool !== 'task_poll'）时抛错，模拟递归层异常；
   // 外层 task_poll 审计放行，避免外层也抛。
@@ -197,7 +197,7 @@ test('T05-AC5: 递归层异常 → 整层回退原始 operation（绝不半成�
   const resp = makeTaskPoll(nested);
   let threw = false;
   let shaped;
-  try { shaped = shapeToolResponse(resp, ctx); } catch { threw = true; }
+  try { shaped = await shapeToolResponse(resp, ctx); } catch { threw = true; }
   assert.equal(threw, false, 'Q6：异常被外层 try/catch 吞掉，绝不阻断模型');
   // 嵌套 operation 整层回退原始（同引用，未去噪、未半成品）
   assert.strictEqual(shaped.data.result.operation, nested, 'Q6：回退原始 operation（同引用）');
@@ -210,7 +210,7 @@ test('T05-AC5: 递归层异常 → 整层回退原始 operation（绝不半成�
 // AC6：Q8 operation 缓存
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC6: 同 taskId+raw 再次 poll 命中缓存 — 免重整形（resolveTool 不重调嵌套）+ 同引用', () => {
+test('T05-AC6: 同 taskId+raw 再次 poll 命中缓存 — 免重整形（resolveTool 不重调嵌套）+ 同引用', async () => {
   clearOperationCache();
   let nestedResolveCount = 0;
   const ctx = {
@@ -222,23 +222,23 @@ test('T05-AC6: 同 taskId+raw 再次 poll 命中缓存 — 免重整形（resolv
   const nested = nestedExecuteCli({ ...FULL_COMMAND_RESULT, exitCode: 0 }, true);
   const resp = makeTaskPoll(nested, { taskId: 't-cache' });
 
-  const shaped1 = shapeToolResponse(resp, ctx);
+  const shaped1 = await shapeToolResponse(resp, ctx);
   const firstShapedOp = shaped1.data.result.operation;
   assert.equal(nestedResolveCount, 1, '首次 poll：嵌套 resolveTool 调 1 次');
 
   // 同 taskId + 同 raw operation 再次 poll
-  const shaped2 = shapeToolResponse(resp, ctx);
+  const shaped2 = await shapeToolResponse(resp, ctx);
   const secondShapedOp = shaped2.data.result.operation;
   assert.strictEqual(secondShapedOp, firstShapedOp, 'Q8：缓存命中返回同一整形结果引用');
   assert.equal(nestedResolveCount, 1, 'Q8：再次 poll 命中缓存，嵌套 resolveTool 不再重调（免重整形 / 免重复 L3 配额）');
 
   // 不同 taskId（同 raw）→ 不命中，重整形
   const respOther = makeTaskPoll(nested, { taskId: 't-cache-other' });
-  shapeToolResponse(respOther, ctx);
+  await shapeToolResponse(respOther, ctx);
   assert.equal(nestedResolveCount, 2, '不同 taskId：不命中缓存，嵌套 resolveTool 再调 1 次');
 });
 
-test('T05-AC6b: clearOperationCache(taskId) 只清该 task 缓存，其他 task 仍命中', () => {
+test('T05-AC6b: clearOperationCache(taskId) 只清该 task 缓存，其他 task 仍命中', async () => {
   clearOperationCache();
   let nestedResolveCount = 0;
   const ctx = {
@@ -248,17 +248,17 @@ test('T05-AC6b: clearOperationCache(taskId) 只清该 task 缓存，其他 task 
     audit: () => {},
   };
   const nested = nestedExecuteCli({ ...FULL_COMMAND_RESULT, exitCode: 0 }, true);
-  shapeToolResponse(makeTaskPoll(nested, { taskId: 'ta' }), ctx);
-  shapeToolResponse(makeTaskPoll(nested, { taskId: 'tb' }), ctx);
+  await shapeToolResponse(makeTaskPoll(nested, { taskId: 'ta' }), ctx);
+  await shapeToolResponse(makeTaskPoll(nested, { taskId: 'tb' }), ctx);
   assert.equal(nestedResolveCount, 2, '两 task 各整形 1 次');
 
   clearOperationCache('ta');
-  shapeToolResponse(makeTaskPoll(nested, { taskId: 'ta' }), ctx); // ta 已清 → 重整形
-  shapeToolResponse(makeTaskPoll(nested, { taskId: 'tb' }), ctx); // tb 仍命中 → 不重
+  await shapeToolResponse(makeTaskPoll(nested, { taskId: 'ta' }), ctx); // ta 已清 → 重整形
+  await shapeToolResponse(makeTaskPoll(nested, { taskId: 'tb' }), ctx); // tb 仍命中 → 不重
   assert.equal(nestedResolveCount, 3, 'clearOperationCache(ta) 后仅 ta 重整形，tb 命中缓存');
 });
 
-test('T05-AC6c: 瞬时递归异常（Q6）不被缓存冻结 — 恢复后下次 poll 成功整形', () => {
+test('T05-AC6c: 瞬时递归异常（Q6）不被缓存冻结 — 恢复后下次 poll 成功整形', async () => {
   clearOperationCache();
   let nestedAuditCalls = 0;
   const ctx = {
@@ -276,12 +276,12 @@ test('T05-AC6c: 瞬时递归异常（Q6）不被缓存冻结 — 恢复后下次
   const resp = makeTaskPoll(nested, { taskId: 't-transient' });
 
   // 首次：嵌套递归抛错（Q6）→ 回退原始 operation，且不缓存（验证未被冻结）
-  const first = shapeToolResponse(resp, ctx);
+  const first = await shapeToolResponse(resp, ctx);
   assert.strictEqual(first.data.result.operation, nested, '首次：Q6 回退原始 operation');
   assert.equal(first.data.result.operation.data.result.command, 'echo hi', '首次：原始噪声未动');
 
   // 恢复后再次 poll（同 taskId+raw）：不应命中被冻结的 fail-open 缓存 → 成功整形
-  const second = shapeToolResponse(resp, ctx);
+  const second = await shapeToolResponse(resp, ctx);
   assert.equal(second.data.result.operation.data.result.command, undefined, '恢复后：成功整形（command 已去噪），未被 Q6 冻结');
   assert.equal(second.data.result.operation.data.tool, 'execute_cli', '恢复后：data.tool 保全');
 });
@@ -290,12 +290,12 @@ test('T05-AC6c: 瞬时递归异常（Q6）不被缓存冻结 — 恢复后下次
 // AC7：Q10 审计双层覆盖
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC7: Q10 审计双层 — 递归产嵌套 raw/shaped + 外层全量 response 快照', () => {
+test('T05-AC7: Q10 审计双层 — 递归产嵌套 raw/shaped + 外层全量 response 快照', async () => {
   clearOperationCache();
   const { ctx, records } = makeCtxCollect();
   const nested = nestedExecuteCli({ ...FULL_COMMAND_RESULT, exitCode: 0 }, true);
   const resp = makeTaskPoll(nested);
-  shapeToolResponse(resp, ctx);
+  await shapeToolResponse(resp, ctx);
 
   // 应至少两条：嵌套（data.tool=execute_cli）+ 外层（data.tool=task_poll）
   const nestedRec = records.find((r) => r.rawResult?.data?.tool === 'execute_cli');
@@ -317,12 +317,12 @@ test('T05-AC7: Q10 审计双层 — 递归产嵌套 raw/shaped + 外层全量 re
 // AC8：D17 静默
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC8: D17 静默 — 递归整形后无任何层标记', () => {
+test('T05-AC8: D17 静默 — 递归整形后无任何层标记', async () => {
   clearOperationCache();
   const { ctx } = makeCtxCollect();
   const nested = nestedExecuteCli({ ...FULL_COMMAND_RESULT, exitCode: 0 }, true);
   const resp = makeTaskPoll(nested);
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assertNoShapingMarkers(shaped);
 });
 
@@ -330,33 +330,33 @@ test('T05-AC8: D17 静默 — 递归整形后无任何层标记', () => {
 // AC9：边界（D11 fail-open，无副作用）
 // ───────────────────────────────────────────────────────────
 
-test('T05-AC9a: 非 task_poll 工具不触发 D13 递归（execute_cli 直接走 L1，无嵌套）', () => {
+test('T05-AC9a: 非 task_poll 工具不触发 D13 递归（execute_cli 直接走 L1，无嵌套）', async () => {
   clearOperationCache();
   const { ctx } = makeCtxCollect();
   const resp = { ok: true, data: { tool: 'execute_cli', result: { ...FULL_COMMAND_RESULT, exitCode: 0 } } };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.equal(shaped.data.result.command, undefined, '普通 L1 去噪不受影响');
   assert.equal(shaped.data.tool, 'execute_cli');
 });
 
-test('T05-AC9b: task_poll 无 operation 字段（轮询中）→ 原样 passthrough', () => {
+test('T05-AC9b: task_poll 无 operation 字段（轮询中）→ 原样 passthrough', async () => {
   clearOperationCache();
   const { ctx } = makeCtxCollect();
   const resp = {
     ok: true,
     data: { tool: 'task_poll', result: { taskId: 't-33', status: 'running', startedAt: 'x' } },
   };
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.deepEqual(shaped, resp, '无 operation → 整条 passthrough（D11 无副作用）');
 });
 
-test('T05-AC9c: 畸形 operation（缺 data）→ 不递归、passthrough 保全（D11 fail-open）', () => {
+test('T05-AC9c: 畸形 operation（缺 data）→ 不递归、passthrough 保全（D11 fail-open）', async () => {
   clearOperationCache();
   const { ctx, records } = makeCtxCollect();
   // operation 不是合法 ToolResponse（无 data），isNestedOperation 判否 → 不递归
   const broken = { ok: true, tool: 'execute_cli' };
   const resp = makeTaskPoll(broken);
-  const shaped = shapeToolResponse(resp, ctx);
+  const shaped = await shapeToolResponse(resp, ctx);
   assert.strictEqual(shaped.data.result.operation, broken, '畸形 operation 原样保全（不整形、不抛）');
   const outer = records[records.length - 1];
   assert.equal(outer.shaping.reason, 'passthrough', '畸形 operation 走 passthrough');
