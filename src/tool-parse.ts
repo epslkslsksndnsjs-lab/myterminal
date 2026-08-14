@@ -93,7 +93,7 @@ export function estimateTokens(text: string): number {
   return Math.ceil(cjk * 1.5 + latin / 4);
 }
 
-// ── D12 失败双帽（#32 / Q4）────────────────────────────────────────────────────
+// ── D12 失败双帽（#32 / Q4；0051 P2-02 #98 env 旋钮）───────────────────────────
 //
 // error.message / error.details 通用长度帽（D12：「通用截断」，全通道通用）。
 // - message → 截到 ERROR_MESSAGE_MAX_CHARS
@@ -103,8 +103,27 @@ export function estimateTokens(text: string): number {
 //   continuation 子键整体原样（D12/Q4 + D13 控制流保全）；键顺序保全
 // - code / retryable 原样不动（D9/D11）；绝不插层标记（D17 静默）
 // 纯函数零副作用；截断前完整 error 由 D7 审计 rawResult 保留（诊断保全）。
+//
+// env 旋钮（0050 H1 / 0051 D15 可配置落地）：MYTERMINAL_ERROR_MESSAGE_MAX_CHARS /
+// MYTERMINAL_ERROR_DETAILS_MAX_CHARS，env 优先；未设置/空/非法（非数字/负）→ 回落
+// 默认。与 D6 配额 l3MaxPerSession（engine.ts）同构；惰性解析（每次调用读 env），
+// 测试可逐用例注入/删除（issue-WP202）。导出常量保持默认值字面（issue-32 T04-const
+// 锁定 2000/6000，不随 env 变）。
 export const ERROR_MESSAGE_MAX_CHARS = 2000;
 export const ERROR_DETAILS_MAX_CHARS = 6000;
+
+const ENV_ERROR_MESSAGE_MAX_CHARS = 'MYTERMINAL_ERROR_MESSAGE_MAX_CHARS';
+const ENV_ERROR_DETAILS_MAX_CHARS = 'MYTERMINAL_ERROR_DETAILS_MAX_CHARS';
+
+/** env 旋钮解析（D6 配额同构）：env 优先；未设置/空/非法（非数字/负）→ 回落 fallback。 */
+function capFromEnv(envName: string, fallback: number): number {
+  const raw = process.env[envName]?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    const n = parseInt(raw, 10);
+    if (n >= 0) return n;
+  }
+  return fallback;
+}
 
 function truncateChars(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;
@@ -116,7 +135,11 @@ type ErrorShape = NonNullable<ToolResponse['error']>;
 export function capError(error: ErrorShape): ErrorShape {
   let changed = false;
 
-  const message = truncateChars(error.message, ERROR_MESSAGE_MAX_CHARS);
+  // env 旋钮惰性解析：每次调用读 env（issue-WP202；未设置/非法 → 默认 2000/6000）
+  const messageMax = capFromEnv(ENV_ERROR_MESSAGE_MAX_CHARS, ERROR_MESSAGE_MAX_CHARS);
+  const detailsMax = capFromEnv(ENV_ERROR_DETAILS_MAX_CHARS, ERROR_DETAILS_MAX_CHARS);
+
+  const message = truncateChars(error.message, messageMax);
   if (message !== error.message) changed = true;
 
   const rawDetails: unknown = error.details;
@@ -124,7 +147,7 @@ export function capError(error: ErrorShape): ErrorShape {
 
   if (typeof rawDetails === 'string') {
     // Q4 双分支一：string details → 直接截
-    const capped = truncateChars(rawDetails, ERROR_DETAILS_MAX_CHARS);
+    const capped = truncateChars(rawDetails, detailsMax);
     if (capped !== rawDetails) { details = capped; changed = true; }
   } else if (Array.isArray(rawDetails)) {
     // 数组 details（非标准；扩展/历史路径可能传）：逐顶层 string 元素截，其余原样（P4：不再静默漏帽）
@@ -133,7 +156,7 @@ export function capError(error: ErrorShape): ErrorShape {
     let arrChanged = false;
     for (const v of src) {
       if (typeof v === 'string') {
-        const c = truncateChars(v, ERROR_DETAILS_MAX_CHARS);
+        const c = truncateChars(v, detailsMax);
         out.push(c);
         if (c !== v) arrChanged = true;
       } else {
@@ -149,7 +172,7 @@ export function capError(error: ErrorShape): ErrorShape {
     for (const [k, v] of Object.entries(src)) {
       if (k === 'continuation') { out[k] = v; continue; } // 控制流子键整体原样保全（D12/Q4/D13）
       if (typeof v === 'string') {
-        const c = truncateChars(v, ERROR_DETAILS_MAX_CHARS);
+        const c = truncateChars(v, detailsMax);
         out[k] = c;
         if (c !== v) detailsChanged = true;
       } else {
