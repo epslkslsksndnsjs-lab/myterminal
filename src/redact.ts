@@ -35,30 +35,41 @@ function collectSensitiveValues(value: JsonValue, key = '', found = new Set<stri
   return found;
 }
 
-function redactString(value: string, secrets: Set<string>): string {
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 逐字替换所有 secrets 的出现。旧实现是 `for (secret of secrets) split/join`——审计事件
+ * （#102：120 条消息后每条查询 ~4MB，secrets 达百条）下 O(字符串数 × secrets 数) 的
+ * 数组分配洪水（实测单次 ~1s）。改为把 secrets 转义后合并成单条 alternation，一次
+ * replace 完成：每字符串 O(长度)。交替顺序 = secrets 发现顺序，与旧 split/join 的
+ * 应用顺序一致，重叠 secret 的胜负裁决逐字不变（#102-AC1 已钉契约）。 */
+function redactString(value: string, secretsRegex?: RegExp): string {
   let out = value
     .replace(BEARER_RE, 'Bearer [REDACTED]')
     .replace(KEY_VALUE_RE, '$1$2[REDACTED]')
     .replace(QUERY_RE, '$1[REDACTED]');
-  for (const secret of secrets) out = out.split(secret).join('[REDACTED]');
+  if (secretsRegex) out = out.replace(secretsRegex, '[REDACTED]');
   return out;
 }
 
-function sanitize(value: JsonValue, key: string, secrets: Set<string>): JsonValue {
+function sanitize(value: JsonValue, key: string, secretsRegex?: RegExp): JsonValue {
   if (SENSITIVE_KEY.test(key)) return '[REDACTED]';
   if (BODY_KEY.test(key)) return typeof value === 'string' ? `[REDACTED ${value.length} chars]` : '[REDACTED]';
-  if (typeof value === 'string') return redactString(value, secrets);
-  if (Array.isArray(value)) return value.map((item) => sanitize(item, '', secrets));
+  if (typeof value === 'string') return redactString(value, secretsRegex);
+  if (Array.isArray(value)) return value.map((item) => sanitize(item, '', secretsRegex));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value as Record<string, JsonValue>).map(([childKey, child]) => [childKey, sanitize(child, childKey, secrets)]),
+      Object.entries(value as Record<string, JsonValue>).map(([childKey, child]) => [childKey, sanitize(child, childKey, secretsRegex)]),
     );
   }
   return value;
 }
 
 export function redact<T = JsonValue>(value: T): T {
-  if (typeof value === 'string') return redactString(value, new Set()) as unknown as T;
+  if (typeof value === 'string') return redactString(value) as unknown as T;
   const secrets = collectSensitiveValues(value);
-  return sanitize(value, '', secrets) as T;
+  const secretsRegex = secrets.size ? new RegExp([...secrets].map(escapeRegExp).join('|'), 'g') : undefined;
+  return sanitize(value, '', secretsRegex) as T;
 }

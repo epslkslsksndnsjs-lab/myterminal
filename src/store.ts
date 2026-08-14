@@ -831,9 +831,23 @@ export class MyTerminalStore {
   private historyPath(sessionId: string): string { return path.join(this.historyDir, `${sessionId}.jsonl`); }
   private appendHistory(sessionId: string, type: string, data: JsonObject): void {
     const entry: SessionHistoryEntry = { at: this.iso(), type, data };
-    appendFileSync(this.historyPath(sessionId), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    const encoded = `${JSON.stringify(entry)}\n`;
+    appendFileSync(this.historyPath(sessionId), encoded, { mode: 0o600 });
+    // #102（ADR-0051 增补-03）：增量维护 tail 缓存——历史文件只增不改，缓存窗口 = 旧窗口 +
+    // 新条目（超出 HISTORY_TAIL_LIMIT 截去最旧）。此前每次 append 全量失效缓存，下轮
+    // readRecentHistory 重读整个历史文件（含逐字节 historyIndex 扫描 + 全量 JSON.parse）：
+    // 120 消息探测每查询写 ~1.2MB 审计 → 查询耗时随累计历史 139ms→584ms 线性增长。
+    // 缓存放「写入字节的解析快照」而非原对象：emitEvent/sendMessage 的条目对象同时挂在
+    // state.events/messages 上，会被 acknowledgeEvents/inboxPage(markRead) 原地改字段，
+    // 快照保证缓存与文件逐字一致（#70 别名门禁同类考量）。
+    const cached = this.historyTailCache.get(sessionId);
+    if (cached) {
+      try { cached.entries.push(JSON.parse(encoded) as SessionHistoryEntry); } catch { /* 字节与缓存脱钩：静默重建路径兜底 */ }
+      if (cached.entries.length > HISTORY_TAIL_LIMIT) cached.entries.splice(0, cached.entries.length - HISTORY_TAIL_LIMIT);
+      cached.size += encoded.length;
+      try { cached.mtimeMs = statSync(this.historyPath(sessionId)).mtimeMs; } catch { /* 缓存失配 → 下轮重建 */ }
+    }
     this.historyIndexes.delete(sessionId);
-    this.historyTailCache.delete(sessionId);
   }
   private readRecentHistory(sessionId: string): SessionHistoryEntry[] {
     const file = this.historyPath(sessionId);
