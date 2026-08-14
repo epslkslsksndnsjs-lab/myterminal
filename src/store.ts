@@ -595,12 +595,29 @@ export class MyTerminalStore {
     return structuredClone(this.state.messages.filter((message) => message.from === session.id || message.to === session.id).slice(-Math.max(1, Math.min(1000, limit))));
   }
 
-  conversation(sessionId: string, otherSessionId: string, limit = 1000): { sessions: JsonObject[]; messages: MyTerminalMessage[] } {
+  /** W1-04 (#77)：message_list 分页版（0050 A4）。与 inboxPage 同构：切片 + 上报 total/offset/nextOffset，
+   *  供 L1 reducer 派生 count/totalCount/truncated 与分页 continuation；offset 缺省 = 最新一页（与
+   *  messagesForSession 末段语义一致）。 */
+  messagesForSessionPage(sessionId: string, offset?: number, limit = 100): { total: number; offset: number; nextOffset?: number; messages: MyTerminalMessage[] } {
+    const session = this.requireSession(sessionId);
+    const messages = this.state.messages.filter((message) => message.from === session.id || message.to === session.id);
+    const count = Math.max(1, Math.min(1000, limit));
+    const start = offset === undefined ? Math.max(0, messages.length - count) : Math.max(0, Math.min(messages.length, offset));
+    const page = messages.slice(start, start + count);
+    return { total: messages.length, offset: start, nextOffset: start + count < messages.length ? start + count : undefined, messages: structuredClone(page) };
+  }
+
+  /** W1-04 (#77)：conversation 分页化（0050 A4）。offset 缺省 = 最新一页（与旧 slice(-N) 末段语义一致）；
+   *  新增 total/offset/nextOffset 上报，供 L1 reducer 派生 count/totalCount/truncated 与分页 continuation。 */
+  conversation(sessionId: string, otherSessionId: string, offset?: number, limit = 1000): { sessions: JsonObject[]; messages: MyTerminalMessage[]; total: number; offset: number; nextOffset?: number } {
     const session = this.requireSession(sessionId);
     const other = this.requireSession(otherSessionId);
     const messages = this.state.messages.filter((message) =>
       (message.from === session.id && message.to === other.id) || (message.from === other.id && message.to === session.id));
-    return { sessions: [publicSession(session), publicSession(other)], messages: structuredClone(messages.slice(-Math.max(1, Math.min(5000, limit)))) };
+    const count = Math.max(1, Math.min(5000, limit));
+    const start = offset === undefined ? Math.max(0, messages.length - count) : Math.max(0, Math.min(messages.length, offset));
+    const page = messages.slice(start, start + count);
+    return { sessions: [publicSession(session), publicSession(other)], messages: structuredClone(page), total: messages.length, offset: start, nextOffset: start + count < messages.length ? start + count : undefined };
   }
 
   historyPage(sessionId: string, offset = 0, limit = 100, includeAncestors = true): { total: number; offset: number; nextOffset?: number; entries: JsonObject[] } {

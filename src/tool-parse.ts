@@ -555,6 +555,91 @@ function reduceListDirCount(result: JsonObject): JsonObject {
   return out;
 }
 
+// ── D15/D16 主动精简（W1-04 #77）：message_inbox / message_list / message_conversation ──
+//
+// 0050 A4：三工具此前 passthrough（conversation limit 默认 1000 条无截断/分页保护）。矩阵要求
+// 截断 + count + 分页。store 侧（inboxPage / messagesForSessionPage / conversation）已按
+// offset/limit 切片并上报 total + offset + nextOffset；reducer 派生（D16.1/16.2 + D17 静默）：
+// - count：本页 messages 实际长度（D16.1）
+// - truncated：nextOffset 存在（尚有后续页）
+// - totalCount：截断时附真实总量（D16.2）
+// - pagination：L2 剥离后发射 data.continuation.pagination；nextCall 用 offset 翻页，可逐页
+//   取回全部消息、不丢数据（limit 取本页条数：截断态页必满，store 语义保证 === 有效 limit）
+// - __reduction：审计精简详情（D7；绝不进模型上下文，D17）
+// 结构不符（messages 非数组）→ 返回 null，调用方原样 fail-open（D11）。
+// message_conversation 键路径按真实结构（data.result.conversation.{sessions,messages} +
+// observations，0047 D16 权威矩阵）：派生字段落在 conversation 内，绝不扁平化消息数据；
+// nextCall 的 with 取对端 session name（回退 id，store.findSession 按 name/id 均可解析）。
+
+/** 对单个消息页容器做主动精简；结构不符（无 messages 数组）→ null（fail-open）。 */
+function trimMessageContainer(
+  container: JsonObject,
+  nextCallTool: string,
+  nextCallInput: (offset: number, limit: number) => JsonObject,
+  purpose: string,
+): { shaped: JsonObject; pagination: JsonObject; reduction: JsonObject } | null {
+  if (!Array.isArray(container.messages)) return null;
+  const messages = container.messages as unknown[];
+  const total = typeof container.total === 'number' ? container.total : messages.length;
+  const offset = typeof container.offset === 'number' ? container.offset : 0;
+  const nextOffset = typeof container.nextOffset === 'number' ? container.nextOffset : undefined;
+  // 截断 = 本页不是全部消息（诚实性：默认最新页场景 offset 缺省 → 最旧段在页外，
+  // nextOffset 反而不存在，故不能只靠 nextOffset 判定）。D16.2 截断必附真实总量。
+  const truncated = messages.length < total;
+  const count = messages.length;
+  const originalSize = JSON.stringify(container).length;
+
+  const shaped: JsonObject = {};
+  for (const [key, value] of Object.entries(container)) {
+    if (key === 'total' || key === 'offset' || key === 'nextOffset') continue; // store 页元数据：剥除，统一派生字段（D17 静默）
+    shaped[key] = value;
+  }
+  shaped.count = count; // D16.1
+  shaped.truncated = truncated;
+  if (truncated) shaped.totalCount = total; // D16.2
+
+  const pagination: JsonObject = { truncated };
+  if (truncated) {
+    pagination.nextCall = {
+      tool: nextCallTool,
+      // 就近续读优先（nextOffset）；末页/缺省页已无后继 → 回 offset 0 取最旧段，保证并集覆盖全集、不丢数据
+      input: nextCallInput(nextOffset ?? 0, count),
+      purpose,
+    };
+  }
+  const reducedSize = JSON.stringify(shaped).length;
+  return {
+    shaped,
+    pagination,
+    reduction: { fieldsReduced: 0, entriesTruncated: Math.max(0, total - count), originalSize, reducedSize },
+  };
+}
+
+/**
+ * message_inbox / message_list 平铺页 reducer 工厂：data.result 顶层即页容器
+ * （{ session?, total, offset, nextOffset?, messages, observations }）。
+ */
+function makeMessagePageReducer(tool: string, purpose: string): ToolReducer {
+  return (result: JsonObject, _ctx: ShapeContext): JsonObject => {
+    const trimmed = trimMessageContainer(result, tool, (offset, limit) => ({ offset, limit }), purpose);
+    if (trimmed === null) return result;
+    return { ...trimmed.shaped, pagination: trimmed.pagination, __reduction: trimmed.reduction };
+  };
+}
+
+/** message_conversation 嵌套页 reducer：容器在 data.result.conversation 内。 */
+function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): JsonObject {
+  const conversation = result.conversation;
+  if (!isPlainObject(conversation)) return result; // 结构不符 → fail-open（D11）
+  const sessions = conversation.sessions;
+  const other = Array.isArray(sessions) && sessions.length >= 2 && isPlainObject(sessions[1]) ? (sessions[1] as JsonObject) : undefined;
+  const withTarget = typeof other?.name === 'string' ? other.name : typeof other?.id === 'string' ? other.id : undefined;
+  if (withTarget === undefined) return result; // 对端不可识别 → 无法安全翻页，fail-open（防御）
+  const trimmed = trimMessageContainer(conversation, 'message_conversation', (offset, limit) => ({ with: withTarget, offset, limit }), 'fetch next page of conversation messages');
+  if (trimmed === null) return result;
+  return { ...result, conversation: trimmed.shaped, pagination: trimmed.pagination, __reduction: trimmed.reduction };
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪。execute_cli / git_* 复用 denoiseCommandResult；
@@ -566,6 +651,8 @@ function reduceListDirCount(result: JsonObject): JsonObject {
 // W1-02（#75）：read_file 派生 lineCount（0050 A2 / D-10 原则4）。
 // W1-05（#78）：skill list 模式 count（D16.1，0050 A5）；session_context 明示豁免不注册（D-16）。
 // W1-03（#76）：list_dir 主动精简（D16 count/totalCount + D15 截断分页，0050 A3）。
+// W1-04（#77）：message_inbox / message_list / message_conversation 主动精简 + 分页（0050 A4；
+// store 侧分页支持见 core-tools.ts / store.ts）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
@@ -575,6 +662,9 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['read_file', { reduce: reduceReadFileLineCount }],
   ['skill', { reduce: reduceSkillsCount }],
   ['list_dir', { reduce: reduceListDirCount }],
+  ['message_inbox', { reduce: makeMessagePageReducer('message_inbox', 'fetch next page of inbox messages') }],
+  ['message_list', { reduce: makeMessagePageReducer('message_list', 'fetch next page of collaboration messages') }],
+  ['message_conversation', { reduce: reduceMessageConversation }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],

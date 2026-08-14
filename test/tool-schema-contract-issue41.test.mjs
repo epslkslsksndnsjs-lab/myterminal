@@ -350,6 +350,16 @@ const INPUT_SCHEMA_ALLOWLIST = new Map([
   ['read_file_range :: properties.maxBytes.type', { baseline: undefined, current: 'integer', reason: 'A:T08新增可选maxBytes入参' }],
   ['read_file_range :: properties.maxBytes.minimum', { baseline: undefined, current: 1, reason: 'A:T08新增可选maxBytes入参' }],
   ['read_file_range :: properties.maxBytes.maximum', { baseline: undefined, current: 1000000, reason: 'A:T08新增可选maxBytes(上限1_000_000,与read_file同源)' }],
+  // ── A 类（续）：W1-04 #77 为 message_list / message_conversation 新增可选分页入参 offset
+  //   实测 parse({}) => {}（offset 非 required，服务端按缺省取最新页切片，与旧行为逐字一致），
+  //   既有调用方零行为变化（同 session_list T07 模式，0050 A4 / 0051 D-15）。
+  //   offset.maximum 为 zod4 派生器对 integer 型必带的 safe-int 边界（同 session_list）。
+  ['message_list :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
+  ['message_list :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
+  ['message_list :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
+  ['message_conversation :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
+  ['message_conversation :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
+  ['message_conversation :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
   // ── B 类：约束收紧（运行期本就拒，判定结果不变，错误通道前移）──
   ['session_inherit :: properties.claimCode.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
   ['session_inherit :: properties.sessionToken.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],

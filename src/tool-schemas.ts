@@ -84,8 +84,8 @@ export const BUILTIN_INPUT_SCHEMAS = {
   // ── 消息 ──
   message_send: { type: 'object', properties: { to: { type: 'string', minLength: 1 }, body: { type: 'string', minLength: 1, maxLength: 20_000 } }, required: ['to', 'body'], additionalProperties: false },
   message_inbox: { type: 'object', properties: { markRead: { type: 'boolean', default: false }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } }, additionalProperties: false },
-  message_list: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 1000 } }, additionalProperties: false },
-  message_conversation: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false },
+  message_list: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1000 } }, additionalProperties: false },
+  message_conversation: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false },
 
   // ── Skill / Subagent ──
   skill: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },

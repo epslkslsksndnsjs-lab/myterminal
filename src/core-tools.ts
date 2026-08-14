@@ -611,12 +611,12 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'message_list', title: 'List own collaboration messages', description: 'List recent inbound and outbound messages involving the authenticated session.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.message_list, annotations: readOnly,
-    invoke: async (input, context) => { const current = actor(context); const messages = store.messagesForSession(current.id, typeof input.limit === 'number' ? input.limit : 100); return { messages, observations: store.observeMessages(messages) }; },
+    invoke: async (input, context) => { const current = actor(context); const page = store.messagesForSessionPage(current.id, typeof input.offset === 'number' ? input.offset : undefined, typeof input.limit === 'number' ? input.limit : 100); return { ...page, observations: store.observeMessages(page.messages) }; },
   });
   add({
     name: 'message_conversation', title: 'Read two-way conversation', description: 'Read the complete recent two-way conversation between the authenticated session and another session selected by name or ID.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.message_conversation, annotations: readOnly,
-    invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
+    invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.offset === 'number' ? input.offset : undefined, typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
   });
   add({
     name: 'skill', title: 'Run skill',
