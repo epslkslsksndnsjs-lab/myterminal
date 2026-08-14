@@ -382,8 +382,6 @@ export class MyTerminalRuntime {
       return;
     }
     this.cluster = new PortClusterRegistry(path.dirname(this.config.settingsPath), this.config.host, this.config.port);
-    // D18.2：cluster 参与者 → L3 默认关（避免 N×1.1GB RAM 乘散）；env 可覆盖，注册时定一次
-    setL3ClusterMode(true);
     this.clusterMember = this.cluster.register({
       pid: process.pid,
       appVersion: CURRENT_VERSION,
@@ -408,6 +406,13 @@ export class MyTerminalRuntime {
       Object.assign(wrapped, { code: 'EADDRINUSE', host: this.config.host, port: this.config.port, syscall: 'listen' });
       throw wrapped;
     }
+    // 增补-12（#111 用户实测）：leader（持有公网端口）默认开 L3、参与者默认关
+    // （D18.2 语义修正——固定端口单实例首启即 leader，不再无条件 L3 关；env 仍可覆盖）
+    setL3ClusterMode(!this.publicServer?.listening);
+    // 预热不绑 port-0 分支：start 尾部统一按 l3Enabled() 门控触发（standalone 与 cluster
+    // leader 都预热；参与者 env 强制开时也预热——startL3Warmup 内部 l3Enabled 门控 +
+    // 幂等门闩，关 / 已预热均 no-op）
+    startL3Warmup((message, level) => this.log(message, level));
     this.heartbeatTimer = setInterval(() => {
       try { this.cluster?.heartbeat(); }
       catch (error) { this.log(`Cluster heartbeat failed: ${error instanceof Error ? error.message : String(error)}`, 'error'); }
@@ -470,6 +475,10 @@ export class MyTerminalRuntime {
       this.publicServer = server;
       this.address = server.address() as AddressInfo;
       this.cluster.setLeader();
+      // 增补-12（#111）选举迁移：接管成功 → L3 翻转为 leader 默认开 + 惰性补触发预热
+      // （参与者态默认关未预热；接管后按 l3Enabled 补开——幂等门闩保证不重复加载）
+      setL3ClusterMode(false);
+      startL3Warmup((message, level) => this.log(message, level));
       this.log(`This workspace became leader for ${this.config.host}:${this.config.port}`);
       this.startControlChannelMonitor();
     } catch (error) {

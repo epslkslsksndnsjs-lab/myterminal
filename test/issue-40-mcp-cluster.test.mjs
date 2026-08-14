@@ -216,24 +216,38 @@ test('T13-AC1 e2e: MCP 通道 extension_call → execute_cli 走完整 L1 去噪
 });
 
 // ── AC4/AC5 e2e：多进程（cluster 参与者）L3 默认关 + L1 去噪每 member 独立跑 ──
+//
+// 增补-12（#111）：固定端口单实例首启即 leader → L3 默认开（不再无条件关）。
+// 参与者语义改由「第二实例」表达：先起 leader 占端口，第二个同端口实例 EADDRINUSE
+// 回落参与者 → setL3ClusterMode(!listening) → 默认关。
 
-test('T13-AC4/AC5 e2e: cluster 参与者启动后 L3 默认关，L1 去噪仍独立跑（无双次整形）', async () => {
+test('T13-AC4/AC5 e2e: cluster 参与者（第二实例）L3 默认关，L1 去噪仍独立跑（无双次整形）', async () => {
   const port = await findFreePort();
   // port 非 0 → server.start 走 cluster 分支（注册 PortClusterRegistry + tryBecomeLeader）
-  const server = await createRuntime({ port });
+  const leader = await createRuntime({ port });
   try {
-    // AC5：cluster 参与者 L3 默认关（server.start 已调 setL3ClusterMode(true)）
-    assert.strictEqual(l3Enabled({}), false, 'cluster 参与者 L3 默认关');
+    assert.strictEqual(l3Enabled({}), true, '增补-12：固定端口首启 leader → L3 默认开');
+    const server = await createRuntime({
+      port,
+      // 同 configDir（settingsPath 目录）→ 同一 cluster registry → 参与者可见 leader
+      settingsPath: path.join(leader.dirs.stateDir, 'test-settings.json'),
+    });
+    try {
+      // AC5：cluster 参与者 L3 默认关（server.start 已调 setL3ClusterMode(!listening)）
+      assert.strictEqual(l3Enabled({}), false, 'cluster 参与者 L3 默认关');
 
-    // AC4：L1 去噪发生在 owning member 执行点（L3 虽关，L1/L2 每 member 独立跑）
-    const url = `${server.baseUrl}/mcp/${CONNECTOR_KEY}`;
-    const init = await rpcPost(url, INITIALIZE);
-    const SID = init.sessionId;
-    await rpcPost(url, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 't40-cluster-root' } } }, SID);
-    const exec = await rpcPost(url, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'execute_cli', input: { command: 'echo t40-cluster-shape' } } } }, SID);
-    const result = exec.data.result.structuredContent.data.result;
-    assert.equal(result.command, undefined, 'L1 去噪在 member 本地执行（L3 关不影响 L1/L2）');
-    assert.ok(result.stdout.includes('t40-cluster-shape'), 'stdout 保留');
-    assert.equal(result.exitCode, 0);
-  } finally { await server.close(); }
+      // AC4：L1 去噪发生在 owning member 执行点（L3 虽关，L1/L2 每 member 独立跑）。
+      // 参与者没有公网端口（shared port 归 leader）——MCP 走自己的 internal server
+      // （/mcp 路由同挂 internalServer），请求在自己身上执行。
+      const url = `http://127.0.0.1:${server.runtime.internalAddress.port}/mcp/${CONNECTOR_KEY}`;
+      const init = await rpcPost(url, INITIALIZE);
+      const SID = init.sessionId;
+      await rpcPost(url, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'session_register', arguments: { mode: 'root', name: 't40-cluster-root' } } }, SID);
+      const exec = await rpcPost(url, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'extension_call', arguments: { tool: 'execute_cli', input: { command: 'echo t40-cluster-shape' } } } }, SID);
+      const result = exec.data.result.structuredContent.data.result;
+      assert.equal(result.command, undefined, 'L1 去噪在 member 本地执行（L3 关不影响 L1/L2）');
+      assert.ok(result.stdout.includes('t40-cluster-shape'), 'stdout 保留');
+      assert.equal(result.exitCode, 0);
+    } finally { await server.close(); }
+  } finally { await leader.close(); }
 });
