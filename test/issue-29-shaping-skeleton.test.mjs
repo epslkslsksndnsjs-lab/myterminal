@@ -240,8 +240,10 @@ test('T01-D: task_poll 完成态嵌套 operation（完整 ToolResponse）原样�
     const completedExec = hist.body.data.result.history.entries
       .filter((entry) => entry.type === 'tool_audit' && entry.data.action === 'execute_cli' && entry.data.completedAt).at(-1);
     assert.ok(completedExec, '后台任务完成审计条目存在');
-    // W2-06：execute_cli 是 dual——小输出走 L3；测试环境无真模型 → 回落 L1 denoise 记 applied:true + reason
-    assert.deepEqual(completedExec.data.shaping, { applied: true, reason: 'l3-unavailable' }, 'W2-06 后台完成审计记 applied:true + 回落原因');
+    // W2-06：execute_cli 是 dual——非空小输出走 L3；测试环境无真模型 → 回落 L1 denoise 记 applied:true + reason
+    // 增补-09（#108，A5b F3）：`sleep` 空输出不走 L3 → admit 拒收直接回落 L1，无失败原因（W2-06-AC3 语义）
+    assert.equal(completedExec.data.shaping.applied, true, 'W2-06 后台完成审计记 applied:true');
+    assert.equal(completedExec.data.shaping.reason, undefined, '空 stdout 不走 L3：admit 拒收回落无失败原因（增补-09）');
   } finally {
     await server.close();
   }

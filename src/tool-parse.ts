@@ -231,8 +231,9 @@ function capErrorResponse(response: ToolResponse): ToolResponse {
 // 答案本身（stdout/stderr 等真实数据），保留。
 const COMMAND_RESULT_NOISE = ['command', 'cwd', 'signal', 'timedOut', 'cancelled'];
 
-/** 被动去噪 reducer：剥已知噪声字段（command/cwd/signal/timedOut/cancelled），不改数据内容。 */
-function denoiseCommandResult(result: JsonObject): JsonObject {
+/** 被动去噪 reducer：剥已知噪声字段（command/cwd/signal/timedOut/cancelled），不改数据内容。
+ *  导出供 extensions.ts command-kind 扩展复用（增补-09 #108，R5：与 execute_cli 同政策）。 */
+export function denoiseCommandResult(result: JsonObject): JsonObject {
   const out: JsonObject = {};
   for (const [key, value] of Object.entries(result)) {
     if (COMMAND_RESULT_NOISE.includes(key)) continue;
@@ -329,10 +330,12 @@ const RUN_CHECKS_SCHEMA: JsonSchema = {
 // reducer 产出数组自动补 count（数组实际长度）。单数组字段场景：直接加 `count`
 // （与 D16 示例 matches→count / commits→count 一致）。多数组聚合 opt-in（D16.3）
 // 留待 D15/T07 按工具声明，T03 不处理多数组。
+// 增补-09（#108，R19）：拷贝后写——fail-open reducer 返回原 rawResult 引用时，绝不在
+// 原始对象上就地写（D7 审计 rawResult 同引用，一旦污染「raw 保全」承诺被打破）。
 function applyCountRule(result: JsonObject): JsonObject {
   const arrayKeys = Object.keys(result).filter((k) => Array.isArray(result[k]));
   if (arrayKeys.length === 1 && !('count' in result) && !('totalCount' in result)) {
-    result.count = (result[arrayKeys[0]] as unknown[]).length;
+    return { ...result, count: (result[arrayKeys[0]] as unknown[]).length };
   }
   return result;
 }
@@ -777,7 +780,11 @@ function trimMessageContainer(
   const nextOffset = typeof container.nextOffset === 'number' ? container.nextOffset : undefined;
   // 截断 = 本页不是全部消息（诚实性：默认最新页场景 offset 缺省 → 最旧段在页外，
   // nextOffset 反而不存在，故不能只靠 nextOffset 判定）。D16.2 截断必附真实总量。
-  const truncated = messages.length < total;
+  // 增补-09（#108，R18）：末页豁免——nextOffset 缺失且本页 offset>0 说明 store 已无后继页
+  // （messages.length < total 只因起点 offset>0 而非本页不完整），恒 truncated=false、
+  // 不发 nextCall（保守最小版：消除盲跟 nextCall 的模型 offset 0 回绕无限翻页）。
+  const lastPage = nextOffset === undefined && offset > 0;
+  const truncated = lastPage ? false : messages.length < total;
   const count = messages.length;
   const originalSize = JSON.stringify(container).length;
 
@@ -874,10 +881,12 @@ export const EXECUTE_CLI_SCHEMA: JsonSchema = {
 /** D-11 execute_cli L3 准入边界：stdout ≤8K 字符才走 L3（补遗3「仅在小时脏数据时才落 L3」）。 */
 export const EXECUTE_CLI_L3_MAX_STDOUT_CHARS = 8192;
 
-/** execute_cli 的 L3 准入判定：stdout 存在且 ≤8K 字符 → 准进 L3；否则回落 L1 denoise。 */
+/** execute_cli 的 L3 准入判定：stdout 存在、非空且 ≤8K 字符 → 准进 L3；否则回落 L1 denoise。
+ *  增补-09（#108，A5b F3）：空输出（stdout=""）是干净数据，不耗 L3 配额（补遗3「仅在小时
+ *  脏数据时才落 L3」；runCommand 恒产 string，stdout 缺失仅理论路径）。 */
 function admitExecuteCliL3(result: JsonObject): boolean {
   const stdout = result.stdout;
-  return typeof stdout === 'string' && stdout.length <= EXECUTE_CLI_L3_MAX_STDOUT_CHARS;
+  return typeof stdout === 'string' && stdout.length > 0 && stdout.length <= EXECUTE_CLI_L3_MAX_STDOUT_CHARS;
 }
 
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([

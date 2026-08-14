@@ -241,7 +241,9 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const matches = files.map((file) => relative(config, file)).filter((file) => file.toLowerCase().includes(query));
       // totalMatches：截断前的真实匹配总量（D16.2 totalCount 的唯一合法来源；W1-01 #74 的
       // reduceCollectionCount 剥除并统一为 totalCount，绝不泄漏进模型上下文，D17）
-      return { matches: matches.slice(0, limit), truncated: matches.length >= limit, totalMatches: matches.length };
+      // 增补-09（#108，R17）：恰中 limit（matches.length === limit）不算截断——handler 手握
+      // 全量，恰限时 truncated=true 会与 count==totalCount 自相矛盾误导模型；仅 `>` 才截断。
+      return { matches: matches.slice(0, limit), truncated: matches.length > limit, totalMatches: matches.length };
     },
   });
   add({

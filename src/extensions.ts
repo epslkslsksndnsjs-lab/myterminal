@@ -9,7 +9,7 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
-import { clearOperationCache, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
+import { clearOperationCache, denoiseCommandResult, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
 import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
@@ -789,7 +789,9 @@ export class ExtensionService {
       return { target: target.name, result: await target.invoke(merged, context) };
     }
     const cwd = resolveWorkspacePath(this.config.workspaceDir, this.config.stateDir, custom.handler.cwd || '.');
-    return await runCommand({ executable: renderTemplate(custom.handler.executable, args), argv: (custom.handler.args ?? []).map((arg) => renderTemplate(arg, args)), cwd, timeoutSec: custom.handler.timeoutSec ?? this.config.commandTimeoutSec, maxOutputChars: this.config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
+    // 增补-09（#108，R5）：command-kind 扩展与 execute_cli 同政策——返回前过 denoiseCommandResult，
+    // 剥 command/cwd/signal/timedOut/cancelled 五噪声键（不再原样进模型上下文）。
+    return denoiseCommandResult(await runCommand({ executable: renderTemplate(custom.handler.executable, args), argv: (custom.handler.args ?? []).map((arg) => renderTemplate(arg, args)), cwd, timeoutSec: custom.handler.timeoutSec ?? this.config.commandTimeoutSec, maxOutputChars: this.config.maxOutputChars, signal: context.signal }) as unknown as JsonObject);
   }
 
   private attachEvents(response: ToolResponse, sessionId?: string): ToolResponse {

@@ -300,11 +300,11 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
     const listResult = list.body.data.result;
     assert.equal(listResult.messages.length, 100, '默认 limit 100 帽');
     assert.equal(listResult.count, 100, 'count === messages.length');
-    assert.equal(listResult.truncated, true, '截断态（本页非全集）');
-    assert.equal(listResult.totalCount, 120, 'totalCount === 真实总量（D16.2）');
-    assert.deepEqual(list.body.data.continuation.pagination.nextCall, {
-      tool: 'message_list', input: { offset: 0, limit: 100 }, purpose: 'fetch next page of collaboration messages',
-    }, '缺省最新页已无后继 → nextCall 回 offset 0 取最旧段');
+    // 增补-09（#108，R18）：默认页 = 最新段（store start = total - count，offset 20）——
+    // nextOffset 缺失且 offset>0 → 末页终态 truncated=false，不发射 nextCall（不再回绕 0）
+    assert.equal(listResult.truncated, false, '默认最新页 = 末页终态 truncated=false（R18）');
+    assert.equal('totalCount' in listResult, false, '末页非截断无 totalCount');
+    assert.equal(list.body.data.continuation === undefined || list.body.data.continuation.pagination === undefined, true, '末页不发射 nextCall（消除 0↔100 无限翻页）');
     assertNoShapingMarkers(listResult);
 
     // message_list 翻页（offset 0 起向前取回最旧段）：并集不丢数据
@@ -323,8 +323,10 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
     const listPage2Result = listPage2.body.data.result;
     assert.equal(listPage2Result.messages.length, 20, '末段 20 条');
     assert.equal(listPage2Result.count, 20);
-    assert.equal(listPage2Result.truncated, true, '末段本页非全集（120 条中的 20 条）→ 仍标截断 + totalCount');
-    assert.equal(listPage2Result.totalCount, 120, '末段仍附真实总量');
+    // 增补-09（#108，R18）：末段（nextOffset 缺失且 offset>0）→ truncated=false、无 totalCount，
+    // 不发 nextCall——消除盲跟 nextCall 的模型 0↔100 无限翻页循环（旧行为末段回绕 offset 0）
+    assert.equal(listPage2Result.truncated, false, '末段终态 truncated=false（R18）');
+    assert.equal('totalCount' in listPage2Result, false, '末段非截断无 totalCount');
     const listBodies = [...listResult.messages, ...listPage1Result.messages, ...listPage2Result.messages].map((m) => m.body);
     assert.equal(new Set(listBodies).size, 120, 'message_list 三页并集 120 条不重复、不丢数据');
 
@@ -334,12 +336,11 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
     const convResult = conv.body.data.result;
     assert.equal(convResult.conversation.messages.length, 50, 'limit 50 帽');
     assert.equal(convResult.conversation.count, 50);
-    assert.equal(convResult.conversation.truncated, true, '截断态');
-    assert.equal(convResult.conversation.totalCount, 120, 'totalCount === 真实总量');
+    // 增补-09（#108，R18）：默认页 = 最新段（offset 70）→ 末页终态 truncated=false，不发 nextCall
+    assert.equal(convResult.conversation.truncated, false, '默认最新页 = 末页终态 truncated=false（R18）');
+    assert.equal('totalCount' in convResult.conversation, false, '末页非截断无 totalCount');
     assert.equal(convResult.observations.length, 50, 'observations 与页一致');
-    assert.deepEqual(conv.body.data.continuation.pagination.nextCall, {
-      tool: 'message_conversation', input: { with: 'w104-main', offset: 0, limit: 50 }, purpose: 'fetch next page of conversation messages',
-    }, 'nextCall 带对端 name（真实键路径取 sessions[1].name）；缺省最新页已无后继 → 回 offset 0 取最旧段');
+    assert.equal(conv.body.data.continuation === undefined || conv.body.data.continuation.pagination === undefined, true, '末页不发射 nextCall');
 
     // message_conversation 翻三页（0/50/100）：并集覆盖全集、不丢数据
     const convPage1 = await call(server, 'message_conversation', { with: 'w104-main', offset: 0, limit: 50 }, child);
@@ -350,8 +351,9 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
     assert.equal(convPage2.body.data.result.conversation.count, 50, 'offset 50 页 50 条');
     assert.equal(convPage2.body.data.result.conversation.truncated, true, 'offset 50 页仍有后继（nextOffset 100）');
     assert.equal(convPage3.body.data.result.conversation.count, 20, '末段 20 条');
-    assert.equal(convPage3.body.data.result.conversation.truncated, true, '末段本页非全集（120 条中的 20 条）→ 仍标截断 + totalCount');
-    assert.equal(convPage3.body.data.result.conversation.totalCount, 120, '末段仍附真实总量');
+    // 增补-09（#108，R18）：末段（nextOffset 缺失且 offset>0）→ truncated=false、无 totalCount
+    assert.equal(convPage3.body.data.result.conversation.truncated, false, '末段终态 truncated=false（R18）');
+    assert.equal('totalCount' in convPage3.body.data.result.conversation, false, '末段非截断无 totalCount');
     const convBodies = [
       ...convResult.conversation.messages,
       ...convPage1.body.data.result.conversation.messages,
@@ -366,11 +368,10 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
     const inboxResult = inbox.body.data.result;
     assert.equal(inboxResult.messages.length, 50, '默认 limit 50 帽');
     assert.equal(inboxResult.count, 50, 'count === messages.length');
-    assert.equal(inboxResult.truncated, true, '截断态');
-    assert.equal(inboxResult.totalCount, 120, 'totalCount === 真实总量');
-    assert.deepEqual(inbox.body.data.continuation.pagination.nextCall, {
-      tool: 'message_inbox', input: { offset: 0, limit: 50 }, purpose: 'fetch next page of inbox messages',
-    }, '缺省最新页已无后继 → 回 offset 0 取最旧段');
+    // 增补-09（#108，R18）：默认页 = 最新段（offset 70）→ 末页终态 truncated=false，不发 nextCall
+    assert.equal(inboxResult.truncated, false, '默认最新页 = 末页终态 truncated=false（R18）');
+    assert.equal('totalCount' in inboxResult, false, '末页非截断无 totalCount');
+    assert.equal(inbox.body.data.continuation === undefined || inbox.body.data.continuation.pagination === undefined, true, '末页不发射 nextCall');
     assertNoShapingMarkers(inboxResult);
 
     // message_inbox 翻三页（0/50/100）：并集覆盖全集、不丢数据
@@ -382,8 +383,9 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
     assert.equal(inboxPage2.body.data.result.count, 50, 'offset 50 页 50 条');
     assert.equal(inboxPage2.body.data.result.truncated, true, 'offset 50 页仍有后继（nextOffset 100）');
     assert.equal(inboxPage3.body.data.result.count, 20, '末段 20 条');
-    assert.equal(inboxPage3.body.data.result.truncated, true, '末段本页非全集（120 条中的 20 条）→ 仍标截断 + totalCount');
-    assert.equal(inboxPage3.body.data.result.totalCount, 120, '末段仍附真实总量');
+    // 增补-09（#108，R18）：末段（nextOffset 缺失且 offset>0）→ truncated=false、无 totalCount
+    assert.equal(inboxPage3.body.data.result.truncated, false, '末段终态 truncated=false（R18）');
+    assert.equal('totalCount' in inboxPage3.body.data.result, false, '末段非截断无 totalCount');
     const inboxBodies = [...inboxResult.messages, ...inboxPage1.body.data.result.messages, ...inboxPage2.body.data.result.messages, ...inboxPage3.body.data.result.messages].map((m) => m.body);
     assert.equal(new Set(inboxBodies).size, 120, 'message_inbox 四页并集 120 条不重复、不丢数据');
   } finally {
