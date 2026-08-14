@@ -657,6 +657,30 @@ function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): Json
 // W2-01（#84）：D-4 双条目路由（reduce+schema → schema 优先、reduce 兜底）；六真工具 schema
 // 注册归后续波2 票，本票以测试 probe 条目保证 kind:'l3' 分支可达（0050 B1 销项）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
+// ── L3 schema（0051 D-11 拍板全文；dual 工具 = reduce + schema：先预算门走 L3、失败回落 L1）──
+//
+// git_log（0050 B3 + 0051 D-11）：L3 从 stdout 结构化抽取 commits。D-10 五原则——失败保真
+// （exitCode+stderr）、白名单即丢弃（stdout 被结构化替换是设计使然）、Q5 verbatim、派生不
+// 进 schema（commitCount 属 D16.3 聚合，归 P2-03 #98 由代码后置补）、语义等价。
+const GIT_LOG_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    exitCode: { type: 'number' },
+    commits: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          hash: { type: 'string' },
+          subject: { type: 'string' },
+        },
+        required: ['hash', 'subject'],
+      },
+    },
+    stderr: { type: 'string' },
+  },
+};
+
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
   ['session_history', { reduce: reduceSessionHistory }],
@@ -671,7 +695,8 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
-  ['git_log', { reduce: denoiseCommandResult }],
+  // W2-03（#86）：git_log dual（reduce + schema，0050 B3）——先预算门走 L3、失败回落 L1
+  ['git_log', { reduce: denoiseCommandResult, schema: GIT_LOG_SCHEMA }],
   ['git_show', { reduce: denoiseCommandResult }],
   ['run_checks', { reduce: denoiseRunChecksResult }],
 ]);
@@ -691,7 +716,7 @@ export type ShapeContext = {
 //
 // 1) 内联 ToolDefinition.shapeResult → L1
 // 2) 中心表 TOOL_SHAPES：
-//    - reduce+schema 双条目 → dual（D-4：schema 优先、reduce 兜底，W2-01 #84）
+//    - reduce+schema 双条目 → dual（D-4：schema 优先、reduce 兜底，W2-01 #84 / W2-03 #86）
 //    - 仅 reduce → L1 / 仅 schema → L3
 // 3) 都无 → passthrough（D3 未声明工具原样放行）
 // 零额外运行时判断（D3/D18.1 mode-agnostic）；L1/L2 零模型。
@@ -707,6 +732,7 @@ function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): Re
   if (shape?.reduce && shape?.schema) return { kind: 'dual', reduce: shape.reduce, schema: shape.schema };
   if (shape?.reduce) return { kind: 'l1', reduce: shape.reduce };
   if (shape?.schema) return { kind: 'l3', schema: shape.schema };
+  if (shape?.reduce) return { kind: 'l1', reduce: shape.reduce };
   return { kind: 'passthrough' };
 }
 
@@ -900,37 +926,35 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
       base = response;
       shaping = { applied: false, reason: 'passthrough' };
     } else if (resolved.kind === 'l3' || resolved.kind === 'dual') {
-      // D-4 双条目（W2-01 #84）：schema 优先、reduce 兜底——先过预算门走 L3；超门 / 配额
-      // 烧穿 / 模型不可用 / 超时 / Q5 拒识（失败矩阵各 reason）→ 回落 L1 reduce（补遗3
-      // 「fail-open 回 L1」唯一自洽读法）。纯 schema 条目失败 → passthrough（D11 原样，
-      // 现状保留）。链式（L1→L3 两段处理）永不实施（D2 双重整形禁忌）。回落审计：
-      // applied:true + reason=失败矩阵 reason（注记 L3 为何跳过，D7 双版本审计）。
+      // L3 结果建模（预算门失败也建模为 fail-open，原因 over-budget——与引擎 reason 并集）
+      let outcome: { shaped: JsonObject | null; reason?: ShapingReason } = { shaped: null };
+      // 预算门（D6 护栏2 / Q3）：超门不进 L3（D-10「>96K 预算门挡掉」），绝不调模型
       if (estimateTokens(JSON.stringify(rawResult)) > RAW_BUDGET_TOKENS) {
-        // 预算门（D6 护栏2 / Q3）：超门不进 L3；双条目回落 L1，纯 schema 原样 passthrough
-        if (resolved.kind === 'dual') {
-          const applied = applyDualFallback(response, resolved.reduce, rawResult, ctx, 'over-budget');
-          base = applied.base;
-          shaping = applied.shaping;
-        } else {
-          base = response;
-          shaping = { applied: false, reason: 'over-budget' };
-        }
+        outcome = { shaped: null, reason: 'over-budget' };
       } else {
         // T10：调 L3 引擎（护栏1 transport 感知超时 + 护栏3 会话配额 + Q5 字段白名单/值存在性
-        // 校验 + 调模型，全路径 fail-open）。成功 → 用 Q5 后结果替换 data.result；失败 → 双条目
-        // 回落 L1 reduce / 纯 schema 原样 passthrough + reason（l3-unavailable-timeout / quota / ...）。
-        const outcome = await runL3(rawResult as JsonObject, resolved.schema, ctx.transport, ctx.sessionId);
-        if (outcome.shaped) {
-          base = { ...response, data: { ...(response.data ?? {}), result: outcome.shaped } };
-          shaping = { applied: true };
-        } else if (resolved.kind === 'dual') {
-          const applied = applyDualFallback(response, resolved.reduce, rawResult, ctx, outcome.reason ?? 'l3-unavailable');
-          base = applied.base;
-          shaping = applied.shaping;
-        } else {
+        // 校验 + 调模型，全路径 fail-open）。成功 → 用 Q5 后结果替换 data.result。
+        outcome = await runL3(rawResult as JsonObject, resolved.schema, ctx.transport, ctx.sessionId);
+      }
+      if (outcome.shaped) {
+        base = { ...response, data: { ...(response.data ?? {}), result: outcome.shaped } };
+        shaping = { applied: true };
+      } else if (resolved.kind === 'dual') {
+        // W2-03（#86）：dual 工具失败矩阵全路径回落 L1 reducer（绝不阻断）——任一失败原因
+        // （unavailable / timeout / parse-error / quota / engine-error / passthrough /
+        // over-budget / q5-rejected）→ 应用 reduce（+D16 count），审计 applied:true 且记
+        // L3 失败原因（D7 可观测：回落路径可辨）。
+        try {
+          const reduced = applyCountRule(resolved.reduce(rawResult as JsonObject, ctx));
+          base = { ...response, data: { ...(response.data ?? {}), result: reduced } };
+          shaping = { applied: true, reason: outcome.reason };
+        } catch {
           base = response;
-          shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
+          shaping = { applied: false, reason: 'reducer-threw' };
         }
+      } else {
+        base = response;
+        shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
       }
     } else {
       // L1 被动/主动 reducer（零模型）；与 D-4 双条目回落共用同一执行路径（applyL1Reduce）
