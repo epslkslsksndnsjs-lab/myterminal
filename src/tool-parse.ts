@@ -675,31 +675,6 @@ function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): Json
   return { ...result, conversation: trimmed.shaped, pagination: trimmed.pagination, __reduction: trimmed.reduction };
 }
 
-// ── L3 schema（0051 D-11 拍板；W2-04 #87）─────────────────────────────────────
-//
-// git_show（D-12 bug 修复后注册双条目）：`git show <rev> --stat --oneline` 的 stdout =
-// "<hash> <subject>\n\n <path> | <stat>\n <summary>"，commitHash/subject/files 全部可从
-// stdout 逐字提取（D-10 原则3 Q5 verbatim + 原则5 语义等价）。失败保真（原则1）：exitCode +
-// stderr 必带；白名单即丢弃（原则2）：stdout 被结构化替换是设计使然；派生不进 schema（原则4）：
-// 无 count 等派生字段。回落 L1 用 denoiseCommandResult（失败矩阵全路径兜底，D-4）。
-const GIT_SHOW_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    exitCode: { type: 'number' },
-    commitHash: { type: 'string' },
-    subject: { type: 'string' },
-    files: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { path: { type: 'string' }, stat: { type: 'string' } },
-        required: ['path', 'stat'],
-      },
-    },
-    stderr: { type: 'string' },
-  },
-};
-
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪。execute_cli / git_* 复用 denoiseCommandResult；
@@ -715,55 +690,10 @@ const GIT_SHOW_SCHEMA: JsonSchema = {
 // store 侧分页支持见 core-tools.ts / store.ts）。
 // W2-01（#84）：D-4 双条目路由（reduce+schema → schema 优先、reduce 兜底）；六真工具 schema
 // 注册归后续波2 票，本票以测试 probe 条目保证 kind:'l3' 分支可达（0050 B1 销项）。
-// W2-04（#87）：git_show 双条目（D-11 schema + denoise 兜底；D-12 bug 修复见 core-tools.ts）。
+// 增补-04（#103）：git_status / git_log / git_show L3 豁免（#92 检查点裁决 A，用户拍板）——
+// 真模型评测 Q5 全挂（答案字段被剥光，结构性退化比 L1 更差），同 git_diff 先例回 L1 被动
+// 去噪（D-16 登记，覆盖矩阵 §2）；D-12 git_show 拼接 bug 修复（core-tools.ts）与 L3 无关，保留。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
-// ── L3 schema（0051 D-11 拍板全文；dual 工具 = reduce + schema：先预算门走 L3、失败回落 L1）──
-//
-// git_log（0050 B3 + 0051 D-11）：L3 从 stdout 结构化抽取 commits。D-10 五原则——失败保真
-// （exitCode+stderr）、白名单即丢弃（stdout 被结构化替换是设计使然）、Q5 verbatim、派生不
-// 进 schema（commitCount 属 D16.3 聚合，归 P2-03 #98 由代码后置补）、语义等价。
-const GIT_LOG_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    exitCode: { type: 'number' },
-    commits: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          hash: { type: 'string' },
-          subject: { type: 'string' },
-        },
-        required: ['hash', 'subject'],
-      },
-    },
-    stderr: { type: 'string' },
-  },
-};
-
-// git_status（0050 B3 + 0051 D-11）：L3 从 stdout 结构化抽取 branch/changes/untracked。
-// D-10 五原则——失败保真（exitCode+stderr）、白名单即丢弃（stdout 被结构化替换是设计使然）、
-// Q5 verbatim（模型只准逐字抽 raw 中的值）、派生不进 schema、语义等价（答案不损失）。
-const GIT_STATUS_SCHEMA: JsonSchema = {
-  type: 'object',
-  properties: {
-    exitCode: { type: 'number' },
-    branch: { type: 'string' },
-    changes: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          path: { type: 'string' },
-          status: { type: 'string' },
-        },
-        required: ['path', 'status'],
-      },
-    },
-    untracked: { type: 'array', items: { type: 'string' } },
-    stderr: { type: 'string' },
-  },
-};
 
 // W2-05（#88）：run_checks 双条目注册（0050 B2 + 0051 D-11）——reduce=#79 逐项去噪版 +
 // schema=D-11 全文。D-4 路由裁决：双条目先过预算门走 L3，失败（超门/配额/不可用/超时/
@@ -806,12 +736,12 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['message_list', { reduce: makeMessagePageReducer('message_list', 'fetch next page of collaboration messages') }],
   ['message_conversation', { reduce: reduceMessageConversation }],
   ['execute_cli', { reduce: denoiseCommandResult, schema: EXECUTE_CLI_SCHEMA, admitL3: admitExecuteCliL3 }],
-  // W2-02（#85）：git_status dual（reduce + schema，0050 B3 + 0051 D-11）——先预算门走 L3、失败回落 L1
-  ['git_status', { reduce: denoiseCommandResult, schema: GIT_STATUS_SCHEMA }],
+  // 增补-04（#103）：git_status / git_log / git_show L3 豁免（#92 检查点裁决 A）——同 git_diff
+  // 先例回 L1 被动去噪（无 schema → L3 永不进入，D-16 登记）
+  ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
-  // W2-03（#86）：git_log dual（reduce + schema，0050 B3）——先预算门走 L3、失败回落 L1
-  ['git_log', { reduce: denoiseCommandResult, schema: GIT_LOG_SCHEMA }],
-  ['git_show', { reduce: denoiseCommandResult, schema: GIT_SHOW_SCHEMA }],
+  ['git_log', { reduce: denoiseCommandResult }],
+  ['git_show', { reduce: denoiseCommandResult }],
   ['run_checks', { reduce: denoiseRunChecksResult, schema: RUN_CHECKS_SCHEMA }],
 ]);
 

@@ -1,56 +1,43 @@
-// ADR-0051 W2-04 (#87)：git_show 工具 bug 修复 + schema 注册（0050 I-29 + 0051 D-12）
+// ADR-0051 增补-04 (#103)：git_show L3 豁免（#92 检查点裁决 A，用户拍板）
+//
+// 背景：真模型 20 样本评测 git_show×3 全 Q5 挂——答案字段被 Q5 剥光，结构性退化为
+// {exitCode,stderr}，比 L1 更差。机理：2B 模型 + Q5 verbatim（D-10 原则 3）+ git 自由文本
+// 的根本张力；Q5 是防幻觉护栏（0051 D-9 静默硬约束），不可松 → 豁免 L3（同 git_diff 先例，
+// 答案保护）。终态 = L1 被动去噪：TOOL_SHAPES 条目回到 { reduce: denoiseCommandResult }，
+// 无 schema → resolveShape 判 kind:'l1'，L3 永不进入（D-16 登记见本地覆盖矩阵 §2）。
+// D-12 bug 修复（`git show <rev> --stat --oneline` 拼接，core-tools.ts）与 L3 无关，保留。
 //
 // 验收断言：
-//   AC1  TOOL_SHAPES 双条目注册：reduce 保留 + schema 与 D-11 全文一致
-//   AC2  fake adapter 结构化返回 → 结果替换为 L3 输出（Q5 后），白名单外 ghost 丢，applied:true
-//   AC2b 真实 CommandResult raw：白名单即丢弃（D-10 原则 2）——Q5 值存在性校验要求标量值
-//        带引号逐字出现在 rawText（engine.ts 启发式），stdout 未加引号文本中的
-//        commitHash/subject/files 被丢、raw 字段值 exitCode/stderr 保留 → 结果替换为
-//        {exitCode, stderr}（与 W2-03 git_log 同构）
-//   AC3  Q5 全丢（模型幻觉）→ q5-rejected 回落 L1 denoise（数据保全，绝不阻断）
-//   AC4  失败矩阵：不可用 / 超预算门 → 回落 L1 denoise，各自 reason 记审计
-//   AC5  成功态语义等价：commitHash/subject/files 与 raw 逐字对应（fixture；值作为 raw
-//        字段值才能逐字命中 Q5 锚点——真实 stdout 是未加引号文本，见 AC2b）
+//   AC1  豁免登记：git_show 注册 L1-only——reduce 保留、无 schema 字段（L3 永不进入）、
+//        与 git_diff 先例同形（同一 denoiseCommandResult）
+//   AC2  L3 永不调用：fake adapter 就绪且结构化返回合法对象 → 仍不调模型（callCount 0），
+//        结果 = L1 denoise（FIXTURE_STDOUT 逐字保全），审计 applied:true 无 reason
+//   AC2b adapter 不可用 → 不调模型，L1 denoise
+//   AC3  超大 stdout（超预算门量级）→ 仍 L1 denoise、stdout 全量保留（豁免后无预算门路径）
 //   AC6  bug 机制锁定：`git show --stat --oneline -- <rev>` 恒空 stdout（真实 git 复现）；
-//        修复拼接 `git show <rev> --stat --oneline` 非空
-//   AC7  运行时探测：actions 真实 git 仓库 git_show HEAD → 修复后 stdout 非空 + 去噪；
-//        revision '-p' 不注入 patch（#35 安全不变式保全）；fake 结构化 → L3 路由到达
-//   AC8  D17 静默：L3 成功 / 回落 L1 全路径无层标记
+//        修复拼接 `git show <rev> --stat --oneline` 非空（与 L3 无关，保留）
+//   AC7  运行时探测：actions 真实 git 仓库 git_show HEAD → 去噪后非空 stdout + 噪声剥除；
+//        revision '-p' 不注入 patch（#35 安全不变式保全）；fake 结构化 → L3 永不调用
+//   D17  全路径无层标记（递归扫描）
 //
 // 测试方式：单测直接驱动 shapeToolResponse（dist/tool-parse.js）+ 注入 fake adapter
-// （dist/l3/registry.js，issue-38 / W2-01 手法）；运行时探测走 MyTerminalRuntime actions
-// 通道（myterminal.test.mjs 手法）。
+// （dist/l3/registry.js）；运行时探测走 MyTerminalRuntime actions 通道（myterminal.test.mjs 手法）。
 // 注：任何 src 改动后必须先 bun run build 再跑测试（测试全部从 dist 导入，历史教训见 #43）。
 
-import { test, afterEach } from 'bun:test';
+import { test, afterEach, afterAll } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+// #101（ADR-0051 增补-02 手法）：关预热——运行时探测注入 fake adapter，server.start 后台
+// 异步预热会经 getL3Adapter 拿同一单例跑 smoke probe，挤占 complete 计数（L3 永不调用
+// 断言会误报）。生产默认（不设旋钮）预热全开不变；本文件为运行时探测类测试，显式关预热。
+process.env.MYTERMINAL_L3_WARMUP = 'false';
 import { shapeToolResponse, TOOL_SHAPES } from '../dist/tool-parse.js';
 import { registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance } from '../dist/l3/registry.js';
 import { clearL3Quota } from '../dist/l3/engine.js';
 import { MyTerminalRuntime } from '../dist/server.js';
-
-// 0051 D-11 拍板 git_show schema 全文（验收 1：TOOL_SHAPES 内 schema 与此逐字一致）
-const D11_GIT_SHOW_SCHEMA = {
-  type: 'object',
-  properties: {
-    exitCode: { type: 'number' },
-    commitHash: { type: 'string' },
-    subject: { type: 'string' },
-    files: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { path: { type: 'string' }, stat: { type: 'string' } },
-        required: ['path', 'stat'],
-      },
-    },
-    stderr: { type: 'string' },
-  },
-};
 
 // D17 静默契约：任何层都不插自标识标记（复用 issue-31 手法）
 const MARKER_KEYS = ['_shapedBy', '_l1Applied', '_l2Applied', '_l3Applied'];
@@ -64,7 +51,7 @@ function assertNoShapingMarkers(value, at = 'root') {
   }
 }
 
-/** 注入 fake adapter（成功/不可用由 object/ready 控制），带调用计数与 lastReq 读取。 */
+/** 注入 fake adapter（就绪/不可用由 ready 控制），带调用计数与 lastReq 读取。 */
 function injectFake({ ready = true, object = {} } = {}) {
   resetL3Adapter(); // 清旧单例，让本次 factory 在下次懒加载生效（单例常驻语义）
   let calls = 0;
@@ -103,6 +90,12 @@ afterEach(() => {
   clearL3Quota();
 });
 
+// #101：文件结束恢复 env（bun 共享 worker 下 process.env 跨文件可见，防止 false 泄漏到
+// 依赖预热默认开的文件——W208 等；生产默认不变）
+afterAll(() => {
+  delete process.env.MYTERMINAL_L3_WARMUP;
+});
+
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
 const FIXTURE_STDOUT = [
@@ -129,12 +122,8 @@ function gitShowRaw(stdout = FIXTURE_STDOUT) {
   };
 }
 
-/**
- * 语义等价 fixture：值作为 raw 字段值。Q5 值存在性校验的锚点是 raw 的 JSON 序列化
- * （JSON.stringify），字段值带引号出现在 rawText 中才能逐字命中——真实 git_show 的
- * stdout 是未加引号文本（AC2b 覆盖），故语义等价断言用本 fixture 证明「抽取值逐字保留」。
- */
-function gitShowStructuredRaw() {
+/** 理想 L3 抽取结果（若 schema 仍在）：证明即便 adapter 能产出合法结构化对象也不被调用。 */
+function gitShowStructuredObject() {
   return {
     exitCode: 0,
     commitHash: 'b8eaea8',
@@ -147,112 +136,68 @@ function gitShowStructuredRaw() {
   };
 }
 
-test('W2-04-AC1: TOOL_SHAPES 双条目注册 — reduce 保留 + schema 与 D-11 全文一致', () => {
+// ───────────────────────────────────────────────────────────
+// AC1：豁免登记 — git_show L1-only（无 schema，与 git_diff 先例同形）
+// ───────────────────────────────────────────────────────────
+
+test('W2-04-AC1: 豁免登记 — git_show L1-only（无 schema 字段，与 git_diff 先例同形）', () => {
   const shape = TOOL_SHAPES.get('git_show');
   assert.ok(shape, 'git_show 应注册');
-  assert.equal(typeof shape.reduce, 'function', 'reduce 保留（L1 回落用）');
-  assert.deepEqual(shape.schema, D11_GIT_SHOW_SCHEMA, 'schema 与 0051 D-11 全文逐字一致');
+  assert.equal(typeof shape.reduce, 'function', 'reduce 保留（L1 被动去噪）');
+  assert.equal('schema' in shape, false, '豁免登记：无 schema 字段（L3 永不进入）');
+  assert.equal(shape.schema, undefined, 'schema 恒为 undefined');
+  const gitDiff = TOOL_SHAPES.get('git_diff');
+  assert.ok(gitDiff, '先例 git_diff 在册');
+  assert.equal('schema' in gitDiff, false, '先例 git_diff 亦无 schema');
+  assert.equal(shape.reduce, gitDiff.reduce, '与 git_diff 先例同形（同一 denoiseCommandResult）');
 });
 
-test('W2-04-AC2: fake 结构化返回 → 结果替换为 L3 输出（Q5 后），白名单外 ghost 丢', async () => {
-  const { getLastReq } = injectFake({
-    object: {
-      exitCode: 0,
-      commitHash: 'b8eaea8',
-      subject: 'fix: trim trailing whitespace',
-      files: [
-        { path: 'src/core-tools.ts', stat: '2 ++' },
-        { path: 'src/tool-parse.ts', stat: '1 +' },
-      ],
-      stderr: '',
-      ghost: 'x', // 白名单外字段（Q5 必丢）
-    },
-  });
-  const { ctx, getRecord } = makeCtx();
+// ───────────────────────────────────────────────────────────
+// AC2/AC2b/AC3：L3 永不调用 + L1 denoise 数据保全
+// ───────────────────────────────────────────────────────────
 
-  const shaped = await shapeToolResponse(makeResponse('git_show', gitShowStructuredRaw()), ctx);
-  assert.deepEqual(shaped.data.result, gitShowStructuredRaw(), 'Q5 后结果替换（白名单外 ghost 被丢）');
-  assert.equal(getRecord().shaping.applied, true);
-  assert.equal(getRecord().shaping.reason, undefined, 'L3 成功无 reason');
-  const req = getLastReq();
-  assert.ok(req, 'fake adapter complete 被调用（路由到达 L3）');
-  assert.deepEqual(req.schema, D11_GIT_SHOW_SCHEMA, 'schema 原样传入');
-  assertNoShapingMarkers(shaped);
-});
-
-test('W2-04-AC2b: 真实 CommandResult raw — 白名单即丢弃（stdout 被结构化替换，D-10 原则 2）', async () => {
-  // Q5 值存在性校验：标量须带引号逐字出现在 rawText（engine.ts 启发式「对齐 ADR Q5」）。
-  // 真实 git_show stdout 是未加引号文本 → 从中抽取的 commitHash/subject/files 被丢；
-  // exitCode/stderr 本身是 raw 字段值 → 保留。stdout 被结构化替换是 D-10 原则 2 设计使然。
-  const { getLastReq } = injectFake({
-    object: {
-      exitCode: 0,
-      commitHash: 'b8eaea8',
-      subject: 'fix: trim trailing whitespace',
-      files: [{ path: 'src/core-tools.ts', stat: '2 ++' }],
-      stderr: '',
-    },
-  });
+test('W2-04-AC2: L3 永不调用 — adapter 就绪且结构化返回合法 → 仍不调模型，结果 L1 denoise', async () => {
+  const { callCount, getLastReq } = injectFake({ object: { ...gitShowStructuredObject(), ghost: 'x' } });
   const { ctx, getRecord } = makeCtx();
 
   const shaped = await shapeToolResponse(makeResponse('git_show', gitShowRaw()), ctx);
-  assert.deepEqual(shaped.data.result, { exitCode: 0, stderr: '' }, 'Q5 后只留 raw 字段值');
-  assert.equal(getRecord().shaping.applied, true);
-  // L3 所见 raw 含完整 stdout（JSON 序列化形态；真实模型按 prompt 规则 2 抽取后受 Q5 锚点约束）
-  assert.ok(getLastReq().instruction.includes(JSON.stringify(FIXTURE_STDOUT)), 'L3 prompt 含完整 raw stdout');
-  assertNoShapingMarkers(shaped);
-});
-
-test('W2-04-AC3: Q5 全丢（模型幻觉）→ q5-rejected 回落 L1 denoise，数据保全', async () => {
-  const { callCount } = injectFake({
-    object: { exitCode: 999, commitHash: 'hallucinated', subject: 'hallucinated', files: [{ path: 'nope', stat: 'nope' }], stderr: 'hallucinated' },
-  });
-  const { ctx, getRecord } = makeCtx();
-
-  const shaped = await shapeToolResponse(makeResponse('git_show', gitShowRaw()), ctx);
-  assert.equal(callCount(), 1);
-  assert.equal(shaped.data.result.stdout, FIXTURE_STDOUT, '回落 L1：stdout 原样保全');
+  assert.equal(callCount(), 0, '豁免：L3 永不调用（无 schema 条目）');
+  assert.equal(getLastReq(), null, 'adapter complete 未被调用');
+  const r = shaped.data.result;
+  assert.equal(r.exitCode, 0, 'exitCode 保留');
+  assert.equal(r.stdout, FIXTURE_STDOUT, 'stdout 逐字保全（未被结构化替换）');
+  assert.equal(r.stderr, '', 'stderr 保留');
   for (const noise of ['command', 'cwd', 'signal', 'timedOut', 'cancelled']) {
-    assert.equal(shaped.data.result[noise], undefined, `回落 L1 剥噪声 ${noise}`);
+    assert.equal(r[noise], undefined, `噪声键剥除 ${noise}`);
   }
-  assert.equal(getRecord().shaping.applied, true);
-  assert.equal(getRecord().shaping.reason, 'q5-rejected', '失败矩阵 reason');
+  assert.equal(getRecord().shaping.applied, true, 'L1 整形 applied:true');
+  assert.equal(getRecord().shaping.reason, undefined, 'L1-only 无 L3 失败 reason');
   assertNoShapingMarkers(shaped);
 });
 
-test('W2-04-AC4a: 模型不可用 → l3-unavailable 回落 L1 denoise', async () => {
-  const { callCount } = injectFake({ ready: false });
+test('W2-04-AC2b: adapter 不可用 → 不调模型，结果 L1 denoise', async () => {
+  const { callCount, getLastReq } = injectFake({ ready: false });
   const { ctx, getRecord } = makeCtx();
 
   const shaped = await shapeToolResponse(makeResponse('git_show', gitShowRaw()), ctx);
-  assert.equal(callCount(), 0, '不可用不调模型');
-  assert.equal(shaped.data.result.stdout, FIXTURE_STDOUT, '回落 L1：stdout 原样');
+  assert.equal(callCount(), 0, '不调模型');
+  assert.equal(getLastReq(), null, 'adapter 不被咨询');
+  assert.equal(shaped.data.result.stdout, FIXTURE_STDOUT, 'stdout 原样');
   assert.equal('command' in shaped.data.result, false, '噪声键剥除');
   assert.equal(getRecord().shaping.applied, true);
-  assert.equal(getRecord().shaping.reason, 'l3-unavailable', '失败矩阵 reason');
+  assert.equal(getRecord().shaping.reason, undefined, '无 reason（不存在 l3-unavailable）');
   assertNoShapingMarkers(shaped);
 });
 
-test('W2-04-AC4b: 超预算门 → over-budget 回落 L1 denoise（D-4 双条目）', async () => {
-  const { callCount, getLastReq } = injectFake({ object: gitShowStructuredRaw() });
+test('W2-04-AC3: 超大 stdout（超预算门量级）→ 仍 L1 denoise、stdout 全量保留（豁免后无预算门）', async () => {
+  const { callCount, getLastReq } = injectFake({ object: gitShowStructuredObject() });
   const { ctx, getRecord } = makeCtx();
+  const big = 'x'.repeat(200_000); // ≈50K tokens，旧预算门（24K）会拦——豁免后不设门
 
-  const shaped = await shapeToolResponse(makeResponse('git_show', gitShowRaw('x'.repeat(200_000))), ctx); // ≈50K tokens > 24K
-  assert.equal(callCount(), 0, '预算门拦截，不调模型');
-  assert.equal(getLastReq(), null, '预算门在调模型前');
-  assert.equal(shaped.data.result.stdout.length, 200_000, '回落 L1：stdout 原样');
-  assert.equal(getRecord().shaping.applied, true);
-  assert.equal(getRecord().shaping.reason, 'over-budget');
-  assertNoShapingMarkers(shaped);
-});
-
-test('W2-04-AC5: 成功态语义等价 — commitHash/subject/files 与 raw 逐字对应（fixture）', async () => {
-  const raw = gitShowStructuredRaw();
-  injectFake({ object: raw }); // 模型逐字抽取（D-10 原则 3：Q5 verbatim）
-  const { ctx, getRecord } = makeCtx();
-
-  const shaped = await shapeToolResponse(makeResponse('git_show', raw), ctx);
-  assert.deepEqual(shaped.data.result, raw, 'commitHash/subject/files 与 raw 逐字对应，零增删改');
+  const shaped = await shapeToolResponse(makeResponse('git_show', gitShowRaw(big)), ctx);
+  assert.equal(callCount(), 0, 'L3 永不调用（无预算门路径）');
+  assert.equal(getLastReq(), null, 'adapter 不被咨询');
+  assert.equal(shaped.data.result.stdout.length, 200_000, 'stdout 全量保留');
   assert.equal(getRecord().shaping.applied, true);
   assert.equal(getRecord().shaping.reason, undefined);
   assertNoShapingMarkers(shaped);
@@ -268,7 +213,7 @@ test('W2-04-AC6: bug 机制锁定 — `git show --stat --oneline -- <rev>` 恒�
     execFileSync('git', ['add', '-A'], { cwd: dir });
     execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: dir });
 
-    // 旧拼接：`--` 把 revision 当 pathspec → 恒空（本票修复对象）
+    // 旧拼接：`--` 把 revision 当 pathspec → 恒空（D-12 修复对象，与 L3 无关，保留锁定）
     const buggy = execFileSync('git', ['show', '--stat', '--oneline', '--', 'HEAD'], { cwd: dir, encoding: 'utf8' });
     assert.equal(buggy.trim(), '', '旧拼接按 revision 查询恒空（bug 机制）');
     // 修复拼接：revision 在 `--` 前 → 非空
@@ -279,7 +224,7 @@ test('W2-04-AC6: bug 机制锁定 — `git show --stat --oneline -- <rev>` 恒�
   }
 });
 
-// ── 运行时探测（AC7/AC8）：actions 通道真实 git 仓库 ───────────────────────────
+// ── 运行时探测（AC7）：actions 通道真实 git 仓库 ───────────────────────────
 
 const CONNECTOR_KEY = 'w204-connector-key-123456';
 const ACTIONS_TOKEN = 'w204-actions-token-1234567890123456';
@@ -329,7 +274,7 @@ async function root(server, name = 'w204-main') {
   return reg.body.data.result.identity;
 }
 
-test('W2-04-AC7: 运行时探测 — 真实 git 仓库 git_show HEAD（bug 修复 + 注入保全 + L3 路由到达）', async () => {
+test('W2-04-AC7: 运行时探测 — 真实 git 仓库 git_show HEAD（去噪保全 + 注入不变式 + L3 永不调用）', async () => {
   const server = await createRuntime();
   try {
     // 真实 git 仓库（seed 提交）
@@ -341,12 +286,12 @@ test('W2-04-AC7: 运行时探测 — 真实 git 仓库 git_show HEAD（bug 修�
     execFileSync('git', ['commit', '-q', '-m', 'w204 seed commit'], { cwd: server.dirs.workspaceDir });
     const identity = await root(server);
 
-    // (a) bug 修复：fake 不可用 → 回落 L1 denoise；stdout 非空 + 噪声剥除
+    // (a) 去噪保全：fake 不可用 → L1 denoise；stdout 非空 + 噪声剥除
     injectFake({ ready: false });
     const head = await call(server, 'git_show', { revision: 'HEAD' }, identity);
     assert.equal(head.body.ok, true, JSON.stringify(head.body));
     const denoised = head.body.data.result;
-    assert.ok(typeof denoised.stdout === 'string' && denoised.stdout.trim().length > 0, '修复后按 revision 返回非空 stdout');
+    assert.ok(typeof denoised.stdout === 'string' && denoised.stdout.trim().length > 0, '按 revision 返回非空 stdout（D-12 修复保留）');
     for (const noise of ['command', 'cwd', 'signal', 'timedOut', 'cancelled']) {
       assert.equal(denoised[noise], undefined, `回落 L1 剥噪声 ${noise}`);
     }
@@ -358,21 +303,15 @@ test('W2-04-AC7: 运行时探测 — 真实 git 仓库 git_show HEAD（bug 修�
     const injectStdout = inject.body.data.result.stdout ?? '';
     assert.ok(!/diff --git|@@ /.test(injectStdout), `'-p' 不得被当 patch option：stdout=${JSON.stringify(injectStdout)}`);
 
-    // (c) fake 结构化：L3 路由到达；Q5 锚点约束 → 只留 raw 字段值（AC2b 同构）
+    // (c) fake 结构化：L3 永不调用（豁免生效），结果 = L1 denoise，stdout 全量保全
     resetL3Adapter();
-    const { callCount } = injectFake({
-      object: {
-        exitCode: 0,
-        commitHash: 'b8eaea8',
-        subject: 'w204 seed commit',
-        files: [{ path: 'f.txt', stat: '1 +' }],
-        stderr: '',
-      },
-    });
+    const { callCount, getLastReq } = injectFake({ object: gitShowStructuredObject() });
     const shapedHead = await call(server, 'git_show', { revision: 'HEAD' }, identity);
     assert.equal(shapedHead.body.ok, true, JSON.stringify(shapedHead.body));
-    assert.equal(callCount(), 1, 'L3 被调用（双条目 schema 优先，路由到达）');
-    assert.deepEqual(shapedHead.body.data.result, { exitCode: 0, stderr: '' }, 'Q5 后只留 raw 字段值（stdout 内嵌值被丢，D-10 原则 2）');
+    assert.equal(callCount(), 0, 'L3 永不调用（豁免：无 schema 条目）');
+    assert.equal(getLastReq(), null, 'adapter 不被咨询');
+    assert.ok(typeof shapedHead.body.data.result.stdout === 'string' && shapedHead.body.data.result.stdout.includes('w204 seed commit'), 'stdout 保全真实提交数据（未被结构化替换）');
+    assert.equal('command' in shapedHead.body.data.result, false, '噪声键剥除');
     assertNoShapingMarkers(shapedHead.body);
   } finally {
     await server.close();
