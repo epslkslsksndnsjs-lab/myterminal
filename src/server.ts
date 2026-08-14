@@ -9,6 +9,7 @@ import { ExtensionService } from './extensions.js';
 import { MyTerminalMcpTransport } from './mcp.js';
 import { clearL3Quota } from './l3/engine.js';
 import { resetL3Adapter, setL3ClusterMode } from './l3/registry.js';
+import { resetL3Warmup, startL3Warmup } from './l3/warmup.js';
 import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
@@ -367,6 +368,9 @@ export class MyTerminalRuntime {
       await this.becomeStandaloneLeader(0);
       // D18.2：standalone（无 cluster）→ L3 默认开
       setL3ClusterMode(false);
+      // ADR-0051 D-6（#91 W2-08）：standalone 异步预热（fire-and-forget，start 不等待；
+      // 全失败仅记日志；env 关 / cluster 默认关由 l3Enabled 内部 gate）
+      startL3Warmup((message, level) => this.log(message, level));
       this.publishWorkspaceRuntime();
       this.startConfiguredPassiveLock();
       this.startResumeMonitor();
@@ -544,6 +548,8 @@ export class MyTerminalRuntime {
     // （D6 护栏3「会话结束从 Map 删除」全量面；D8.2「进程退出/会话结束释放」）
     clearL3Quota();
     resetL3Adapter();
+    // ADR-0051 D-6（#91 W2-08）：释放预热门闩——「下次启动自动预热」（D-8.1）
+    resetL3Warmup();
     await publicClosed;
     await this.mcp.close();
     if (this.clusterMcp) await this.clusterMcp.close();
