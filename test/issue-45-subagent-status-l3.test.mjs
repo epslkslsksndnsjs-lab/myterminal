@@ -8,6 +8,9 @@
 //   AC5 测试覆盖：completed 自由文本小结果走 L3 / 超 24K fail-open / 非 completed 不整形
 //   （D17 静默：任何层不插自标识标记）
 //
+// W2-07（#90）适配：D-13 旁挂式——L3 抽取挂 data.result.extracted（D-11 真 schema：
+// deliverables/files/blockers/conclusion），result 原文原样不动（0048 D11「result 必留」）。
+//
 // 测试方式：单测直接驱动 shapeToolResponse（../dist/tool-parse.js）+ 注入 fake adapter
 // （registry）。subagent_status 是控制工具、不在 TOOL_SHAPES，路由由 tool-parse 的特化
 // 分支（同 task_poll 先例）实现。
@@ -83,15 +86,17 @@ afterEach(() => {
 // AC1 + AC2：completed + 自由文本小结果走 L3，其余上下文不动
 // ───────────────────────────────────────────────────────────
 
-test('T11-AC1: completed 自由文本小结果走 L3 — result 子字段被整形，其余上下文原样', async () => {
+test('T11-AC1: completed 自由文本小结果走 L3 — D-13 旁挂 extracted，result 原文不动，其余上下文原样', async () => {
   const text = 'final report: all tests passed';
-  injectFake({ object: { summary: text } }); // verbatim 子串，Q5 值存在性通过
+  // 整段文本即唯一行值：conclusion 抽取整段 → Q5 逐字命中（D-11 真 schema；占位 {summary} 已消除）
+  injectFake({ object: { conclusion: text } });
   const { ctx, getRecord } = makeCtx();
   const raw = makeStatusResult({ status: 'completed', result: text });
   const shaped = await shapeStatus(raw, ctx);
 
-  // result 子字段被 L3 整形（写回 summary string，类型不变）
-  assert.equal(shaped.data.result.result, text, 'result 字段写回 L3 summary');
+  // D-13 旁挂式：extracted 挂上（Q5 后），result 原文原样不动（0048 D11「result 必留」）
+  assert.equal(shaped.data.result.result, text, 'result 原文原样不动（不被替换）');
+  assert.deepEqual(shaped.data.result.extracted, { conclusion: text }, 'L3 抽取挂 extracted');
   // 其余内部上下文原样（避免双重整形，AC2）
   assert.equal(shaped.data.result.status, 'completed');
   assert.equal(shaped.data.result.sessionId, 'child-1');
@@ -106,12 +111,12 @@ test('T11-AC1: completed 自由文本小结果走 L3 — result 子字段被整�
 
 test('T11-AC1b: 走 L3 时确实调用模型（路由达到 L3，非 passthrough）', async () => {
   const text = 'final report: all tests passed';
-  const { getLastReq } = injectFake({ object: { summary: text } });
+  const { getLastReq } = injectFake({ object: { conclusion: text } });
   const { ctx } = makeCtx();
   await shapeStatus(makeStatusResult({ status: 'completed', result: text }), ctx);
   const req = getLastReq();
   assert.ok(req, 'fake adapter complete 被调用');
-  assert.equal(req.schema.type, 'object', 'schema 传入（占位 {summary:string}）');
+  assert.equal(req.schema.type, 'object', 'schema 传入（D-11 真 schema）');
 });
 
 // ───────────────────────────────────────────────────────────
@@ -173,8 +178,8 @@ test('T11-边界: completed 但 result 缺失 → 不整形', async () => {
 
 test('T11-fail-open: Q5 全字段皆丢（模型幻觉）→ 整体 fail-open passthrough', async () => {
   const text = 'final report: all tests passed';
-  // 模型返回 summary 不在 raw 文本中 → Q5 值存在性校验丢字段 → 全丢 → fail-open
-  injectFake({ object: { summary: 'totally different hallucination' } });
+  // 模型返回的值不在 raw 文本中 → Q5 值存在性校验丢字段 → 全丢 → fail-open（不伪造）
+  injectFake({ object: { conclusion: 'totally different hallucination' } });
   const { ctx, getRecord } = makeCtx();
   const raw = makeStatusResult({ status: 'completed', result: text });
   const shaped = await shapeStatus(raw, ctx);

@@ -931,7 +931,8 @@ export function clearOperationCache(taskId?: string): void {
 // string + ≤24K tokens），其余内部上下文（status/sessionId/tasks/usage/error/origin/
 // auditLogs）一律不整形（避免双重整形，D2）。预算门只量 result 子字段（非整对象），超门
 // fail-open reason=over-budget；非 completed / result 非 string → 保持 passthrough。
-// 注：真正的 L3 提取 schema 由 T14（#44 L3 提示词与失败矩阵）定义，此处为占位。
+// W2-07（#90）：D-13 旁挂式——L3 抽取结果挂 data.result.extracted，result 字段原文原样
+// 不动（0048 D11「result 必留」+「轮询取全量结果再验收」两条铁律）。
 
 /** subagent_status.result 是否命中 L3-if-small 例外（仅 completed + 自由文本 string）。 */
 function isSubagentCompletedResult(rawResult: unknown): rawResult is { status: string; result: string } & JsonObject {
@@ -939,10 +940,16 @@ function isSubagentCompletedResult(rawResult: unknown): rawResult is { status: s
   return (rawResult as JsonObject).status === 'completed' && typeof (rawResult as JsonObject).result === 'string';
 }
 
-/** TODO(T14 #44)：占位 schema——真正的 result 提取 schema 由 T14 提示词票定义。 */
+// W2-07（#90）：0051 D-11 拍板真 schema（0050 H4 缺口消除）——deliverables/files/blockers/
+// conclusion 四字段，逐字抽取（Q5 verbatim）；D-13 旁挂式：输出挂 data.result.extracted。
 const SUBAGENT_STATUS_RESULT_SCHEMA: JsonSchema = {
   type: 'object',
-  properties: { summary: { type: 'string' } },
+  properties: {
+    deliverables: { type: 'array', items: { type: 'string' } },
+    files: { type: 'array', items: { type: 'string' } },
+    blockers: { type: 'array', items: { type: 'string' } },
+    conclusion: { type: 'string' },
+  },
 };
 
 /**
@@ -1154,8 +1161,11 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
     else if (cacheReason === 'nested-recursion-threw') shaping = { applied: false, reason: 'nested-recursion-threw' };
   }
 
-  // ── D2 细化 L3-if-small 例外（subagent_status.result，T11 #45）──
+  // ── D2 细化 L3-if-small 例外（subagent_status.result，T11 #45）+ D-13 旁挂式（W2-07 #90）──
   // 仅对 data.result.result 子字段做 L3（completed + 自由文本 string + ≤24K），其余字段原样。
+  // D-13 旁挂式：L3 抽取结果挂 data.result.extracted（deliverables/files/blockers/conclusion，
+  // 逐字抽取），result 字段原文原样不动——守住 0048 D11「result 必留」+「轮询取全量结果再
+  // 验收」两条铁律；Q5 全丢 / 模型不可用 / 超时 / 配额 / 解析失败 → 原样 passthrough 不伪造。
   if (toolName === 'subagent_status' && isSubagentCompletedResult(rawResult)) {
     const text = (rawResult as JsonObject).result as string;
     if (estimateTokens(text) > RAW_BUDGET_TOKENS) {
@@ -1163,11 +1173,17 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
       base = response;
       shaping = { applied: false, reason: 'over-budget' };
     } else {
-      // L3 结构化解析（占位 schema；全路径 fail-open，reason 由 engine 给出）
-      const outcome = await runL3({ summary: text }, SUBAGENT_STATUS_RESULT_SCHEMA, ctx.transport, ctx.sessionId);
-      if (outcome.shaped && typeof outcome.shaped.summary === 'string') {
-        // 只替换 result 子字段，其余内部上下文（status/tasks/usage/origin/auditLogs）原样保全
-        base = { ...response, data: { ...(response.data ?? {}), result: { ...(rawResult as JsonObject), result: outcome.shaped.summary } } };
+      // L3 结构化抽取（D-11 真 schema；全路径 fail-open，reason 由 engine 给出）。
+      // 传给引擎的 raw 除 result 原文外附带 lines（逐行拆分）——Q5 值存在性校验的锚点是
+      // raw 的 JSON 序列化（engine.ts 启发式），自由文本的内部子串永远无法带引号命中；
+      // 行值作为独立数组元素即可被逐字抽取命中（0047 Q5 verbatim 的落地方式）。
+      const lines = text.split(/\r?\n/);
+      if (lines[lines.length - 1] === '') lines.pop(); // 尾随换行不产生额外空行
+      const outcome = await runL3({ result: text, lines }, SUBAGENT_STATUS_RESULT_SCHEMA, ctx.transport, ctx.sessionId);
+      if (outcome.shaped) {
+        // 旁挂式：extracted 挂上，result 原文原样不动（0048 D11）；其余内部上下文
+        // （status/sessionId/tasks/usage/origin/auditLogs）原样保全
+        base = { ...response, data: { ...(response.data ?? {}), result: { ...(rawResult as JsonObject), extracted: outcome.shaped } } };
         shaping = { applied: true };
       } else {
         // L3 失败（模型不可用/超时/配额/Q5 全丢）→ 原样 passthrough，不伪造
