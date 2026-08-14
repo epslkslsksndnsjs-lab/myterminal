@@ -17,13 +17,18 @@
 // actions 通道（遵循 myterminal.test.mjs / issue-W107 手法）。
 // 注：任何 src 改动后必须先 bun run build 再跑测试（测试全部从 dist 导入，历史教训见 #43）。
 
-import { test, afterEach } from 'bun:test';
+import { test, afterEach, afterAll } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+// #101（ADR-0051 增补-02）：关预热——AC9 运行时探测注入 fake adapter，server.start 后台
+// 异步预热会经 getL3Adapter 拿同一单例跑 smoke probe，挤占 complete 计数（单跑必败 12/1）。
+// 生产默认（不设旋钮）预热全开不变；本文件为运行时探测类测试，显式关预热。
+process.env.MYTERMINAL_L3_WARMUP = 'false';
 import { shapeToolResponse, TOOL_SHAPES } from '../dist/tool-parse.js';
-import { registerAdapterFactory, resetL3Adapter } from '../dist/l3/registry.js';
+import { registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance } from '../dist/l3/registry.js';
 import { clearL3Quota } from '../dist/l3/engine.js';
 import { MyTerminalRuntime } from '../dist/server.js';
 
@@ -129,8 +134,14 @@ function shapeRaw(result, ctx) {
 }
 
 afterEach(() => {
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入；injectFake 前置全清保文件内隔离）
   clearL3Quota();
+});
+
+// #101：文件结束恢复 env（bun 共享 worker 下 process.env 跨文件可见，防止 false 泄漏到
+// 依赖预热默认开的文件——W208 等；生产默认不变）
+afterAll(() => {
+  delete process.env.MYTERMINAL_L3_WARMUP;
 });
 
 // ───────────────────────────────────────────────────────────

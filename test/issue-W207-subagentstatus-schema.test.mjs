@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { shapeToolResponse } from '../dist/tool-parse.js';
-import { registerAdapterFactory, resetL3Adapter } from '../dist/l3/registry.js';
+import { registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance } from '../dist/l3/registry.js';
 import { clearL3Quota } from '../dist/l3/engine.js';
 import { setRunnerDepsForTesting, resetSubagentRunner, getSubagentRunner } from '../dist/subagent/runner.js';
 import { clearAllSubagents } from '../dist/subagent/store.js';
@@ -408,6 +408,6 @@ test('W2-07-AC7: 运行时探测 — 真实 subagent 完成后 subagent_status�
 });
 
 afterEach(() => {
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入）
   clearL3Quota();
 });

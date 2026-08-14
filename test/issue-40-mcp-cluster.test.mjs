@@ -24,7 +24,7 @@ import {
   setL3ClusterMode,
   resetL3ClusterMode,
   registerAdapterFactory,
-  resetL3Adapter,
+  resetL3Adapter, resetL3AdapterInstance,
 } from '../dist/l3/registry.js';
 import { runL3 } from '../dist/l3/engine.js';
 import { MyTerminalRuntime } from '../dist/server.js';
@@ -86,7 +86,7 @@ async function findFreePort() {
 
 afterEach(() => {
   resetL3ClusterMode();
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入）
 });
 
 // ── AC3：cluster 参与者 L3 默认关（参与者层面 gate）──────────────────────────

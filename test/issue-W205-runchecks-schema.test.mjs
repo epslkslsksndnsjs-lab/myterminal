@@ -21,7 +21,7 @@
 import { test, afterEach } from 'bun:test';
 import assert from 'node:assert/strict';
 import { shapeToolResponse, TOOL_SHAPES } from '../dist/tool-parse.js';
-import { registerAdapterFactory, resetL3Adapter } from '../dist/l3/registry.js';
+import { registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance } from '../dist/l3/registry.js';
 import { clearL3Quota } from '../dist/l3/engine.js';
 
 // D-11 拍板全文（0051-adr47-remediation-decisions.md，逐字抄录；无顶层 required）
@@ -133,7 +133,7 @@ function shapeRunChecks(result, ctx) {
 }
 
 afterEach(() => {
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入）
   clearL3Quota();
   delete process.env.MYTERMINAL_L3_ENABLED;
   delete process.env.MYTERMINAL_L3_MAX_PER_SESSION;

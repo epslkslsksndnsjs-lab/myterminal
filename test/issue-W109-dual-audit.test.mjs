@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { MyTerminalRuntime } from '../dist/server.js';
 import { TOOL_SHAPES, shapeToolResponse, clearOperationCache, ERROR_MESSAGE_MAX_CHARS } from '../dist/tool-parse.js';
-import { registerAdapterFactory, resetL3Adapter } from '../dist/l3/registry.js';
+import { registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance } from '../dist/l3/registry.js';
 
 const CONNECTOR_KEY = 'issueW109-connector-key-123456';
 const ACTIONS_TOKEN = 'issueW109-actions-token-1234567890123456';
@@ -260,7 +260,7 @@ test('W1-09 AC4: find_files 主动精简的完整原始版（totalMatches）在�
 // ───────────────────────────────────────────────────────────
 
 afterEach(() => {
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入）
   TOOL_SHAPES.delete('w109_l3_probe');
   clearOperationCache();
 });

@@ -24,10 +24,14 @@ import path from 'node:path';
 import { MyTerminalRuntime } from '../dist/server.js';
 import { startL3Warmup, resetL3Warmup, WARMUP_MAX_RETRIES } from '../dist/l3/warmup.js';
 import {
-  registerAdapterFactory, resetL3Adapter, getL3Adapter,
+  registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance, getL3Adapter,
   setL3ClusterMode, resetL3ClusterMode,
 } from '../dist/l3/registry.js';
 import { clearL3Quota } from '../dist/l3/engine.js';
+
+// #101：防御上游 env 泄漏——bun 共享 worker 下其他文件设置的 MYTERMINAL_L3_WARMUP=false
+// 会继承到本文件，导致预热 no-op、本文件全部 timeout（全量必现）。本文件依赖预热默认开。
+delete process.env.MYTERMINAL_L3_WARMUP;
 import { shapeToolResponse, TOOL_SHAPES } from '../dist/tool-parse.js';
 
 const PROBE = 't91_dual_probe';
@@ -129,7 +133,7 @@ function makeCtx(sessionId = 's-w208', transport = 'actions') {
 afterEach(() => {
   resetL3Warmup();
   resetL3ClusterMode();
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入）
   clearL3Quota();
   TOOL_SHAPES.delete(PROBE);
   if (SAVED_L3_ENABLED === undefined) delete process.env.MYTERMINAL_L3_ENABLED;

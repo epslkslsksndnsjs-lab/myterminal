@@ -18,7 +18,7 @@ import {
   l3ModelPath,
   registerAdapterFactory,
   getL3Adapter,
-  resetL3Adapter,
+  resetL3Adapter, resetL3AdapterInstance,
 } from '../dist/l3/registry.js';
 
 /** 三路径 fake adapter（成功 / 超时 / 不可用）。 */
@@ -35,7 +35,7 @@ function fakeAdapter({ ready = true, mode = 'success' } = {}) {
   };
 }
 
-afterEach(() => resetL3Adapter());
+afterEach(() => resetL3AdapterInstance()); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入）
 
 // ── AC1：接口纯类型零运行时依赖 ──────────────────────────────────────────────
 
@@ -100,6 +100,7 @@ test('AC3 注入语义：单例已创建后 register 不生效，reset 后注入
 // ── AC4：默认 unavailable + fake 三路径 ──────────────────────────────────────
 
 test('AC4 默认 llama adapter（T12）：supportsStructuredOutput=true + id=qwen3.5-2b，懒加载不触发模型', () => {
+  resetL3Adapter(); // #101：先全清——本测试断言"无 factory 时默认 LlamaLocalAdapter"，防 bun 共享 worker 下其他文件残留的 fake factory 污染
   const adapter = getL3Adapter();
   assert.strictEqual(adapter.supportsStructuredOutput, true);
   assert.strictEqual(adapter.id, 'qwen3.5-2b');

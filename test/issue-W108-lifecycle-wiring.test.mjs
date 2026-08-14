@@ -15,17 +15,23 @@
 // 测试方式：单测直驱 ExtensionService（E1/E2 行为）+ 真实 MyTerminalRuntime（E3 关闭路径）；
 // L3 走 registry 注入 fake adapter（真模型不进自动化测试）。全部从 dist 导入。
 
-import { test, afterEach } from 'bun:test';
+import { test, afterEach, afterAll } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+// #101（ADR-0051 增补-02）：关预热——本文件运行时探测注入计数 fake，server.start 后台
+// 预热 smoke probe 经 getL3Adapter 拿同一 fake 单例（complete +1），计数断言依赖时序
+// （probe 是否先于断言完成），慢机/全量下脆。生产默认（不设旋钮）预热全开不变。
+process.env.MYTERMINAL_L3_WARMUP = 'false';
+
 import { ExtensionService } from '../dist/extensions.js';
 import { MyTerminalStore } from '../dist/store.js';
 import { createBuiltinTools } from '../dist/core-tools.js';
 import { MyTerminalRuntime } from '../dist/server.js';
 import { shapeToolResponse, TOOL_SHAPES } from '../dist/tool-parse.js';
-import { registerAdapterFactory, resetL3Adapter, getL3Adapter } from '../dist/l3/registry.js';
+import { registerAdapterFactory, resetL3Adapter, resetL3AdapterInstance, getL3Adapter } from '../dist/l3/registry.js';
 import { clearL3Quota } from '../dist/l3/engine.js';
 
 // PROBE：慢后台工具（不注册 TOOL_SHAPES → passthrough，保 fast-return/task_poll 响应原样）。
@@ -40,6 +46,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** 计数 fake adapter：complete 每调一次 L3 计数 +1。 */
 function injectFake() {
+  resetL3Adapter(); // #101：先全清单例+工厂，防 bun 共享 worker 下旧单例/旧工厂残留（对齐 W206/W208 手法）
   let calls = 0;
   const adapter = {
     id: 'w108-fake', supportsStructuredOutput: true,
@@ -105,11 +112,17 @@ async function pollUntilCompleted(service, taskId, identity) {
 }
 
 afterEach(() => {
-  resetL3Adapter();
+  resetL3AdapterInstance(); // #101：只清单例保留 factory（bun 共享 worker 防跨文件清注入；injectFake 前置全清保文件内隔离）
   clearL3Quota();
   TOOL_SHAPES.delete(PROBE);
   TOOL_SHAPES.delete(PROBE_L3);
   delete process.env.MYTERMINAL_L3_MAX_PER_SESSION;
+});
+
+// #101：文件结束恢复 env（bun 共享 worker 下 process.env 跨文件可见，防止 false 泄漏到
+// 依赖预热默认开的文件；生产默认不变）
+afterAll(() => {
+  delete process.env.MYTERMINAL_L3_WARMUP;
 });
 
 // ═════════════════════════════════════════════════════════════

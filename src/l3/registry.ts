@@ -86,3 +86,16 @@ export function resetL3Adapter(): void {
   adapterSingleton = undefined;
   adapterFactory = undefined;
 }
+
+/**
+ * 只释放单例、保留注入工厂（#101 增补-02 测试隔离专用）。
+ *
+ * bun test 以共享 worker 池并行跑文件（同进程线程），模块级状态跨文件可见：文件 A
+ * afterEach 的裸 resetL3Adapter 会清掉同 worker 文件 B 刚注入的 fake factory
+ * （W1-08-E1a 全量并行必现 0!==1）。测试 afterEach 因此改用本函数：清掉本文件
+ * 产生的单例缓存（防旧实例残留），但不动其他文件注入的 factory。注入前文件内
+ * 隔离仍由 injectFake 前置的 resetL3Adapter() 保证（先全清再注入）。
+ */
+export function resetL3AdapterInstance(): void {
+  adapterSingleton = undefined;
+}

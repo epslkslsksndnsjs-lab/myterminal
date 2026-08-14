@@ -23,6 +23,10 @@ import { L3_MAX_TOKENS } from './engine.js';
  *     （「下次启动自动预热」，D-8.1 第 1 条），测试经 resetL3Warmup 隔离。
  *   - env 优先（D-6）：l3Enabled() 为 false（env 关 / cluster 参与者默认关）→ 整体
  *     no-op，绝不碰 adapter。
+ *   - env 优先（#101 增补-02）：l3WarmupEnabled() 为 false（显式关预热旋钮）→ no-op。
+ *     旋钮与 MYTERMINAL_L3_ENABLED 同一模式（env 优先）：未设置/空串 → 默认开，
+ *     生产行为逐字不变；测试环境设 MYTERMINAL_L3_WARMUP=false 防止预热 smoke probe
+ *     挤占注入的 fake adapter / 真加载模型拖垮运行时探测类测试（W206-AC9、W104-AC8 等）。
  */
 
 /** D-6「失败有限退避 3 次」：初始 1 次 + 3 次退避重试 = 最多 WARMUP_MAX_RETRIES+1 次尝试。 */
@@ -39,6 +43,19 @@ const SMOKE_SCHEMA: JsonSchema = {
 
 /** smoke probe 用 dummy raw 结果（Q5 值存在性校验的锚点）。 */
 const SMOKE_RAW: JsonObject = { ok: true };
+
+/**
+ * 关预热旋钮（#101 增补-02，与 D-6 MYTERMINAL_L3_ENABLED 同一模式：env 优先）。
+ * - MYTERMINAL_L3_WARMUP：一键关预热。未设置/空串 → 预热开（生产默认不变）；
+ *   显式 true/1/yes/on → 开；其余非空值（false/0/no/off…）→ 关。
+ * 测试环境在文件顶部设 MYTERMINAL_L3_WARMUP=false，杜绝预热 smoke probe 挤占
+ * 注入 fake adapter 的计数 / 真加载模型拖垮运行时探测测试（#101 事实底座：整合才爆）。
+ */
+export function l3WarmupEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.MYTERMINAL_L3_WARMUP?.trim();
+  if (!raw) return true; // 未设置/空串 → 默认开（D-6 原行为逐字不动）
+  return /^(1|true|yes|on)$/i.test(raw);
+}
 
 /** 进程内预热门闩（幂等：重复 start 只预热一次，防并发加载 2×1.3GB RAM 乘散）。 */
 let warmupStarted = false;
@@ -64,6 +81,7 @@ function sleepMs(ms: number): Promise<void> {
  */
 export function startL3Warmup(log: WarmupLogger, backoffMs: readonly number[] = WARMUP_BACKOFF_MS): void {
   if (!l3Enabled()) return; // env 优先（D-6）：关 → 不预热（no-op 不消费幂等门闩）
+  if (!l3WarmupEnabled()) return; // #101 增补-02：显式关预热 → no-op（同不消费门闩；测试可测试化）
   if (warmupStarted) return; // 幂等门闩：进程内单次（D-6「下次启动自动预热」由 close 重置）
   warmupStarted = true;
   const adapter = getL3Adapter(); // 懒加载单例：预热即首次加载；后续真实调用复用（D8.2）

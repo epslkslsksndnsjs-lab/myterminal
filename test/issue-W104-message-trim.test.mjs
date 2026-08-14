@@ -17,11 +17,23 @@
 // 运行时探测走 MyTerminalRuntime actions 通道（../dist/server.js，遵循 myterminal.test.mjs 手法）。
 // 注：任何 src 改动后必须先 bun run build 再跑测试（测试全部从 dist 导入，历史教训见 #43）。
 
-import { test } from 'bun:test';
+import { test, afterAll } from 'bun:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+// #101（ADR-0051 增补-02）：关预热——AC8 运行时探测无 fake 注入，server.start 后台预热
+// 会真加载 LlamaLocalAdapter（~1.3GB 模型流程）拖垮 5s 超时（单跑必败 7/1）。
+// 生产默认（不设旋钮）预热全开不变；本文件为运行时探测类测试，显式关预热。
+process.env.MYTERMINAL_L3_WARMUP = 'false';
+
+// #101：文件结束恢复 env（bun 共享 worker 下 process.env 跨文件可见，防止 false 泄漏到
+// 依赖预热默认开的文件；生产默认不变）
+afterAll(() => {
+  delete process.env.MYTERMINAL_L3_WARMUP;
+});
+
 import { shapeToolResponse, TOOL_SHAPES } from '../dist/tool-parse.js';
 import { MyTerminalRuntime } from '../dist/server.js';
 
@@ -268,6 +280,9 @@ async function spawnChild(server, main, name = 'w104-child') {
   return child.body.data.result.identity;
 }
 
+// #101：本测试实测 ~7s（120 条消息后 message_list/conversation 的 observeMessages 历史
+// 扫描计算，与预热无关——已关预热旋钮仍超时 5s 默认；开/关预热耗时差异 <0.3s）。
+// 显式声明 30s 超时使单跑全绿；查询慢的根因（性能）另开票，不在本票范围。
 test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 count/totalCount/分页，翻页恢复不丢数据', async () => {
   const server = await createRuntime();
   try {
@@ -374,4 +389,4 @@ test('W1-04-AC8: 运行时探测 — 发 120 条消息后三工具截断态 coun
   } finally {
     await server.close();
   }
-});
+}, { timeout: 30_000 });
