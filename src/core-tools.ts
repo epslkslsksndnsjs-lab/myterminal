@@ -469,7 +469,14 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input, context) => {
       const revision = asString(input.revision, 'revision');
       if (!/^[A-Za-z0-9_./~^{}:@+-]+$/.test(revision)) throw new Error('Unsafe Git revision syntax.');
-      return await runCommand({ executable: 'git', argv: ['show', '--stat', '--oneline', '--', revision], cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
+      // W2-04 #87（0050 I-29 / D-12）：真实 revision 放 `--` 前（`-- <revision>` 会把
+      // revision 当 pathspec → 按 revision 查询恒空）。例外：以 '-' 开头的 revision 不可能是
+      // git 对象名（git 禁止 ref 以 '-' 开头），仍走 `--` 保护形式当 pathspec（恒空、exit 0）——
+      // 保全 #35 选项注入不变式（'-p' 不得被当 patch option），与修复前逐字节一致。
+      const argv = revision.startsWith('-')
+        ? ['show', '--stat', '--oneline', '--', revision]
+        : ['show', revision, '--stat', '--oneline'];
+      return await runCommand({ executable: 'git', argv, cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
     },
   });
   add({

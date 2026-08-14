@@ -669,6 +669,31 @@ function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): Json
   return { ...result, conversation: trimmed.shaped, pagination: trimmed.pagination, __reduction: trimmed.reduction };
 }
 
+// ── L3 schema（0051 D-11 拍板；W2-04 #87）─────────────────────────────────────
+//
+// git_show（D-12 bug 修复后注册双条目）：`git show <rev> --stat --oneline` 的 stdout =
+// "<hash> <subject>\n\n <path> | <stat>\n <summary>"，commitHash/subject/files 全部可从
+// stdout 逐字提取（D-10 原则3 Q5 verbatim + 原则5 语义等价）。失败保真（原则1）：exitCode +
+// stderr 必带；白名单即丢弃（原则2）：stdout 被结构化替换是设计使然；派生不进 schema（原则4）：
+// 无 count 等派生字段。回落 L1 用 denoiseCommandResult（失败矩阵全路径兜底，D-4）。
+const GIT_SHOW_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    exitCode: { type: 'number' },
+    commitHash: { type: 'string' },
+    subject: { type: 'string' },
+    files: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { path: { type: 'string' }, stat: { type: 'string' } },
+        required: ['path', 'stat'],
+      },
+    },
+    stderr: { type: 'string' },
+  },
+};
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪。execute_cli / git_* 复用 denoiseCommandResult；
@@ -684,6 +709,7 @@ function reduceMessageConversation(result: JsonObject, _ctx: ShapeContext): Json
 // store 侧分页支持见 core-tools.ts / store.ts）。
 // W2-01（#84）：D-4 双条目路由（reduce+schema → schema 优先、reduce 兜底）；六真工具 schema
 // 注册归后续波2 票，本票以测试 probe 条目保证 kind:'l3' 分支可达（0050 B1 销项）。
+// W2-04（#87）：git_show 双条目（D-11 schema + denoise 兜底；D-12 bug 修复见 core-tools.ts）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 // ── L3 schema（0051 D-11 拍板全文；dual 工具 = reduce + schema：先预算门走 L3、失败回落 L1）──
 //
@@ -729,7 +755,7 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['git_diff', { reduce: denoiseCommandResult }],
   // W2-03（#86）：git_log dual（reduce + schema，0050 B3）——先预算门走 L3、失败回落 L1
   ['git_log', { reduce: denoiseCommandResult, schema: GIT_LOG_SCHEMA }],
-  ['git_show', { reduce: denoiseCommandResult }],
+  ['git_show', { reduce: denoiseCommandResult, schema: GIT_SHOW_SCHEMA }],
   ['run_checks', { reduce: denoiseRunChecksResult, schema: RUN_CHECKS_SCHEMA }],
 ]);
 
