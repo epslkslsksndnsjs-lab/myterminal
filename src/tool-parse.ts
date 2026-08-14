@@ -187,6 +187,23 @@ function denoiseCommandResult(result: JsonObject): JsonObject {
   return out;
 }
 
+/**
+ * run_checks 专属逐项去噪 reducer（0050 C1）：run_checks 的 CommandResult 噪声在
+ * results[] 内层（core-tools.ts results.push({ name, ...result }），顶层只有
+ * scripts/results/passed → 旧顶层去噪注册对 run_checks 实际 no-op。此处保留顶层剥键
+ * 逻辑（复用 denoiseCommandResult），并对 results[] 每项逐项剥 COMMAND_RESULT_NOISE
+ * 5 键；results 非数组 → 原样（fail-open，逐项剥只作用于数组内普通对象项）。
+ */
+function denoiseRunChecksResult(result: JsonObject): JsonObject {
+  const out = denoiseCommandResult(result);
+  if (Array.isArray(out.results)) {
+    out.results = out.results.map((item) =>
+      isPlainObject(item) ? denoiseCommandResult(item) : item,
+    );
+  }
+  return out;
+}
+
 // ── D16 count 引擎规则 ────────────────────────────────────────────────────────
 //
 // reducer 产出数组自动补 count（数组实际长度）。单数组字段场景：直接加 `count`
@@ -466,7 +483,9 @@ function reduceSkillsCount(result: JsonObject): JsonObject {
 
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
-// T03：6 工具 CommandResult 被动去噪（复用同一 denoiseCommandResult reducer）。
+// T03：6 工具 CommandResult 被动去噪。execute_cli / git_* 复用 denoiseCommandResult；
+// run_checks 用逐项去噪变体 denoiseRunChecksResult（0050 C1：噪声在 results[] 内层，
+// 旧顶层去噪对 run_checks 实际 no-op；本变体即 W2-05 L3-if-small 的回落 reducer）。
 // T07：session_list 主动精简（D15 前半）。T08：session_history 嵌套 ToolResponse → 摘要
 // （D15 ⑨ 解法）；read_file_range 截断在 handler（core-tools.ts，防全文件进内存，不在此注册）。
 // W1-01（#74）：find_files / search_text 主动精简（D16 count/totalCount，0050 A1）。
@@ -485,7 +504,7 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['git_diff', { reduce: denoiseCommandResult }],
   ['git_log', { reduce: denoiseCommandResult }],
   ['git_show', { reduce: denoiseCommandResult }],
-  ['run_checks', { reduce: denoiseCommandResult }],
+  ['run_checks', { reduce: denoiseRunChecksResult }],
 ]);
 
 /** shapeToolResponse 上下文（ADR「实现前置」签名：transport / sessionId / resolveTool / audit） */
