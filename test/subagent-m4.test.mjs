@@ -1,6 +1,6 @@
 // test/subagent-m4.test.mjs — M4 Subagent 工具系统测试
 // ≥ 25 用例：接口/工厂(4) + execute_cli(6) + read/write/edit(8) + glob/grep(4) + task(3) + 集成(1)
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll, afterAll } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -134,7 +134,7 @@ describe('M4 execute_cli', () => {
 });
 
 describe('M4 read_file / write_file / edit_file', () => {
-  before(() => {
+  beforeAll(() => {
     writeFileSync(join(TMP, 'hello.txt'), 'line1\nline2\nline3\nline4\nline5');
     writeFileSync(join(TMP, 'binary.png'), Buffer.from([0x89, 0x50, 0x4E, 0x47]));
     mkdirSync(join(TMP, 'subdir'));
@@ -245,7 +245,7 @@ describe('M4 read_file / write_file / edit_file', () => {
 });
 
 describe('M4 glob / grep', () => {
-  before(() => {
+  beforeAll(() => {
     mkdirSync(join(TMP, 'src'), { recursive: true });
     mkdirSync(join(TMP, 'src', 'utils'), { recursive: true });
     mkdirSync(join(TMP, 'node_modules'), { recursive: true });
@@ -398,10 +398,10 @@ describe('M4 集成用例', () => {
 });
 
 // ── 测试前后 ──
-before(() => {
+beforeAll(() => {
   TMP = mkdtempSync(join(tmpdir(), 'm4-test-'));
 });
 
-after(() => {
+afterAll(() => {
   try { rmSync(TMP, { recursive: true, force: true }); } catch { /* cleanup */ }
 });

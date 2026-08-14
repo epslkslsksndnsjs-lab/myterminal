@@ -309,8 +309,9 @@ test('AC5 错误路径：CLI 处理器返回 1 并输出失败原因', async () 
 // ── AC1：CLI 子命令注册（spawn node，遵循 cli-regression 手法）─────────────────
 
 test('AC1 CLI 帮助可见 l3-model fetch', () => {
-  // 显式 env 遵循 cli-regression 手法：win32 下 spawnSync 不传 env 会异常退出（status null）
-  const help = spawnSync('node', [CLI, '--help'], { encoding: 'utf8', timeout: 15_000, env: { ...process.env } });
+  // win32 CI 上 spawnSync('node') 经 PATH 解析可能命中 .cmd shim（shell:false 无法执行）→ status null；
+  // 用 process.execPath（测试进程自身运行时）消除 PATH/PATHEXT 解析，三平台同一执行体
+  const help = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8', timeout: 15_000, env: { ...process.env } });
   assert.strictEqual(help.status, 0, help.stderr);
   assert.match(help.stdout, /l3-model fetch/);
 });
@@ -318,7 +319,7 @@ test('AC1 CLI 帮助可见 l3-model fetch', () => {
 test('AC1 l3-model 未知子命令 → 报错退出 1（argv 派发已注册）', () => {
   const root = makeInstallRoot('w302-bogus-');
   try {
-    const run = spawnSync('node', [CLI, 'l3-model', 'bogus'], {
+    const run = spawnSync(process.execPath, [CLI, 'l3-model', 'bogus'], {
       encoding: 'utf8', timeout: 15_000, env: { ...process.env, MYTERMINAL_HOME: root },
     });
     assert.strictEqual(run.status, 1);

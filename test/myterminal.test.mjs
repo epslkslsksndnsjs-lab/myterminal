@@ -1332,8 +1332,17 @@ test('operations exceeding 200ms detach, keep running, and complete through task
     assert.equal(detached.body.data.continuation.nextCall.tool, 'task_poll');
     const early = await call(server, 'task_poll', { taskId }, identity);
     assert.equal(early.body.data.result.status, 'running');
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    const completed = await call(server, 'task_poll', { taskId }, identity);
+    // win32 CI 子进程启动慢：固定 350ms 等待可能仍 running → 改有界轮询
+    // （每 100ms 一次，上限 15s）；完成断言强度不变——最终必须 completed
+    const pollStarted = performance.now();
+    let completed;
+    for (;;) {
+      const poll = await call(server, 'task_poll', { taskId }, identity);
+      if (poll.body.data.result.status === 'completed') { completed = poll; break; }
+      assert.equal(poll.body.data.result.status, 'running');
+      assert.ok(performance.now() - pollStarted < 15_000, `task_poll 未在 15s 内完成（status=${poll.body.data.result.status}）`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     assert.equal(completed.body.data.result.status, 'completed');
     assert.equal(completed.body.data.result.operation.data.result.stdout, 'done');
     assert.equal(completed.body.data.continuation.reason, 'continuation_plan_exhausted');

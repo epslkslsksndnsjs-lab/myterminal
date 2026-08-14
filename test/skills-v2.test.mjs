@@ -11,7 +11,7 @@
 //   M6 readOnly 'true' 解析反转        → 用例 05 杀
 //   M7 fork 空 content 从警告变阻止    → 用例 10 杀
 
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
