@@ -67,6 +67,23 @@ function makeFetcher({ body = FIXTURE, mode = 'ok', dropAfter = 16 } = {}) {
   return { fetcher, calls };
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 可手动放行的 deferred（并发测试：first 挂起持锁，观察 second 的互斥行为）。 */
+function makeDeferred() {
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+/** gate 版 fetcher：await gate.promise 后才返回响应（first 在持锁状态下挂起）。 */
+function makeGatedFetcher(gate) {
+  return async () => {
+    await gate.promise;
+    return new Response(FIXTURE, { status: 200, headers: { 'content-length': String(FIXTURE.length) } });
+  };
+}
+
 // ── env 保存/还原工具（value=undefined → 删除该变量；与 issue-W301 同模式）──────
 
 function withEnv(patch, fn) {
@@ -195,6 +212,7 @@ test('AC3 断点（流中途网络中断）→ error、无落盘、无 .part 残
     assert.match(first.error, /connection reset|reset/i);
     assert.ok(!fs.existsSync(target));
     assert.ok(!fs.existsSync(`${target}.part`), '断点后 .part 必须清理（可重试前提）');
+    assert.ok(!fs.existsSync(`${target}.lock`), '失败后锁必须释放（可重试前提）');
 
     const retry = makeFetcher({ mode: 'ok' });
     const second = await fetchL3Model({ fetcher: retry.fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
@@ -242,11 +260,15 @@ test('AC5 完成输出四要素（formatFetchCompletion + CLI 处理器 stdout�
   try {
     const { fetcher } = makeFetcher();
     const lines = [];
-    const code = await runL3ModelFetchCli({
-      fetcher,
-      targetPath: path.join(root, 'models', DEFAULT_L3_MODEL_PATH),
-      expectedSha256: FIXTURE_SHA256,
-      out: (line) => lines.push(line),
+    // 预热旋钮显式清空（共享 worker 可能残留其他文件注入的 MYTERMINAL_L3_WARMUP=false）→ 默认「下次启动自动预热」分支确定
+    let code;
+    await withEnv({ MYTERMINAL_L3_WARMUP: undefined }, async () => {
+      code = await runL3ModelFetchCli({
+        fetcher,
+        targetPath: path.join(root, 'models', DEFAULT_L3_MODEL_PATH),
+        expectedSha256: FIXTURE_SHA256,
+        out: (line) => lines.push(line),
+      });
     });
     assert.strictEqual(code, 0);
     assert.ok(lines.some((l) => l.startsWith('\r下载中')), '要素1 进度缺失');
@@ -254,11 +276,11 @@ test('AC5 完成输出四要素（formatFetchCompletion + CLI 处理器 stdout�
     assert.ok(lines.some((l) => l.includes('落盘路径')), '要素3 落盘路径缺失');
     assert.ok(lines.some((l) => l.includes('L3 模型已就绪，下次启动自动预热')), '要素4 预热行缺失');
 
-    const okLines = formatFetchCompletion({ status: 'ok', path: '/p', bytesDownloaded: 1 });
+    const okLines = formatFetchCompletion({ status: 'ok', path: '/p', bytesDownloaded: 1 }, true);
     assert.ok(okLines.some((l) => /sha256 ✓/.test(l) && l.includes(L3_MODEL_SHA256)));
     assert.ok(okLines.some((l) => l.includes('落盘路径 /p')));
     assert.ok(okLines.some((l) => l.includes('L3 模型已就绪，下次启动自动预热')));
-    const readyLines = formatFetchCompletion({ status: 'ready', path: '/p', bytesDownloaded: 0 });
+    const readyLines = formatFetchCompletion({ status: 'ready', path: '/p', bytesDownloaded: 0 }, true);
     assert.ok(readyLines.some((l) => l.includes('已就绪')), '幂等重跑应输出「已就绪」当 status');
   } finally {
     rmTmp(root);
@@ -357,6 +379,181 @@ test('AC8 闭环：fetch 落盘安装根 models → 解析链 l3ModelPath 命中
       // 「重启」= 新解析（清 env 覆盖后）→ 解析链命中安装根 models（预热 isReady 将加载此路径）
       assert.strictEqual(l3ModelPath(), result.path);
     });
+  } finally {
+    rmTmp(root);
+  }
+});
+
+// ── 增补-06（#105，A3 审计发现 1/2/3 + 5/6/8）：fetch 健壮性簇 ─────────────────
+//
+//   R7  流式期 IO 失败（磁盘满等）→ 优雅 error + .part 清理（不崩溃）
+//   R9  并发双 fetch → 互斥（一成一败），无混合字节落盘；成品复验
+//   R8  env 覆盖（MYTERMINAL_L3_MODEL_PATH）→ fetch 落盘到 env 路径；未设置/空串 → 默认位
+//   R12 完成文案按预热旋钮分支（MYTERMINAL_L3_WARMUP=false → 「重启后生效」措辞）
+//   A3-5/6/8 SIGINT 残留自愈（重试入口清 .part + 死进程锁回收）、error 态 bytes 报累计、
+//       模型文件名由 DEFAULT_L3_MODEL_PATH 单字面量拼接
+
+test('增补-06-R7: IO 失败（.part 为不可删目录 EISDIR）→ 优雅 error 不崩溃 + 锁释放', async () => {
+  const root = makeInstallRoot('w302-eisdir-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  // 注入底层 IO 错误面：.part 是外部占位目录——入口自愈 rmSync 非递归必然 EISDIR（若硬删
+  // 则 createWriteStream 打开失败同样 EISDIR）。两条路径共享同一错误竞速（writeError 监听
+  // 贯穿循环/drain/收尾），磁盘满等流式期写失败走同一条优雅 error 通道。
+  fs.mkdirSync(`${target}.part`);
+  const { fetcher } = makeFetcher();
+  try {
+    const result = await fetchL3Model({ fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(result.status, 'error');
+    assert.match(result.error, /EISDIR/i, '错误信息透传底层 IO 错误');
+    assert.ok(!fs.existsSync(target), '失败不得落盘');
+    assert.ok(fs.statSync(`${target}.part`).isDirectory(), '外部目录不被误删');
+    assert.ok(!fs.existsSync(`${target}.lock`), '失败后锁释放');
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-R9a: 并发双 fetch → 锁互斥一成一败，成品无混合字节，幂等复验通过', async () => {
+  const root = makeInstallRoot('w302-race-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  const gate = makeDeferred();
+  try {
+    const first = fetchL3Model({ fetcher: makeGatedFetcher(gate), targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    await sleep(30); // first 同步前缀已持锁（fetcher await 之前）
+    const second = await fetchL3Model({ fetcher: makeFetcher().fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(second.status, 'error', 'second 必须被锁互斥');
+    assert.match(second.error, /并发|锁/i, '互斥原因可见');
+    assert.ok(!fs.existsSync(target), '互斥期间 target 不得出现');
+
+    gate.resolve();
+    const firstResult = await first;
+    assert.strictEqual(firstResult.status, 'ok');
+    assert.strictEqual(await sha256File(target), FIXTURE_SHA256, '成品无混合字节（复验通过）');
+    assert.ok(!fs.existsSync(`${target}.part`), '成功后 .part 无残留');
+    assert.ok(!fs.existsSync(`${target}.lock`), '成功后锁释放');
+
+    const third = await fetchL3Model({ fetcher: makeFetcher().fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(third.status, 'ready', '幂等：已就绪零下载');
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-R9b: 双失败（网络错误重跑）→ 均 error 且无 .part/.lock 残留', async () => {
+  const root = makeInstallRoot('w302-race-fail-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  try {
+    for (const _ of [1, 2]) {
+      const { fetcher } = makeFetcher({ mode: 'throw' });
+      const result = await fetchL3Model({ fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+      assert.strictEqual(result.status, 'error');
+      assert.ok(!fs.existsSync(target));
+      assert.ok(!fs.existsSync(`${target}.part`), '失败后 .part 无残留');
+      assert.ok(!fs.existsSync(`${target}.lock`), '失败后锁无残留（可立即重跑）');
+    }
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-R8a: MYTERMINAL_L3_MODEL_PATH 设置 → fetch 落盘到 env 路径（默认位不落）', async () => {
+  const root = makeInstallRoot('w302-env-');
+  const envPath = path.join(root, 'custom', 'model.gguf');
+  try {
+    await withEnv({ MYTERMINAL_HOME: root, MYTERMINAL_L3_MODEL_PATH: envPath }, async () => {
+      const { fetcher } = makeFetcher();
+      const result = await fetchL3Model({ fetcher, expectedSha256: FIXTURE_SHA256 });
+      assert.strictEqual(result.status, 'ok');
+      assert.strictEqual(result.path, envPath, '落盘目标 = env 路径');
+      assert.ok(fs.existsSync(envPath), 'env 路径已落盘');
+      assert.ok(!fs.existsSync(modelFilePath()), '默认位不得落盘（与运行时解析链一致）');
+    });
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-R8b: MYTERMINAL_L3_MODEL_PATH 空白串 → 视为未设置（回落安装根 models）', async () => {
+  const root = makeInstallRoot('w302-env-empty-');
+  try {
+    await withEnv({ MYTERMINAL_HOME: root, MYTERMINAL_L3_MODEL_PATH: '   ' }, async () => {
+      const { fetcher } = makeFetcher();
+      const result = await fetchL3Model({ fetcher, expectedSha256: FIXTURE_SHA256 });
+      assert.strictEqual(result.status, 'ok');
+      assert.strictEqual(result.path, modelFilePath(), '空白 env 回落默认位');
+    });
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-R12: 完成文案按预热旋钮分支（开 → 下次启动自动预热；关 → 重启后生效）', () => {
+  const ok = { status: 'ok', path: '/p', bytesDownloaded: 1 };
+  const ready = { status: 'ready', path: '/p', bytesDownloaded: 0 };
+  assert.ok(formatFetchCompletion(ok, true).some((l) => l.includes('下次启动自动预热')), '旋钮开 → 预热承诺');
+  assert.ok(formatFetchCompletion(ok, false).some((l) => l.includes('重启后生效')), '旋钮关 → 不空许预热');
+  assert.ok(formatFetchCompletion(ready, true).some((l) => l.includes('下次启动自动预热')));
+  assert.ok(formatFetchCompletion(ready, false).some((l) => l.includes('重启后生效')));
+});
+
+test('增补-06-A3-5: SIGINT 残留自愈（残留 .part + 死进程锁）→ 重跑成功并清理', async () => {
+  const root = makeInstallRoot('w302-stale-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  fs.writeFileSync(`${target}.part`, 'stale-residue-bytes'); // 上次中断残留
+  fs.writeFileSync(`${target}.lock`, '999999999'); // 死进程 pid 的锁
+  const { fetcher } = makeFetcher();
+  try {
+    const result = await fetchL3Model({ fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(result.status, 'ok');
+    assert.ok(!fs.existsSync(`${target}.part`), '残留 .part 已自愈清理');
+    assert.ok(!fs.existsSync(`${target}.lock`), '死进程锁已回收并释放');
+    assert.strictEqual(await sha256File(target), FIXTURE_SHA256);
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-A3-6: error 态 bytesDownloaded 报累计已收字节（drop 16 后断）', async () => {
+  const root = makeInstallRoot('w302-bytes-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  const { fetcher } = makeFetcher({ mode: 'drop', dropAfter: 16 });
+  try {
+    const result = await fetchL3Model({ fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(result.status, 'error');
+    assert.strictEqual(result.bytesDownloaded, 16, 'error 态须报实际已收字节');
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-A3-8: 源 URL 文件名由 DEFAULT_L3_MODEL_PATH 单字面量拼接（禁两处漂移）', () => {
+  assert.ok(L3_MODEL_SOURCE_URL.endsWith(`/${DEFAULT_L3_MODEL_PATH}`), 'URL 文件名与解析链同字面量');
+});
+
+test('增补-06-①: 空内容锁 → 保守 busy（不误判死进程回收活锁）', async () => {
+  const root = makeInstallRoot('w302-lock-empty-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  fs.writeFileSync(`${target}.lock`, ''); // 对方刚创建尚未写完（Number('')=0 曾误判死进程）
+  const { fetcher } = makeFetcher();
+  try {
+    const result = await fetchL3Model({ fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(result.status, 'error', '空锁按存活保守处理 → busy（不得回收）');
+    assert.match(result.error, /并发|锁/i);
+    assert.ok(!fs.existsSync(target), 'busy 不得落盘');
+  } finally {
+    rmTmp(root);
+  }
+});
+
+test('增补-06-②: 幂等检查读错误（target 为目录 EISDIR）→ 优雅 error 不逃逸', async () => {
+  const root = makeInstallRoot('w302-idem-err-');
+  const target = path.join(root, 'models', DEFAULT_L3_MODEL_PATH);
+  fs.mkdirSync(target); // existsSync 通过 → sha256File 读目录 EISDIR（并发复验失败方 rmSync 的同面）
+  const { fetcher } = makeFetcher();
+  try {
+    const result = await fetchL3Model({ fetcher, targetPath: target, expectedSha256: FIXTURE_SHA256 });
+    assert.strictEqual(result.status, 'error');
+    assert.match(result.error, /EISDIR/i);
   } finally {
     rmTmp(root);
   }
