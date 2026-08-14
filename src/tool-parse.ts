@@ -424,18 +424,42 @@ function reduceCollectionCount(result: JsonObject): JsonObject {
   return out;
 }
 
+// ── W1-02（#75）：read_file 派生 lineCount（0050 A2）────────────────────────────
+//
+// 补遗3 权威矩阵要求 read_file 加 lineCount。handler 原生返回
+// { path, content, sha256, bytes, truncated }（core-tools.ts），缺派生行数。
+// D-10 原则4：派生字段（count/lineCount/totalCount）一律代码后置补、不进 schema。
+// reducer 规则：
+// - lineCount === content 行数：空文件=0、无尾换行=1、N 行=N；尾随换行不产生额外空行
+// - bytes / sha256 原样保留，绝不发明 totalBytes 等字段（票面命名约束）
+// - 结构不符（content 非 string）→ 原样 fail-open，不抛错（D11）
+// - D17 静默：只加派生数值，无任何层标记
+function countContentLines(content: string): number {
+  if (content === '') return 0; // 空文件 = 0 行
+  const lines = content.split(/\r?\n/);
+  if (lines[lines.length - 1] === '') lines.pop(); // 尾随换行不产生额外空行
+  return lines.length;
+}
+
+function reduceReadFileLineCount(result: JsonObject): JsonObject {
+  if (typeof result.content !== 'string') return result; // 结构不符 → 原样（防御）
+  return { ...result, lineCount: countContentLines(result.content) };
+}
+
 // ── L1 中心注册表（D5/D10：主注册表）──────────────────────────────────────────
 //
 // T03：6 工具 CommandResult 被动去噪（复用同一 denoiseCommandResult reducer）。
 // T07：session_list 主动精简（D15 前半）。T08：session_history 嵌套 ToolResponse → 摘要
 // （D15 ⑨ 解法）；read_file_range 截断在 handler（core-tools.ts，防全文件进内存，不在此注册）。
 // W1-01（#74）：find_files / search_text 主动精简（D16 count/totalCount，0050 A1）。
+// W1-02（#75）：read_file 派生 lineCount（0050 A2 / D-10 原则4）。
 // 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
   ['session_history', { reduce: reduceSessionHistory }],
   ['find_files', { reduce: reduceCollectionCount }],
   ['search_text', { reduce: reduceCollectionCount }],
+  ['read_file', { reduce: reduceReadFileLineCount }],
   ['execute_cli', { reduce: denoiseCommandResult }],
   ['git_status', { reduce: denoiseCommandResult }],
   ['git_diff', { reduce: denoiseCommandResult }],
