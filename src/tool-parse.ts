@@ -56,11 +56,15 @@ export type ToolReducer = (result: JsonObject, ctx: ShapeContext) => JsonObject;
  * - `reduce` → L1 静态规则层（被动去噪 / 主动精简，零模型）
  * - `schema` → L3 模型层（脏乱/嵌套结果走本地小模型；引擎在 T10 落地，T03 阶段 fail-open）
  * - 同时含 reduce+schema → D-4 双条目（W2-01 #84）：schema 优先、reduce 兜底
+ * - `admitL3` → L3 准入边界（D-11 execute_cli 等）：不满足 → 不进 L3，直接回落 L1 reduce
+ *   （补遗3「stdout 仅在小时脏数据时才落 L3」；无 admitL3 = 不设边界）
  * 未声明（无 reduce 无 schema）→ passthrough（绝不套壳）。
+ * 同时含 reduce+schema → dual（D-4）：先过预算门走 L3；超门/准入拒收/失败矩阵 → 回落 L1 reduce。
  */
 export type ToolShape = {
   reduce?: ToolReducer;
   schema?: JsonSchema;
+  admitL3?: (result: JsonObject) => boolean;
 };
 
 // ── 预算门（D6 护栏2 / Q3）─────────────────────────────────────────────────────
@@ -763,6 +767,31 @@ const GIT_STATUS_SCHEMA: JsonSchema = {
 // schema=D-11 全文。D-4 路由裁决：双条目先过预算门走 L3，失败（超门/配额/不可用/超时/
 // Q5 拒识）回落本 reduce（#79 修复版，C1 不回退）；纯 schema（subagent_status 旁挂）失败
 // → passthrough。其余工具未声明 → passthrough。
+// W2-06（#89）：execute_cli dual 注册（0050 B3）——D-11 schema 全文 + stdout ≤8K L3 准入边界：
+//   stdout ≤8K 字符走 L3；8K~96K 输出上限击穿回落 L1 denoise；>96K 预算门（≈24K tokens）挡掉回落 L1。
+// 其余工具未声明 → passthrough。L3（schema）条目在 T10 落地。
+
+/** D-11 execute_cli schema 全文（0051 拍板）：回显白名单，等价于去噪，价值≈0 但名单完整。 */
+export const EXECUTE_CLI_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    exitCode: { type: 'number' },
+    stdout: { type: 'string' },
+    stderr: { type: 'string' },
+    truncated: { type: 'boolean' },
+    durationMs: { type: 'number' },
+  },
+};
+
+/** D-11 execute_cli L3 准入边界：stdout ≤8K 字符才走 L3（补遗3「仅在小时脏数据时才落 L3」）。 */
+export const EXECUTE_CLI_L3_MAX_STDOUT_CHARS = 8192;
+
+/** execute_cli 的 L3 准入判定：stdout 存在且 ≤8K 字符 → 准进 L3；否则回落 L1 denoise。 */
+function admitExecuteCliL3(result: JsonObject): boolean {
+  const stdout = result.stdout;
+  return typeof stdout === 'string' && stdout.length <= EXECUTE_CLI_L3_MAX_STDOUT_CHARS;
+}
+
 export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['session_list', { reduce: reduceSessionList }],
   ['session_history', { reduce: reduceSessionHistory }],
@@ -774,7 +803,7 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['message_inbox', { reduce: makeMessagePageReducer('message_inbox', 'fetch next page of inbox messages') }],
   ['message_list', { reduce: makeMessagePageReducer('message_list', 'fetch next page of collaboration messages') }],
   ['message_conversation', { reduce: reduceMessageConversation }],
-  ['execute_cli', { reduce: denoiseCommandResult }],
+  ['execute_cli', { reduce: denoiseCommandResult, schema: EXECUTE_CLI_SCHEMA, admitL3: admitExecuteCliL3 }],
   // W2-02（#85）：git_status dual（reduce + schema，0050 B3 + 0051 D-11）——先预算门走 L3、失败回落 L1
   ['git_status', { reduce: denoiseCommandResult, schema: GIT_STATUS_SCHEMA }],
   ['git_diff', { reduce: denoiseCommandResult }],
@@ -799,13 +828,14 @@ export type ShapeContext = {
 //
 // 1) 内联 ToolDefinition.shapeResult → L1
 // 2) 中心表 TOOL_SHAPES：双条目（reduce+schema）→ 先过预算门走 L3，失败回落 L1 reduce
-//    （D-4：schema 优先、reduce 兜底；fallbackReduce 即兜底 reducer）；纯 reduce → L1；
+//    （D-4：schema 优先、reduce 兜底；fallbackReduce 即兜底 reducer）；admitL3 准入边界
+//    （D-11 execute_cli ≤8K）不满足 → 不进 L3 直接回落 L1；纯 reduce → L1；
 //    纯 schema → L3（失败 passthrough，D11 原样）
 // 3) 都无 → passthrough（D3 未声明工具原样放行）
 // 零额外运行时判断（D3/D18.1 mode-agnostic）；L1/L2 零模型。
 type ResolvedShape =
   | { kind: 'l1'; reduce: ToolReducer }
-  | { kind: 'l3'; schema: JsonSchema; fallbackReduce?: ToolReducer }
+  | { kind: 'l3'; schema: JsonSchema; fallbackReduce?: ToolReducer; admitL3?: (result: JsonObject) => boolean }
   | { kind: 'passthrough' };
 
 function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): ResolvedShape {
@@ -813,9 +843,36 @@ function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): Re
   const shape = TOOL_SHAPES.get(toolName);
   // D-4 路由裁决（Q9）：条目同时含 reduce+schema 时 schema 优先（走 L3），reduce 挂
   // fallbackReduce 作失败兜底——「fail-open 回 L1」的唯一自洽读法（0051 D-4）。
-  if (shape?.schema) return { kind: 'l3', schema: shape.schema, fallbackReduce: shape.reduce };
+  // admitL3 准入边界（D-11 execute_cli ≤8K）随 l3 解析一并携带。
+  if (shape?.schema) return { kind: 'l3', schema: shape.schema, fallbackReduce: shape.reduce, admitL3: shape.admitL3 };
   if (shape?.reduce) return { kind: 'l1', reduce: shape.reduce };
   return { kind: 'passthrough' };
+}
+
+/**
+ * D-4 双条目回落：L3 未走/失败 → 回落 L1 reduce（补遗3「fail-open 回 L1」的唯一自洽读法）。
+ * 与 L1 分支同形（applyCountRule + 重建 response）；denoise 型 reducer 不产
+ * pagination/__reduction（execute_cli 唯一 dual 条目即 denoise），故不发射分页、不分剥。
+ * 回落发生 → applied:true（L1 结果真实生效），L3 未走/失败原因一并记审计（W2-01 语义：
+ * 「超预算门 → 回落 L1 reduce，审计 reason=over-budget（回落发生则 applied:true）」）。
+ * 回落 reducer 自身抛错 → 原样 passthrough（D11 fail-open，记 reducer-threw）。
+ */
+async function fallbackToL1Reduce(
+  reduce: ToolReducer,
+  response: ToolResponse,
+  rawResult: JsonObject,
+  ctx: ShapeContext,
+  reason?: ShapingReason,
+): Promise<{ base: ToolResponse; shaping: ShapingAudit }> {
+  try {
+    const reduced = applyCountRule(reduce(rawResult, ctx));
+    return {
+      base: { ...response, data: { ...(response.data ?? {}), result: reduced } },
+      shaping: reason ? { applied: true, reason } : { applied: true },
+    };
+  } catch {
+    return { base: response, shaping: { applied: false, reason: 'reducer-threw' } };
+  }
 }
 
 // ── D13 递归（task_poll 嵌套 operation 整形）+ Q6/Q7/Q8 护栏 ──────────────────
@@ -1013,6 +1070,15 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
         } else {
           base = response;
           shaping = { applied: false, reason: 'over-budget' };
+        }
+      } else if (resolved.admitL3 && !resolved.admitL3(rawResult as JsonObject)) {
+        // D-11 准入拒收（execute_cli stdout 8K~96K）：不进 L3，直接回落 L1 reduce——
+        // 正常 L1 结果，无失败原因（W2-06-AC3）
+        if (resolved.fallbackReduce) {
+          ({ base, shaping } = applyL1Reducer(response, rawResult as JsonObject, resolved.fallbackReduce, ctx));
+        } else {
+          base = response;
+          shaping = { applied: false, reason: 'passthrough' };
         }
       } else {
         // T10：调 L3 引擎（护栏1 transport 感知超时 + 护栏3 会话配额 + Q5 字段白名单/值存在性

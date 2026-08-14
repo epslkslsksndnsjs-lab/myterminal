@@ -271,14 +271,15 @@ test('T03-AC6: e2e execute_cli 真实调用 → 无噪声结果 + 审计双版�
     assert.ok(result.stdout.includes('issue31-ok'));
     assertNoShapingMarkers(exec.body);
 
-    // 审计双版本 + 预算门行为（execute_cli 是 L1，applied 而非 over-budget）
+    // 审计双版本 + 预算门行为（W2-06：execute_cli 是 dual——小输出走 L3；测试环境无真模型 →
+    // l3-unavailable 回落 L1 denoise，applied:true + reason=l3-unavailable，而非 over-budget）
     const hist = await actionsCall(server, 'session_history', {}, identity);
     const entries = hist.body.ok ? hist.body.data.result.history.entries : [];
     const execAudit = entries
       .filter((e) => e.type === 'tool_audit' && e.data.action === 'execute_cli' && e.data.completedAt)
       .at(-1);
     assert.ok(execAudit, 'session_history 含 execute_cli 审计');
-    assert.deepEqual(execAudit.data.shaping, { applied: true }, 'e2e 审计 applied:true（非 over-budget）');
+    assert.deepEqual(execAudit.data.shaping, { applied: true, reason: 'l3-unavailable' }, 'e2e 审计 applied:true + 回落原因（非 over-budget）');
     // raw 不落盘到模型可见的 tool_audit（T01 先例 + D7「审计永不进模型上下文」）；raw 侧由 AC4 单测经 ctx.audit 记录锁定。
     assert.equal(execAudit.data.rawResult, undefined, 'raw 不落盘到模型可见的 tool_audit');
     // T08(#36)：session_history 现在把每条 tool_audit 的嵌套 ToolResponse（含 execute_cli）摘要化，

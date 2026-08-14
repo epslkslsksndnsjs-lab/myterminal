@@ -228,7 +228,8 @@ test('T01-D: task_poll 完成态嵌套 operation（完整 ToolResponse）原样�
     const completedExec = hist.body.data.result.history.entries
       .filter((entry) => entry.type === 'tool_audit' && entry.data.action === 'execute_cli' && entry.data.completedAt).at(-1);
     assert.ok(completedExec, '后台任务完成审计条目存在');
-    assert.deepEqual(completedExec.data.shaping, { applied: true }, 'T03 后台完成审计记 applied:true（去噪）');
+    // W2-06：execute_cli 是 dual——小输出走 L3；测试环境无真模型 → 回落 L1 denoise 记 applied:true + reason
+    assert.deepEqual(completedExec.data.shaping, { applied: true, reason: 'l3-unavailable' }, 'W2-06 后台完成审计记 applied:true + 回落原因');
   } finally {
     await server.close();
   }
@@ -306,7 +307,8 @@ test('T01-F: 无整形时审计事件带 shaping { applied:false, reason:"passth
     const auditEntries = entries.filter((entry) => entry.type === 'tool_audit' && entry.data.completedAt);
     const executeAudit = auditEntries.filter((entry) => entry.data.action === 'execute_cli').at(-1);
     assert.ok(executeAudit, 'session_history 应含 execute_cli 审计条目');
-    assert.deepEqual(executeAudit.data.shaping, { applied: true }, 'T03 后 execute_cli 整形成功记 applied:true（无 reason）');
+    // W2-06：execute_cli 是 dual——小输出走 L3；测试环境无真模型 → 回落 L1 denoise 记 applied:true + reason
+    assert.deepEqual(executeAudit.data.shaping, { applied: true, reason: 'l3-unavailable' }, 'W2-06 后 execute_cli dual 回落记 applied:true + reason');
     // D7 双版本审计：raw 侧由单测（ctx.audit 记录）锁定（见 issue-31 AC4）。持久化层只留 shaping + 整形后 result；
     // raw 不落盘到模型可见的 tool_audit——T01(#29) 先例 + D7「审计永不进模型上下文」，
     // 否则 projectContext→recentToolCalls 会把 raw 喂给模型，既违 D7 又让整形形同虚设。
