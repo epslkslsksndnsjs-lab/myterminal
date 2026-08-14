@@ -735,6 +735,30 @@ const GIT_LOG_SCHEMA: JsonSchema = {
   },
 };
 
+// git_status（0050 B3 + 0051 D-11）：L3 从 stdout 结构化抽取 branch/changes/untracked。
+// D-10 五原则——失败保真（exitCode+stderr）、白名单即丢弃（stdout 被结构化替换是设计使然）、
+// Q5 verbatim（模型只准逐字抽 raw 中的值）、派生不进 schema、语义等价（答案不损失）。
+const GIT_STATUS_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    exitCode: { type: 'number' },
+    branch: { type: 'string' },
+    changes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          path: { type: 'string' },
+          status: { type: 'string' },
+        },
+        required: ['path', 'status'],
+      },
+    },
+    untracked: { type: 'array', items: { type: 'string' } },
+    stderr: { type: 'string' },
+  },
+};
+
 // W2-05（#88）：run_checks 双条目注册（0050 B2 + 0051 D-11）——reduce=#79 逐项去噪版 +
 // schema=D-11 全文。D-4 路由裁决：双条目先过预算门走 L3，失败（超门/配额/不可用/超时/
 // Q5 拒识）回落本 reduce（#79 修复版，C1 不回退）；纯 schema（subagent_status 旁挂）失败
@@ -751,7 +775,8 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['message_list', { reduce: makeMessagePageReducer('message_list', 'fetch next page of collaboration messages') }],
   ['message_conversation', { reduce: reduceMessageConversation }],
   ['execute_cli', { reduce: denoiseCommandResult }],
-  ['git_status', { reduce: denoiseCommandResult }],
+  // W2-02（#85）：git_status dual（reduce + schema，0050 B3 + 0051 D-11）——先预算门走 L3、失败回落 L1
+  ['git_status', { reduce: denoiseCommandResult, schema: GIT_STATUS_SCHEMA }],
   ['git_diff', { reduce: denoiseCommandResult }],
   // W2-03（#86）：git_log dual（reduce + schema，0050 B3）——先预算门走 L3、失败回落 L1
   ['git_log', { reduce: denoiseCommandResult, schema: GIT_LOG_SCHEMA }],
