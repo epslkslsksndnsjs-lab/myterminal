@@ -280,7 +280,30 @@ export { IGNORE_DIRECTORIES, MAX_GREP_MATCHES };
 
 const executeCliTool = buildTool({
   name: 'execute_cli',
-  description: 'Execute a shell command. Returns stdout, stderr, and exit code.',
+  description: `Execute a shell command and return its output (stdout, stderr, exit code).
+
+IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/tail), write_file / edit_file (not sed/awk), glob (not find/ls), grep (not grep/rg). Reserve execute_cli for commands that truly need a shell.
+
+# Boundaries
+- command: one shell command line (required). Runs via shell in a new process group.
+- cwd: working directory for this call (optional). Defaults to the subagent working directory; must stay inside it.
+- timeoutSec: seconds before this call times out. Default 120, minimum 1, maximum 600.
+- run_in_background: set true to start the command in the background and return immediately (default false).
+- In read-only mode only safe read-style commands are permitted — write commands are denied.
+- Very large output is returned truncated. Background output is written to a file under .myterminal/subagent-outputs/ (256MB cap; beyond that, output is dropped with a truncation notice).
+
+# Discipline
+- Use absolute paths in commands: the working directory resets on every call, so relative paths break across calls.
+- If a command creates directories or files, verify the parent directory exists first.
+- Chain dependent commands with '&&' in one call; run independent commands as separate parallel calls.
+- Do not use '&' to background a command yourself — use run_in_background.
+- On timeout the command is automatically moved to the background: you get backgroundId + output file path, and the command keeps running — read its output later with read_file. Exception: commands starting with sleep are killed on timeout instead.
+- Do not poll with sleep loops and do not blindly retry a failing command — read the error and diagnose the root cause.
+
+# Failures
+- Non-zero exit code: the result carries exitCode and is_error with an interpretation message — read it, fix, retry.
+- is_error with a message: the message says what went wrong (spawn failure, permission denial, background start failure) — act on it.
+- A denied command is not a bug to work around by rephrasing — report the blocker.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -577,7 +600,24 @@ const executeCliTool = buildTool({
 
 const readFileTool = buildTool({
   name: 'read_file',
-  description: 'Read a file with line numbers. Returns content and total lines.',
+  description: `Read a text file from the working directory and return its content with line numbers.
+
+# Boundaries
+- path: absolute path or relative to the working directory (required). Must stay inside the working directory — paths outside it are rejected.
+- offset: first line to return, 1-based (default 1).
+- limit: max lines to return (default 2000).
+- Binary files (images, PDFs, archives, media, executables, compiled objects...) are rejected — read_file supports text files only.
+- Very long results are truncated.
+
+# Discipline
+- Read a file before editing it — edit_file refuses files that were never read.
+- When you only need part of a large file, use offset/limit to read just that part.
+- Output lines are numbered as "<line>\t<content>" — the number prefix is not part of the file.
+
+# Failures
+- File not found: the error names the path — use glob to find the correct path.
+- Path is a directory: use glob to list directory contents instead.
+- Binary file rejected: do not retry with different parameters — the extension is blocked by design.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -655,7 +695,22 @@ const readFileTool = buildTool({
 
 const writeFileTool = buildTool({
   name: 'write_file',
-  description: 'Write content to a file. Creates or overwrites.',
+  description: `Write content to a file. Creates the file (and parent directories) if missing; overwrites if it exists.
+
+# Boundaries
+- path: absolute path or relative to the working directory (required). Must stay inside the working directory.
+- content: the exact text to write (required).
+- Parent directories are created automatically.
+- Returns whether the file was created or overwritten, plus line count.
+
+# Discipline
+- For modifying an existing file, prefer edit_file — it changes only what you specify. Use write_file for new files or complete rewrites.
+- Writing a file also records it as read, so a subsequent edit_file on it is allowed.
+- NEVER create documentation files (*.md, README*) unless the task explicitly requires them.
+- Do not add emojis or decorative text to files unless asked.
+
+# Failures
+- is_error with a message: usually a permission or path problem (e.g. path outside the working directory) — read it and adjust.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -697,7 +752,24 @@ const writeFileTool = buildTool({
 
 const editFileTool = buildTool({
   name: 'edit_file',
-  description: 'Replace old_string with new_string in a file. File must be read first.',
+  description: `Replace an exact string in a file with new content.
+
+# Boundaries
+- path / old_string / new_string are required. Path must stay inside the working directory.
+- old_string must match the file exactly — including whitespace and indentation — and must be unique in the file unless replace_all is set.
+- replace_all (default false): when true, every occurrence of old_string is replaced.
+- Returns a diff preview of the change.
+
+# Discipline
+- You must read the file with read_file first — edit_file refuses files that were never read.
+- Prefer editing existing files over creating new ones; use write_file for new files.
+- Copy old_string from the read_file output after the line-number prefix — never include the number prefix in old_string.
+- Keep old_string as small as possible while staying unique.
+
+# Failures
+- "File has not been read yet": read the file with read_file, then retry the edit.
+- "String to replace not found": read the file again and copy the exact text.
+- "Found N matches": add more surrounding context to old_string, or set replace_all=true when you want every occurrence.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -746,7 +818,21 @@ const editFileTool = buildTool({
 
 const globTool = buildTool({
   name: 'glob',
-  description: 'Find files matching a glob pattern. Returns sorted relative path list.',
+  description: `Find files matching a glob pattern. Returns a sorted list of relative paths.
+
+# Boundaries
+- pattern: glob pattern (required), e.g. "**/*.ts" or "src/*.test.*".
+- path: search directory (optional; defaults to the working directory, must stay inside it).
+- At most 200 matches are returned; when more exist the result is truncated and the true total is reported as matchCount.
+- Generated/ignored directories (.git, .myterminal, node_modules, dist, coverage, .next, .turbo, build, .cache) are skipped automatically.
+
+# Discipline
+- Use glob to find files by name; use grep to search file contents.
+- If results are truncated, narrow the pattern instead of trying to page through.
+
+# Failures
+- Zero matches is not an error — it means the pattern matched nothing; try a broader pattern.
+- is_error with a message: usually a path problem (outside the working directory).`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -797,7 +883,24 @@ const globTool = buildTool({
 
 const grepTool = buildTool({
   name: 'grep',
-  description: 'Search file contents with regex. Returns matching lines with file:line:text format.',
+  description: `Search file contents with a regex. Returns matching lines as file:line:text.
+
+# Boundaries
+- pattern: regex (required). An invalid regex is reported with a friendly error.
+- path: search directory (optional; defaults to the working directory).
+- include: optional glob filter to restrict which files are searched (e.g. "*.ts").
+- At most 200 matches are returned; when more exist the result is truncated and the true total is reported as matchCount.
+- Skips the same ignored directories as glob.
+
+# Discipline
+- Use grep for content search; use glob for filename search.
+- Escape regex special characters when searching literal text (e.g. function calls with braces).
+- Prefer grep over shell grep/rg commands.
+
+# Failures
+- Invalid regex pattern: the error says so — fix the pattern.
+- Zero matches is not an error — broaden the pattern or the directory.
+- is_error with a message: usually a path problem.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -857,11 +960,26 @@ const grepTool = buildTool({
 
 const taskCreateTool = buildTool({
   name: 'task_create',
-  description: 'Create a task for tracking progress. Returns the created task.',
+  description: `Create a task in your task list to track progress. The parent watches this list through your task status — it is the only window the parent has into your progress.
+
+# Boundaries
+- subject (required): max 120 characters. Write it as a progress sentence the parent can read at a glance — e.g. "Fixed parser null-pointer, now adding tests" — not just "Fix bug".
+- description (required): what needs to be done.
+- New tasks start as pending.
+
+# Discipline
+- Create tasks for work with 3 or more distinct steps; skip the list for a single trivial step.
+- Update each task's status with task_update as you go — mark in_progress when starting, completed the moment it is done.
+- Check the list before creating to avoid duplicates.
+- When you discover the work cannot proceed (needed tool missing, permission denied, or the task conflicts with the parameters given), do not create endless new tasks — mark the current one blocked with a blockedReason naming the mismatching parameter, then produce the final report. The parent sees blocked + blockedReason on its next poll.
+
+# Failures
+- The tool returns the created task id — keep it; task_update needs it.`,
   inputSchema: {
     type: 'object',
     properties: {
-      subject: { type: 'string', description: 'Brief task title' },
+      // D9（#139）：subject ≤120 字符——进度句随每轮 poll 全量进父上下文，防膨胀
+      subject: { type: 'string', maxLength: 120, description: 'Brief task title' },
       description: { type: 'string', description: 'Detailed description' },
     },
     required: ['subject', 'description'],
@@ -898,7 +1016,24 @@ const taskCreateTool = buildTool({
 
 const taskUpdateTool = buildTool({
   name: 'task_update',
-  description: 'Update a task status. States: pending → in_progress → completed; or blocked (with blockedReason) when you cannot proceed.',
+  description: `Update a task's status — or block it when you cannot proceed.
+
+# Boundaries
+- taskId: the task id returned by task_create (required).
+- status: one of pending, in_progress, completed, blocked (required).
+- blockedReason: required when status=blocked; max 1000 characters. State exactly which parameter or constraint mismatches the task.
+- Valid transitions: pending → in_progress | blocked; in_progress → completed | blocked; blocked → completed. completed is terminal.
+
+# Discipline
+- Mark a task in_progress when you start it and completed the moment you finish it — do not batch completions.
+- ONLY mark completed when the work is fully done: tests pass, no unresolved errors. Otherwise keep it in_progress.
+- When you cannot proceed (needed tool missing, permission denied, or the task conflicts with the parameters given), set blocked with a blockedReason naming the mismatch — fail fast, do not spin, then produce the final report. The parent sees blocked + blockedReason on its next poll of your tasks.
+- When every task is completed the list is cleared automatically.
+
+# Failures
+- blockedReason missing or over 1000 chars: the error says so — state which parameter mismatches the task, concisely.
+- Invalid transition (e.g. blocked → in_progress, or updating a completed task): the error lists the valid transitions — follow them.
+- Task id not found / no tasks yet: create tasks with task_create first.`,
   inputSchema: {
     type: 'object',
     properties: {
