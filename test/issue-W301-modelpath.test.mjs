@@ -125,8 +125,18 @@ test('AC2 models 目录无默认模型文件 → 不命中安装根档', () => {
 
 // ── AC3：两者皆无 → 裸文件名回落 ────────────────────────────────────────────
 
+/** 临时 MYTERMINAL_HOME（无 models 目录 → 回落断言在任何机器确定化；#112 真模型环境加固）。 */
+function withTempHome(fn) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'w301-home-'));
+  try {
+    withEnv({ MYTERMINAL_L3_MODEL_PATH: undefined, MYTERMINAL_HOME: root }, fn);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 test('AC3 env 未设置 + 无安装根 models → 回落 DEFAULT_L3_MODEL_PATH', () => {
-  withEnv({ MYTERMINAL_L3_MODEL_PATH: undefined, MYTERMINAL_HOME: undefined }, () => {
+  withTempHome(() => {
     assert.strictEqual(l3ModelPath(), DEFAULT_L3_MODEL_PATH);
   });
 });
@@ -158,7 +168,7 @@ test('AC4 安装根 models 场景：getL3Adapter 拿到安装根路径', () => {
 });
 
 test('AC4 回落场景：getL3Adapter 拿到裸文件名', () => {
-  withEnv({ MYTERMINAL_L3_MODEL_PATH: undefined, MYTERMINAL_HOME: undefined }, () => {
+  withTempHome(() => {
     assert.strictEqual(probeResolvedPath(), DEFAULT_L3_MODEL_PATH);
   });
 });
