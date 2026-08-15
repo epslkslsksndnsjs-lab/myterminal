@@ -145,7 +145,7 @@ test('T11-AC4: 非 completed（running）→ 不整形，passthrough', async () 
   const shaped = await shapeStatus(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, '非 completed 原样');
   assert.equal(getLastReq(), null, '非 completed 不调 L3');
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.applied, true, '票B 入表后 subagent_status 恒走 L1（原样同引用返回，applied:true 取代旧 passthrough reason）');
 });
 
 // ───────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ test('T11-边界: completed 但 result 非 string（对象）→ 不整形', asy
   const shaped = await shapeStatus(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, 'result 非 string 原样');
   assert.equal(getLastReq(), null, 'result 非 string 不调 L3');
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.applied, true, '票B 入表后 subagent_status 恒走 L1（原样同引用返回，applied:true 取代旧 passthrough reason）');
 });
 
 test('T11-边界: completed 但 result 缺失 → 不整形', async () => {
@@ -169,7 +169,7 @@ test('T11-边界: completed 但 result 缺失 → 不整形', async () => {
   const shaped = await shapeStatus(raw, ctx);
   assert.strictEqual(shaped.data.result, raw, '无 result 原样');
   assert.equal(getLastReq(), null, '无 result 不调 L3');
-  assert.equal(getRecord().shaping.reason, 'passthrough');
+  assert.equal(getRecord().shaping.applied, true, '票B 入表后 subagent_status 恒走 L1（原样同引用返回，applied:true 取代旧 passthrough reason）');
 });
 
 // ───────────────────────────────────────────────────────────

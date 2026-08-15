@@ -711,7 +711,10 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input) => {
       const runner = getSubagentRunner();
       try {
-        return runner.status(asString(input.taskId, 'taskId')) as unknown as JsonObject;
+        // 票B（#130）：offset/limit 透传（schema 已校验 integer 边界，直达 runner 切片）
+        const offset = typeof input.offset === 'number' ? input.offset : undefined;
+        const limit = typeof input.limit === 'number' ? input.limit : undefined;
+        return runner.status(asString(input.taskId, 'taskId'), offset, limit) as unknown as JsonObject;
       } catch (err) {
         const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
         throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);

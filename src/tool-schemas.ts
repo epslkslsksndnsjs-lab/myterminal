@@ -44,6 +44,13 @@ const GIT_CWD_SCHEMA: JsonSchema = { type: 'object', properties: { cwd: { type: 
 
 const NO_INPUT: () => JsonSchema = () => ({ type: 'object', properties: {}, additionalProperties: false });
 
+// ADR-0048 票B（#130）：subagent_status.result 分页字符口径（UTF-16 code unit，
+// 与 session_history nextOffset 同侧记账，零新发明）
+/** 续页默认页大小：32000 chars ≈ 8K 拉丁 tokens（estimateTokens ÷4）。 */
+export const SUBAGENT_STATUS_PAGE_CHARS = 32000;
+/** limit 上界：96000 chars（三页续页）。runner 切片与 schema 同源此数字。 */
+export const SUBAGENT_STATUS_PAGE_MAX_CHARS = 96000;
+
 export const BUILTIN_INPUT_SCHEMAS = {
   // ── 工作区与文件 ──
   workspace_info: NO_INPUT(),
@@ -90,7 +97,7 @@ export const BUILTIN_INPUT_SCHEMAS = {
   // ── Skill / Subagent ──
   skill: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },
   subagent_start: { type: 'object', properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 }, maxTurns: { type: 'integer', minimum: 1, maximum: 1600 }, timeoutSec: { type: 'integer', minimum: 30, maximum: 86400 }, readOnly: { type: 'boolean' } }, required: ['objective'], additionalProperties: false },
-  subagent_status: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false },
+  subagent_status: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: SUBAGENT_STATUS_PAGE_MAX_CHARS } }, required: ['taskId'], additionalProperties: false },
   subagent_abort: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false },
 
   /**

@@ -11,6 +11,7 @@ import {
 } from './store.js';
 import { MyTerminalError } from '../store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
+import { SUBAGENT_STATUS_PAGE_CHARS, SUBAGENT_STATUS_PAGE_MAX_CHARS } from '../tool-schemas.js';
 import { defaultContext, type SubagentContext } from './context.js';
 import type { UsageSummary } from './cost-tracker.js';
 
@@ -55,6 +56,12 @@ export type SubagentStatusResult = {
   result?: string;
   /** ADR-0042 #78 选项 A：来源（skill fork 时标注 skillName；direct start 为 undefined） */
   origin?: SubagentOrigin;
+  /** ADR-0048 票B（#130）：分页内部记账字段——仅 completed + string result 时附；
+   *  shaper 层（reduceSubagentStatusResult）按契约剥除/保留，store 全量不动。 */
+  taskId?: string;
+  resultOffset?: number;
+  resultTotalChars?: number;
+  truncated?: boolean;
 };
 
 export type SubagentStartResult = {
@@ -205,7 +212,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     },
 
     /** 查询 subagent 状态（决策 9；ADR-0010 决策 13 修订：idempotent——completed 后可多次查，清理只靠 1 小时超时定时器 store.ts） */
-    status(taskId: string): SubagentStatusResult {
+    status(taskId: string, offset?: number, limit?: number): SubagentStatusResult {
       const record = getSubagent(taskId);
       if (!record) throw Object.assign(new Error(`Subagent not found: ${taskId}`), { code: 'NOT_FOUND' });
 
@@ -213,7 +220,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       // 幂等：重复轮询不删记录、不重置标记（ADR-0007 决策 7/13，读完即删违 D5 红线）。
       if (record.status !== 'running' && !record.resultFetched) markResultFetched(taskId);
 
-      return {
+      const base: SubagentStatusResult = {
         status: record.status,
         sessionId: record.sessionId,
         tasks: record.tasks,
@@ -222,6 +229,28 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         result: record.status === 'completed' ? record.result : undefined,
         origin: record.origin,
       };
+
+      // ADR-0048 票B（#130）：completed + string result 才附分页记账字段与切片。
+      // offset 下界钳制（负值/非整数回 0）；显式 offset>0 才切片——首查返回全量
+      // （超门截断由 shaper 层 token 感知完成），store 全量保留不动。
+      if (record.status === 'completed' && typeof record.result === 'string') {
+        const totalChars = record.result.length;
+        const pageOffset = Math.max(0, Math.floor(offset ?? 0));
+        if (pageOffset > 0) {
+          const pageLimit = Math.min(Math.max(1, Math.floor(limit ?? SUBAGENT_STATUS_PAGE_CHARS)), SUBAGENT_STATUS_PAGE_MAX_CHARS);
+          const page = record.result.slice(pageOffset, pageOffset + pageLimit);
+          return {
+            ...base,
+            result: page,
+            taskId,
+            resultOffset: pageOffset,
+            resultTotalChars: totalChars,
+            truncated: pageOffset + page.length < totalChars,
+          };
+        }
+        return { ...base, taskId, resultOffset: 0, resultTotalChars: totalChars, truncated: false };
+      }
+      return base;
     },
 
     /** 中止 subagent（幂等） */

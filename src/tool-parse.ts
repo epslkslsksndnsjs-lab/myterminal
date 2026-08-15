@@ -917,6 +917,9 @@ export const TOOL_SHAPES: Map<string, ToolShape> = new Map([
   ['message_inbox', { reduce: makeMessagePageReducer('message_inbox', 'fetch next page of inbox messages') }],
   ['message_list', { reduce: makeMessagePageReducer('message_list', 'fetch next page of collaboration messages') }],
   ['message_conversation', { reduce: reduceMessageConversation }],
+  // ADR-0048 票B（#130）：subagent_status.result 超门可恢复分页（D11 三件套 B）——
+  // 控制工具首个入表条目；L3-if-small 例外块（下方 shapeToolResponse）与其协同
+  ['subagent_status', { reduce: reduceSubagentStatusResult }],
   ['execute_cli', { reduce: denoiseCommandResult, schema: EXECUTE_CLI_SCHEMA, admitL3: admitExecuteCliL3 }],
   // 增补-04（#103）：git_status / git_log / git_show L3 豁免（#92 检查点裁决 A）——同 git_diff
   // 先例回 L1 被动去噪（无 schema → L3 永不进入，D-16 登记）
@@ -1079,6 +1082,85 @@ export function seedOperationCache(taskId: string | undefined, op: ToolResponse)
 function isSubagentCompletedResult(rawResult: unknown): rawResult is { status: string; result: string } & JsonObject {
   if (!isPlainObject(rawResult)) return false;
   return (rawResult as JsonObject).status === 'completed' && typeof (rawResult as JsonObject).result === 'string';
+}
+
+// ── ADR-0048 票B（#130）：subagent_status.result 超门可恢复分页（D11 三件套 B）──
+//
+// 触发线：RAW_BUDGET_TOKENS 24K 门（与 L3 门同源，一个数字两处用）。分页单位：字符
+// offset（UTF-16 code unit，与 session_history nextOffset 一致，零新发明）。页大小：
+// 首页按 24K 门 token 感知截断封顶；续页由 runner 按 offset/limit 切片（默认 32000 chars
+// ≈8K 拉丁 tokens）。诚实字段：resultOffset/resultTotalChars/truncated；pagination.nextCall
+// = {tool:'subagent_status', input:{taskId, offset}}——父轮询续页契约不变。防御：非
+// completed / result 非 string → 原样（同引用）；超门但无 taskId（建不出合法 nextCall）
+// → fail-open 原样。
+
+/** 最大前缀长度：estimateTokens(prefix) ≤ budgetTokens（二分；语言感知口径同 L3 门）。 */
+function tokenBudgetPrefixLen(text: string, budgetTokens: number): number {
+  if (estimateTokens(text) <= budgetTokens) return text.length;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (estimateTokens(text.slice(0, mid)) <= budgetTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+function reduceSubagentStatusResult(result: JsonObject): JsonObject {
+  if (!isSubagentCompletedResult(result)) return result; // 非 completed / 非 string → 原样（同引用）
+
+  const text = result.result;
+  const hasOffset = typeof result.resultOffset === 'number' && result.resultOffset > 0;
+  const pageOffset = hasOffset ? (result.resultOffset as number) : 0;
+  const totalChars = typeof result.resultTotalChars === 'number' ? result.resultTotalChars : text.length;
+
+  // 超门 → token 感知截断封顶（首页与病理超限切片都适用）
+  let page = text;
+  let capped = false;
+  if (estimateTokens(text) > RAW_BUDGET_TOKENS) {
+    if (typeof result.taskId !== 'string' || !result.taskId) return result; // 无 taskId → fail-open
+    page = text.slice(0, tokenBudgetPrefixLen(text, RAW_BUDGET_TOKENS));
+    capped = true;
+  }
+
+  const truncated = capped || pageOffset + page.length < totalChars;
+
+  if (!truncated && !hasOffset) {
+    // 零影响：门内小结果剥内部记账字段（taskId/resultOffset/resultTotalChars/truncated，
+    // 含 runner 注入的），输出与旧契约逐字段一致
+    const clean: JsonObject = { ...result };
+    delete clean.taskId;
+    delete clean.resultOffset;
+    delete clean.resultTotalChars;
+    delete clean.truncated;
+    return clean;
+  }
+
+  // 分页流：诚实字段 + 续页指针；extracted 由 L3-if-small 例外块从本输出出发照挂
+  return {
+    ...result,
+    result: page,
+    resultOffset: pageOffset,
+    resultTotalChars: totalChars,
+    truncated,
+    ...(truncated ? {
+      pagination: {
+        truncated: true,
+        nextCall: {
+          tool: 'subagent_status',
+          input: { taskId: result.taskId, offset: pageOffset + page.length },
+          purpose: 'fetch next page of subagent result',
+        },
+      },
+    } : {}),
+    __reduction: {
+      fieldsReduced: 0,
+      entriesTruncated: 0,
+      originalSize: JSON.stringify(text).length,
+      reducedSize: JSON.stringify(page).length,
+    },
+  };
 }
 
 // W2-07（#90）：0051 D-11 拍板真 schema（0050 H4 缺口消除）——deliverables/files/blockers/
@@ -1302,29 +1384,44 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
   // D-13 旁挂式：L3 抽取结果挂 data.result.extracted（deliverables/files/blockers/conclusion，
   // 逐字抽取），result 字段原文原样不动——守住 0048 D11「result 必留」+「轮询取全量结果再
   // 验收」两条铁律；Q5 全丢 / 模型不可用 / 超时 / 配额 / 解析失败 → 原样 passthrough 不伪造。
+  // 票B（#130）协同：subagent_status 入 TOOL_SHAPES（reduceSubagentStatusResult）后此处
+  // 已非唯一整形方——切片页（resultOffset>0）跳过 L3（抽取只对门内全量做一次）；超门时
+  // reducer 已截断分页，不得重置 base（旧行为会把分页输出整段换回全量）；L3 旁挂从
+  // base.data.result（reducer 输出，记账字段已剥）出发，不 spread rawResult。
   if (toolName === 'subagent_status' && isSubagentCompletedResult(rawResult)) {
-    const text = (rawResult as JsonObject).result as string;
-    if (estimateTokens(text) > l3BudgetTokens()) {
-      // 超预算门（D6 护栏2）→ fail-open passthrough，reason=over-budget（不调模型）
-      base = response;
-      shaping = { applied: false, reason: 'over-budget' };
-    } else {
-      // L3 结构化抽取（D-11 真 schema；全路径 fail-open，reason 由 engine 给出）。
-      // 传给引擎的 raw 除 result 原文外附带 lines（逐行拆分）——Q5 值存在性校验的锚点是
-      // raw 的 JSON 序列化（engine.ts 启发式），自由文本的内部子串永远无法带引号命中；
-      // 行值作为独立数组元素即可被逐字抽取命中（0047 Q5 verbatim 的落地方式）。
-      const lines = text.split(/\r?\n/);
-      if (lines[lines.length - 1] === '') lines.pop(); // 尾随换行不产生额外空行
-      const outcome = await runL3({ result: text, lines }, SUBAGENT_STATUS_RESULT_SCHEMA, ctx.transport, ctx.sessionId);
-      if (outcome.shaped) {
-        // 旁挂式：extracted 挂上，result 原文原样不动（0048 D11）；其余内部上下文
-        // （status/sessionId/tasks/usage/origin）原样保全
-        base = { ...response, data: { ...(response.data ?? {}), result: { ...(rawResult as JsonObject), extracted: outcome.shaped } } };
-        shaping = { applied: true };
+    const isResultSlice = typeof (rawResult as JsonObject).resultOffset === 'number'
+      && ((rawResult as JsonObject).resultOffset as number) > 0;
+    if (!isResultSlice) {
+      const text = (rawResult as JsonObject).result as string;
+      if (estimateTokens(text) > l3BudgetTokens()) {
+        // 超预算门（D6 护栏2）→ 不调模型。票B：reducer 已截断时保持其分页输出；
+        // 防御 fail-open（无 taskId 未截断）时回落旧语义 base=response reason=over-budget
+        const reducedResult = (base.data as JsonObject | undefined)?.result;
+        const wasTruncated = isPlainObject(reducedResult) && (reducedResult as JsonObject).truncated === true;
+        if (!wasTruncated) {
+          base = response;
+          shaping = { applied: false, reason: 'over-budget' };
+        }
       } else {
-        // L3 失败（模型不可用/超时/配额/Q5 全丢）→ 原样 passthrough，不伪造
-        base = response;
-        shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
+        // L3 结构化抽取（D-11 真 schema；全路径 fail-open，reason 由 engine 给出）。
+        // 传给引擎的 raw 除 result 原文外附带 lines（逐行拆分）——Q5 值存在性校验的锚点是
+        // raw 的 JSON 序列化（engine.ts 启发式），自由文本的内部子串永远无法带引号命中；
+        // 行值作为独立数组元素即可被逐字抽取命中（0047 Q5 verbatim 的落地方式）。
+        const lines = text.split(/\r?\n/);
+        if (lines[lines.length - 1] === '') lines.pop(); // 尾随换行不产生额外空行
+        const outcome = await runL3({ result: text, lines }, SUBAGENT_STATUS_RESULT_SCHEMA, ctx.transport, ctx.sessionId);
+        if (outcome.shaped) {
+          // 旁挂式：extracted 挂上，result 原文原样不动（0048 D11）；票B：从 reducer
+          // 输出（base.data.result）出发挂 extracted，其余内部上下文原样保全
+          const currentResult = (base.data as JsonObject | undefined)?.result;
+          base = { ...base, data: { ...(base.data ?? {}), result: { ...(currentResult as JsonObject), extracted: outcome.shaped } } };
+          shaping = { applied: true };
+        } else {
+          // L3 失败（模型不可用/超时/配额/Q5 全丢）→ 原样 passthrough（D11，不伪造）——
+          // 旧语义不变：base 重置回 raw（L1 剥记账字段的结果在失败路径按 D11 弃用）
+          base = response;
+          shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
+        }
       }
     }
   }

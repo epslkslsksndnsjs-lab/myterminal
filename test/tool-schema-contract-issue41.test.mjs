@@ -323,7 +323,13 @@ const INPUT_SCHEMA_ALLOWLIST = new Map([
   ['extension_call :: properties.input.properties.patch.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删patch死字段' }],
   ['extension_call :: properties.arguments.properties.note.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删note死字段' }],
   ['extension_call :: properties.arguments.properties.patch.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删patch死字段' }],
-]);
+  // ── 票B #130：subagent_status 新增可选分页入参 offset/limit（非 required，既有调用方零行为变化）──
+  ['subagent_status :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:票B#130新增可选分页入参offset' }],
+  ['subagent_status :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:票B#130新增可选分页入参offset' }],
+  ['subagent_status :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
+  ['subagent_status :: properties.limit.type', { baseline: undefined, current: 'integer', reason: 'A:票B#130新增可选分页入参limit' }],
+  ['subagent_status :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:票B#130新增可选分页入参limit' }],
+  ['subagent_status :: properties.limit.maximum', { baseline: undefined, current: 96000, reason: 'A:票B#130新增可选分页入参limit(上限96000,三页续页)' }],]);
 function flattenSchema(node, path, out) {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) {
     out.set(path, node);
@@ -338,7 +344,7 @@ test('[LOCK-6] 全部 32 工具 inputSchema 对 main 基线快照零静默漂移
   const actual = await collectMcpTools();
   // A48-W1 低危B-5（#149 R1）：allowlist 条目数钉死——防注释/清单再漂移（此前注释 42 处失实，
   // 实际 42+6=48 键）。新增/删除条目须同步此断言与顶部注释。
-  assert.equal(INPUT_SCHEMA_ALLOWLIST.size, 6, `allowlist 条目数漂移（当前 ${INPUT_SCHEMA_ALLOWLIST.size}，基线 6）`);
+  assert.equal(INPUT_SCHEMA_ALLOWLIST.size, 12, `allowlist 条目数漂移（当前 ${INPUT_SCHEMA_ALLOWLIST.size}，基线 12）`);
   const names = Object.keys(MCP_BASELINE);
   const seen = new Set();
   const violations = [];
