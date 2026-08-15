@@ -45,6 +45,8 @@ export interface SubagentRecord {
   abortController: AbortController;
   usage: UsageSummary;
   auditLogs: ToolAuditLog[];
+  /** ADR-0048 D8（第四轮修订）：转后台命令元数据——句柄在 shell-tracker backgroundTasks 索引，此处只存 backgroundId→pid 供审计/可见性 */
+  backgroundTasks?: Array<{ backgroundId: string; pid: number }>;
   createdAt: number;
   completedAt?: number;
 }

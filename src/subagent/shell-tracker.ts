@@ -23,7 +23,33 @@ export function trackShellTask(agentId: string, child: ChildProcess, ctx: Subage
   });
 }
 
+// D8 第四轮修订：backgroundId→ChildProcess 索引——转后台命令的查/杀句柄
+// （句柄进 shell-tracker 登记链，SubagentRecord 只存 backgroundId→pid 元数据）
+export function registerBackgroundTask(
+  agentId: string,
+  backgroundId: string,
+  child: ChildProcess,
+  ctx: SubagentContext = defaultContext,
+): void {
+  ctx.backgroundTasks.set(backgroundId, { agentId, child });
+}
+
+/** 按 backgroundId 查后台进程句柄——供落盘输出文件读取与收尸查/杀 */
+export function getBackgroundTask(
+  backgroundId: string,
+  ctx: SubagentContext = defaultContext,
+): ChildProcess | undefined {
+  return ctx.backgroundTasks.get(backgroundId)?.child;
+}
+
 export function cleanupAgentShellTasks(agentId: string, ctx: SubagentContext = defaultContext): void {
+  // D8：backgroundId 索引随 agent 收尸一并清理（进程组杀由下方 tasks 遍历承担）
+  for (const [id, entry] of ctx.backgroundTasks) {
+    if (entry.agentId === agentId) {
+      ctx.backgroundTasks.delete(id);
+    }
+  }
+
   const tasks = ctx.agentShellTasks.get(agentId);
   if (!tasks || tasks.size === 0) return;
 
@@ -74,6 +100,7 @@ export function cleanupAgentShellTasks(agentId: string, ctx: SubagentContext = d
 /** 仅供测试——清空 defaultContext 全部状态 */
 export function clearAllShellTasks(): void {
   defaultContext.agentShellTasks.clear();
+  defaultContext.backgroundTasks.clear();
 }
 
 /** 获取 agent 当前追踪的任务数——仅供测试 */

@@ -8,12 +8,16 @@
 // 决策 40：preToolUseHooks / postToolUseHooks 接口预留
 
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import type { ChildProcess } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
+import { mkdir, open, readFile, stat, writeFile } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { dirname, extname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { JsonObject, JsonSchema } from '../types.js';
 import { recordFileRead, validateEdit, applyEdit } from './file-state.js';
-import { trackShellTask } from './shell-tracker.js';
+import { trackShellTask, registerBackgroundTask } from './shell-tracker.js';
 import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
 import { truncateResult } from './result-budget.js';
 import { getSubagent, createSubagent } from './store.js';
@@ -38,6 +42,36 @@ const MAX_GLOB_RESULTS = 200;
 // grep 最大匹配数
 const MAX_GREP_MATCHES = 200;
 
+// ── ADR-0048 D8（第四轮修订）：execute_cli 双模式 + 转后台落盘 ──
+
+// D8 第 1 条：超时上限 600s（Claude BashTool 同款：默认 120s 不变、上限 600s）
+const EXECUTE_CLI_MAX_TIMEOUT_SEC = 600;
+
+// D8 第 4 条：落盘盘帽——抄 Claude 5GB 盘帽口径（diskOutput.ts MAX_TASK_OUTPUT_BYTES），
+// 数值按本项目实际定 256MB：子 agent 后台输出再大也是异常态，256MB 已远超正常输出。
+// pipe 模式等价口径：写入侧累计超限 → 截断提示 + 丢弃后续 chunk（Claude DiskTaskOutput #capped，
+// 不杀进程——杀进程是 Claude 文件模式 watchdog 的职责，我们的写路径全在 JS 侧，无需轮询）。
+let backgroundOutputCapBytes = 256 * 1024 * 1024;
+export const BACKGROUND_OUTPUT_CAP_BYTES_DISPLAY = '256MB';
+
+/** 仅供测试——注入盘帽（先例：store.ts setCleanupDelayMs） */
+export function setBackgroundOutputCapForTest(bytes: number): void {
+  backgroundOutputCapBytes = bytes;
+}
+export function resetBackgroundOutputCapForTest(): void {
+  backgroundOutputCapBytes = 256 * 1024 * 1024;
+}
+
+// D8 第 8 条：无意义命令判据——Claude BashTool isAutobackgroundingAllowed 原判据原样移植：
+// 首 token（base command）命中禁用列表 → 不自动转后台。误判两方向均不致命（D8 第 8 条）。
+// 显式 run_in_background=true 不受此判据约束（Claude 同款：explicit 恒 honored）。
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep']; // sleep 类应在前台跑（Claude 同款）
+function isAutobackgroundingAllowed(command: string): boolean {
+  const baseCommand = command.trim().split(/\s+/)[0] ?? '';
+  if (!baseCommand) return true;
+  return !DISALLOWED_AUTO_BACKGROUND_COMMANDS.includes(baseCommand);
+}
+
 // ── 接口（决策 23 + 31 + 40）──
 
 export type SubagentToolContext = {
@@ -45,6 +79,8 @@ export type SubagentToolContext = {
   signal: AbortSignal;                      // 决策 23：abort 信号
   agentId: string;                          // 决策 23：subagent ID
   readOnly?: boolean;                       // 决策 17 第 1 层：readOnly 模式标志（M7 executor 注入）
+  /** ADR-0048 D8：后台输出落盘目录（executor 注入 cwd/.myterminal/subagent-outputs/<agentId>；缺省由 call 派生） */
+  outputDir?: string;
   preToolUseHooks?: ToolHook[];             // 决策 40：v1 预留，空数组
   postToolUseHooks?: ToolHook[];
 };
@@ -247,7 +283,8 @@ const executeCliTool = buildTool({
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
       cwd: { type: 'string', description: 'Working directory (defaults to subagent cwd)' },
-      timeoutSec: { type: 'number', description: 'Timeout in seconds (default 120)' },
+      timeoutSec: { type: 'number', description: 'Timeout in seconds (default 120, max 600). On timeout the command is moved to background (returns backgroundId + output file path) unless it is a sleep-style no-op command.', default: 120, maximum: 600, minimum: 1 },
+      run_in_background: { type: 'boolean', description: 'Set to true to run this command in the background. Returns immediately with backgroundId + output path; use read_file to read the output later.', default: false },
     },
     required: ['command'],
     additionalProperties: false,
@@ -259,28 +296,165 @@ const executeCliTool = buildTool({
   async call(input, ctx) {
     const command = input.command as string;
     const workingDir = input.cwd ? resolvePath(input.cwd as string, ctx.cwd) : ctx.cwd;
-    const timeoutMs = ((input.timeoutSec as number) ?? 120) * 1000;
+    // ADR-0048 D8：超时上限 600s——schema maximum 之外防御性钳制（直调路径不走 schema 校验）
+    const timeoutSec = Math.min((input.timeoutSec as number) ?? 120, EXECUTE_CLI_MAX_TIMEOUT_SEC);
+    const timeoutMs = timeoutSec * 1000;
+    const explicitBackground = input.run_in_background === true;
 
     return new Promise<JsonObject>((resolvePromise) => {
       let settled = false;
+      let backgrounded = false;
+
+      // ADR-0048 D8（第四轮修订）：转后台输出落盘——backgroundId 命名文件
+      // 落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>（workspace 内状态目录先例
+      // .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → 子 glob/grep 自动忽略；
+      // .gitignore 不跟踪）。子 read_file 在 cwd 内可达（D8 第 2 条）。
+      let backgroundId: string | undefined;
+      let outputPath: string | undefined;
+      let fileHandle: FileHandle | null = null;
+      let bytesWritten = 0;
+      let capped = false;
+      let pendingText = '';
+      const outputDir = ctx.outputDir ?? join(ctx.cwd, '.myterminal', 'subagent-outputs', ctx.agentId);
+
+      // D8 第 4 条：写入侧盘帽——累计超限 → 截断提示 + 丢弃后续 chunk（pipe 模式不杀进程；
+      // 抄 Claude diskOutput.ts #capped）。content.length（UTF-16）欠计 UTF-8 字节 ≤3×，
+      // 对磁盘防满防护足够（Claude 同款注释口径）。
+      async function appendOutput(text: string | undefined): Promise<void> {
+        if (capped) return;
+        if (!fileHandle) {
+          // 文件句柄就绪前暂存（显式后台先 spawn 后建文件）；'' = flush 信号
+          if (text !== undefined) pendingText += text;
+          return;
+        }
+        if (pendingText) {
+          const buffered = pendingText;
+          pendingText = '';
+          text = (text ?? '') === '' ? buffered : buffered + text;
+        }
+        if (!text) return;
+        bytesWritten += text.length;
+        if (bytesWritten > backgroundOutputCapBytes) {
+          capped = true;
+          try { await fileHandle.write(`\n[output truncated: exceeded ${BACKGROUND_OUTPUT_CAP_BYTES_DISPLAY} disk cap]\n`); } catch { /* 忽略 */ }
+          return;
+        }
+        try { await fileHandle.write(text); } catch { /* 忽略 */ }
+      }
+
+      // D8 第 4 条：创建输出文件——O_NOFOLLOW 防 symlink 攻击 + O_EXCL 防抢先占位
+      // （抄 Claude diskOutput.ts initTaskOutput）。O_NOFOLLOW 仅 Unix（Windows 无此攻击面）。
+      async function createOutputFile(id: string): Promise<string> {
+        const file = join(outputDir, `${id}.output`);
+        await mkdir(outputDir, { recursive: true });
+        const flags = process.platform === 'win32'
+          ? 'wx'
+          : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
+        fileHandle = await open(file, flags);
+        return file;
+      }
+
+      // D8 第 7 条：句柄进 shell-tracker backgroundId 索引（收尸链已承担进程组杀）；
+      // SubagentRecord 只存 backgroundId→pid 元数据（Q1 勘误：不重复发明收尸基建）
+      function registerBackground(id: string, child: ChildProcess): void {
+        registerBackgroundTask(ctx.agentId, id, child);
+        const record = getSubagent(ctx.agentId);
+        if (record) {
+          if (!record.backgroundTasks) record.backgroundTasks = [];
+          if (child.pid) record.backgroundTasks.push({ backgroundId: id, pid: child.pid });
+        }
+      }
+
+      // D8 第 11 条：转后台返回体——backgroundId + 已产输出（truncateResult 封顶）+ 引导语
+      function backgroundResult(id: string, file: string, outStr: string | undefined, errStr: string | undefined): JsonObject {
+        return {
+          backgroundId: id,
+          outputPath: file,
+          message: `Output is being written to: ${file}`,
+          stdout: truncateResult(outStr ?? ''),
+          stderr: truncateResult(errStr ?? ''),
+          exitCode: null,
+        };
+      }
+
+      // stdout/stderr 收进对象容器——TS 对回调捕获的 let 变量会扩大为 string|undefined（TS2345）
+      const out = { stdout: '', stderr: '' };
+      // 转后台失败兜底：建文件失败（磁盘/权限）→ 杀进程 + 报错（比后台失联更可诊断）
+      function failBackground(err: unknown): void {
+        if (!settled) {
+          settled = true;
+          resolvePromise({
+            is_error: true,
+            message: `Failed to start background task: ${(err as Error).message}`,
+            stdout: truncateResult(out.stdout ?? ''),
+            stderr: truncateResult(out.stderr ?? ''),
+            exitCode: null,
+          });
+        }
+        // 即时清理：进程组杀 + 降级单杀（同 cleanupAgentShellTasks 三级链第一级，防孤儿残留）
+        try {
+          if (child.pid) process.kill(-child.pid, 'SIGTERM');
+        } catch {
+          try { child.kill('SIGTERM'); } catch { /* 已退出 */ }
+        }
+      }
 
       const child = spawn(command, {
         cwd: workingDir,
         shell: true,
         signal: ctx.signal,
         detached: true,          // 决策 28：新进程组，杀时用 process.kill(-pid)
-        timeout: timeoutMs,
+        // ADR-0048 D8（第四轮修订）：移除 spawn timeout 选项改自持计时器——
+        // 到点不杀、只登记转后台（Claude ShellCommand #handleTimeout 同款）
       });
 
       // 决策 28：追踪 shell 进程
       trackShellTask(ctx.agentId, child);
 
-      let stdout = '';
-      let stderr = '';
-      child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
-      child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+      child.stdout?.on('data', (d: Buffer) => {
+        const text = d.toString();
+        out.stdout += text;
+        void appendOutput(text);
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        const text = d.toString();
+        out.stderr += text;
+        void appendOutput(text);
+      });
 
+      // ADR-0048 D8：自持计时器声明在分支前——exit/error 清理要引用；显式后台无计时器
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      // 竞态标记：显式后台快命令可能先于建文件完成——文件就绪后由 createOutputFile.then 关句柄
+      let childExited = false;
+
+      function closeOutputHandle(): void {
+        if (fileHandle) {
+          const h = fileHandle;
+          fileHandle = null;
+          void h.close().catch(() => {});
+        }
+      }
+
+      // 竞态路径专用：exit 可能先于 stdout/stderr 数据排空——等流结束再取已产输出快照
+      function drainStreams(child: ChildProcess): Promise<void> {
+        const waits: Array<Promise<void>> = [];
+        for (const s of [child.stdout, child.stderr]) {
+          if (!s) continue;
+          const stream = s as NodeJS.ReadableStream & { readableEnded?: boolean };
+          if (stream.readableEnded) continue;
+          waits.push(new Promise((r) => {
+            stream.once('end', r);
+            stream.once('close', r);
+          }));
+        }
+        return Promise.all(waits).then(() => {});
+      }
+
+      // error/exit 监听器必须注册在显式分支 return 之前——
+      // 否则显式后台模式无监听：spawn 失败即未捕获 'error' 事件崩溃，命令完成也不关句柄（fd 泄漏）
       child.on('error', (err: Error) => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        // D8：后台命令建文件失败已杀进程，错误分支跳过（settled 已置）
         if (settled) return;
         settled = true;
         resolvePromise({
@@ -293,6 +467,15 @@ const executeCliTool = buildTool({
       });
 
       child.on('exit', (exitCode: number | null) => {
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        // 竞态：显式后台快命令先于建文件完成——不按前台语义 resolve，
+        // 交给 createOutputFile.then 走后台语义（backgroundId+outputPath+已产输出）
+        if (explicitBackground && !settled && fileHandle === null) {
+          childExited = true;
+          return;
+        }
+        // D8：后台命令结束——数据已全部落盘，关闭文件句柄（文件保留供 read_file）
+        closeOutputHandle();
         if (settled) return;
         settled = true;
 
@@ -301,13 +484,70 @@ const executeCliTool = buildTool({
         const interpretation = interpretExitCode(command, code);
 
         resolvePromise({
-          stdout: truncateResult(stdout),
-          stderr: truncateResult(stderr),
+          stdout: truncateResult(out.stdout),
+          stderr: truncateResult(out.stderr),
           exitCode: code,
           is_error: interpretation.isError || false,
           ...(interpretation.message ? { message: interpretation.message } : {}),
         });
       });
+
+      // ADR-0048 D8：显式后台——run_in_background=true 秒回 backgroundId+outputPath，命令继续跑
+      // （Claude BashTool run_in_background 同款：explicit 恒 honored，不受 isAutobackgroundingAllowed 约束）
+      if (explicitBackground) {
+        // 局部 const 跨回调捕获（闭包变量跨函数边界不窄化——TS control-flow）
+        const bgId = `bg_${randomUUID().slice(0, 8)}`;
+        backgroundId = bgId;
+        void createOutputFile(bgId)
+          .then(async (file) => {
+            outputPath = file;
+            // 竞态：exit 先于 data 排空——等流结束再取快照（快命令输出不丢）
+            if (childExited) await drainStreams(child);
+            // 只 flush pendingText：每次 data 已逐条进 appendOutput（句柄就绪前暂存，
+            // 就绪后直写），追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
+            await appendOutput('');
+            registerBackground(bgId, child);
+            if (childExited) closeOutputHandle();
+            if (!settled) {
+              settled = true;
+              resolvePromise(backgroundResult(bgId, file, out.stdout, out.stderr));
+            }
+          })
+          .catch(failBackground);
+        return;
+      }
+
+      // ADR-0048 D8：超时自动转后台——自持计时器。到点不杀，只登记 backgroundId 转后台；
+      // sleep 类无意义命令不转后台（shouldAutoBackground 判据），照旧杀掉（原 spawn timeout 语义）。
+      timeoutTimer = setTimeout(() => {
+        if (settled || backgrounded) return;
+        if (child.exitCode !== null || child.killed) return;
+        if (isAutobackgroundingAllowed(command)) {
+          backgrounded = true;
+          // 局部 const 跨回调捕获（闭包变量跨函数边界不窄化——TS control-flow）
+          const bgId = `bg_${randomUUID().slice(0, 8)}`;
+          backgroundId = bgId;
+          void createOutputFile(bgId)
+            .then(async (file) => {
+              outputPath = file;
+              // 竞态：exit 先于 data 排空——等流结束再取快照
+              if (childExited) await drainStreams(child);
+              // 只 flush pendingText：转后台前已产输出（D8 第 11 条）全在 pendingText，
+              // 追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
+              await appendOutput('');
+              registerBackground(bgId, child);
+              if (childExited) closeOutputHandle();
+              if (!settled) {
+                settled = true;
+                resolvePromise(backgroundResult(bgId, file, out.stdout, out.stderr));
+              }
+            })
+            .catch(failBackground);
+        } else {
+          // sleep 类不转后台——超时杀（决策 32 语义保持：exitCode 非 null，非 is_error）
+          child.kill('SIGTERM');
+        }
+      }, timeoutMs);
     });
   },
 

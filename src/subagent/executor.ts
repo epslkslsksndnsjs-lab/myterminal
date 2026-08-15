@@ -12,6 +12,7 @@
 // ADR-0007 决策 29：token 校准——精确值校准 CostTracker
 // ADR-0007 决策 37：任何路径下 tool_use 必须有配对 tool_result
 
+import { join } from 'node:path';
 import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
 import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
@@ -292,11 +293,14 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   const signal = AbortSignal.any([abortController.signal, timeoutSignal]);
 
   // 工具上下文（决策 23）
+  // ADR-0048 D8（第四轮修订）：后台输出落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>
+  // （workspace 内状态目录先例 .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → glob/grep 忽略）
   const ctx: SubagentToolContext = {
     cwd,
     signal,
     agentId,
     readOnly: options.readOnly ?? false,
+    outputDir: join(cwd, '.myterminal', 'subagent-outputs', agentId),
   };
 
   // token 追踪（ADR-0046 D1：纯 token 累加器，不再核算成本）
