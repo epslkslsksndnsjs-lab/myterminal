@@ -49,6 +49,9 @@ const mutations = [
   // EQUIVALENT: 子命令检查与全命令检查(line 150)完全冗余，无法构造差异用例
   { name: 'PER-3: sub-command DANGEROUS check skipped', file: 'src/subagent/permissions.ts', find: 'if (DANGEROUS_PATTERNS.test(stripped)) return \'deny\';', replace: 'if (false) return \'deny\';', equivalent: true },
 
+  // ── src/subagent/tools.ts (1) ──
+  { name: 'TC-1: subject maxLength 120 enforcement disabled', file: 'src/subagent/tools.ts', find: 'if (subject.length > 120) {', replace: 'if (false) {' },
+
   // ── src/subagent/tool-executor.ts (3) ──
   { name: 'TEX-1: MAX_PARALLEL unlimited', file: 'src/subagent/tool-executor.ts', find: 'const MAX_PARALLEL = 5;', replace: 'const MAX_PARALLEL = 9999;' },
   { name: 'TEX-2: schema validation always passes', file: 'src/subagent/tool-executor.ts', find: 'const schemaResult = validateSchema(call.input, tool.inputSchema);', replace: 'const schemaResult = { ok: true, errors: [] };' },

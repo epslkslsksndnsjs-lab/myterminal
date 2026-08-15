@@ -1042,9 +1042,16 @@ const taskCreateTool = buildTool({
   isReadOnly: true,
 
   async call(input, ctx) {
+    // D9 补执法（ADR-0048 #150）：subject ≤120 运行时强制——T4 blockedReason 先例同款（D12 #135），
+    // 只拦超长，恰限通过（schema 声明 maxLength 120 由此获得运行时牙齿）。
+    const subject = input.subject as string;
+    if (subject.length > 120) {
+      return { is_error: true, message: `subject exceeds 120 characters (got ${subject.length}). Keep the progress sentence under 120 chars.` };
+    }
+
     const task = {
       id: `task_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-      subject: input.subject as string,
+      subject,
       description: input.description as string,
       status: 'pending' as const,
     };
