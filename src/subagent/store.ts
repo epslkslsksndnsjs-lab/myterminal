@@ -44,6 +44,9 @@ export interface SubagentRecord {
   /** ADR-0042 #78（选项 A）：subagent 来源——skill fork 时记录派生 skill，direct start 为 undefined。
    *  仅可选字段，不影响既有序列化（#62 持久化格式纪律）。 */
   origin?: SubagentOrigin;
+  /** ADR-0048 D5（#136）：「已验收」标记——父首次调 subagent_status 取终态 result 时置位；
+   *  未验收定义 = 子进终态后父从未取到结果（完成闸门据此拦收工）。仅可选字段，不影响既有序列化。 */
+  resultFetched?: boolean;
   abortController: AbortController;
   usage: UsageSummary;
   auditLogs: ToolAuditLog[];
@@ -130,6 +133,14 @@ export function updateSubagentStatus(
   }
 
   return record;
+}
+
+/** ADR-0048 D5（#136）：置「已验收」标记——父首次取终态 result 时调用（幂等，重复置位无副作用）。
+ *  仅内存标记，不参与 1 小时兜底清理与结果保留语义（ADR-0007 决策 7）。 */
+export function markResultFetched(id: string, ctx: SubagentContext = defaultContext): void {
+  const record = ctx.subagents.get(id);
+  if (!record) return;
+  record.resultFetched = true;
 }
 
 export function collectSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {

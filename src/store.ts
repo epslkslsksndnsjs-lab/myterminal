@@ -10,11 +10,15 @@ import type {
 import { AuditLog } from './audit-log.js';
 import type { AuditFact, AuditFactsPage } from './audit-log.js';
 import { projectContext } from './context-projector.js';
+import type { SubagentStatus } from './subagent/store.js';
+import { getSubagentBySessionId } from './subagent/store.js';
 
 const EMPTY_STATE: StoredState = {
   schemaVersion: 2, revision: 0, sessions: [], messages: [], events: [], subscriptions: [], appBindings: [], extensions: [],
 };
 const TERMINAL_PHASES = new Set<SessionPhase>(['completed', 'cancelled']);
+/** ADR-0048 D5（#136）：subagent 终态集合——完成闸门判定「未验收子结果」用 */
+const TERMINAL_SUBAGENT_STATUSES = new Set<SubagentStatus>(['completed', 'failed', 'aborted']);
 const CHECKPOINT_REMINDER_MS = 2 * 60_000;
 const CHECKPOINT_BLOCK_MS = 5 * 60_000;
 const STALE_MS = 15 * 60_000;
@@ -371,6 +375,21 @@ export class MyTerminalStore {
     if (phase === 'completed' && !session.parentSessionId) {
       const now = this.iso();
       const directChildren = this.state.sessions.filter((item) => item.parentSessionId === session.id);
+      // ADR-0048 D5（#136）完成闸门：存在未验收子结果（子进终态后父从未调 subagent_status 取到 result）→ 拦收工。
+      // 扩展 CHILD_REVIEW_REQUIRED 同机制（同一点拦截、错误文本「先查子结果再收工」、taskId 进 details）。
+      const unreviewedSubagentResults = directChildren
+        .map((child) => ({ child, record: getSubagentBySessionId(child.id) }))
+        .filter(({ record }) => record && TERMINAL_SUBAGENT_STATUSES.has(record.status) && !record.resultFetched);
+      if (unreviewedSubagentResults.length) {
+        const first = unreviewedSubagentResults[0].record!;
+        throw new MyTerminalError('CHILD_RESULT_UNREVIEWED', '先查子结果再收工', {
+          taskId: first.id,
+          childSessionId: first.sessionId,
+          mustContinue: true,
+          userFacingFinalProhibited: true,
+          currentTime: now,
+        });
+      }
       const reviews = directChildren.map((child) => {
         const unreadMessages = this.state.messages.filter((message) => message.from === child.id && message.to === session.id && !message.readAt);
         const pendingEvents = this.state.events.filter((event) => event.recipientSessionId === session.id && event.sourceSessionId === child.id && !event.acknowledgedAt);

@@ -6,7 +6,7 @@ import type { MyTerminalSession, SubagentSettings, TaskPackage } from '../types.
 import type { runSubagent as RunSubagentFn } from './executor.js';
 import type { SubagentRunResult } from './executor.js';
 import {
-  createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost,
+  createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost, markResultFetched,
   countRunning, getRecentAuditLogs, listAllSubagents,
 } from './store.js';
 import { MyTerminalError } from '../store.js';
@@ -210,6 +210,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     status(taskId: string): SubagentStatusResult {
       const record = getSubagent(taskId);
       if (!record) throw Object.assign(new Error(`Subagent not found: ${taskId}`), { code: 'NOT_FOUND' });
+
+      // ADR-0048 D5（#136）：父首次取终态结果即置「已验收」标记（completed 取 result；failed/aborted 看过 error 即验收）。
+      // 幂等：重复轮询不删记录、不重置标记（ADR-0007 决策 7/13，collect 即删违 D5 红线）。
+      if (record.status !== 'running' && !record.resultFetched) markResultFetched(taskId);
 
       return {
         status: record.status,

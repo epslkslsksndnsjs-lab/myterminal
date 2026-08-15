@@ -1117,3 +1117,33 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 - 验收标准 3 ✅（ADR 清单逐项勾选，仅 D4 45s 实测遗留 → #96）
 - 验收标准 4 ✅（本报告即汇总）
 - 验收标准 5 ⏳（#96 承接，链接位 TODO）
+
+## 12. ADR-0048 T5 — 完成信号两处微改造执行报告（票 #136，2026-08-16）
+
+- 基线：`wk-136 @ 4d9ff45`（adr-0048-parent-child-handoff = main）
+- 性质：D5 第四轮微改造两处 ≤10 字（红线：通信机制不改不删）——①subagent_status 文本块动态句 ②store 收工完成闸门
+- 调度：调度3 派单（myterminal-34）→ 本窗（ghostty pid 35200）接单；MCP 查库结论已贴 #136 评论（5304210184）
+
+### 一、改动文件（4 src + 1 测试）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mcp.ts` | registerDirect 加可选末参 `summaryFor?: (response) => string`（0044 N3 summary 函数化）；subagent_status 传 `(r) => r.data?.result?.status === 'completed' ? '子已完成，请验收' : '运行中'`；其余工具不传 → 默认 `${title} completed.` 逐字不变 |
+| `src/subagent/store.ts` | SubagentRecord 补可选字段 `resultFetched?: boolean`（「已验收」标记，不破坏 #62 序列化）+ 导出 `markResultFetched(id)`（幂等置位） |
+| `src/subagent/runner.ts` | `status()`：record 非 running 且未置位 → `markResultFetched`（父首次取终态结果即验收；failed/aborted 看过 error 即验收；幂等保留重复轮询） |
+| `src/store.ts` | checkpoint 完成路径（`phase==='completed' && !parentSessionId`）在 CHILD_REVIEW_REQUIRED 前加新闸门：directChildren 反查 `getSubagentBySessionId`，存在终态（completed/failed/aborted）且 `!resultFetched` → 抛 `CHILD_RESULT_UNREVIEWED` + message「先查子结果再收工」+ details{taskId, childSessionId, mustContinue, userFacingFinalProhibited, currentTime}；文件级常量 `TERMINAL_SUBAGENT_STATUSES` |
+| `test/issue-136-completion-signals.test.mjs` | 7 用例：s1 running→运行中 / s2 completed→子已完成，请验收（InMemoryTransport + Client.callTool 断言 content[0].text）/ s3 其余工具文本块逐字不变锚点（session_list/workspace_info/session_context/message_list）/ s4 终态取 result 置位+幂等 / s5 running 不置位、failed 置位 / s6 闸门拦+放行（AC2+AC3）/ s7 running 不触发新闸门回落旧 CHILD_REVIEW_REQUIRED |
+
+### 二、验证结果
+
+| 门 | 结果 |
+|---|---|
+| 单文件 | `bun test test/issue-136-completion-signals.test.mjs` **7 pass / 0 fail**（273ms） |
+| 全量回归 | `bun test` **1230 pass / 0 fail**（108 文件，59.47s）——与基线一致零回归 |
+| 变异体 | 新逻辑 8/8 全杀（M1 summaryFor 判定反转 / M2 默认分支破坏 / M3 置位无条件化 / M4 置位整行删除 / M5 闸门忽略验收标记 / M6 错误文本 / M7 错误码 / M8 details.taskId；M2/M6 脚本匹配误报经手动复验 KILLED） |
+
+### 三、纪律记录（教训）
+
+1. **全项目 mutation-test.mjs 在隔离检出目录上跑有污染风险**：后台运行被 timeout 挪后台后继续变异 core-tools.ts（maxOutputChars→maxOutputCharsDisabled 11 处）、config.ts 且未还原 → 手动 git checkout 还原 + kill 进程。教训：跑变异脚本须前台限时 + 事后 `git status` 核对；本票变异验证改用针对性变异（临时备份→变异→单文件测试→还原）。
+2. 测试基建：`cleanTask` 五项全必填非空（background/deliverables/acceptanceCriteria/constraints 不能给空）；child checkpoint completed 会向 parent 发 event，s6 放行前须 `acknowledgeEvents`（否则落旧 CHILD_REVIEW_REQUIRED）。
+3. MCP InMemoryTransport 双端 connect 须 `Promise.all`（顺序 await 会挂起超时）。
