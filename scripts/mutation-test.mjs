@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 // ═══════════════════════════════════════════════════════════
-// 全项目变异测试：40 个变异点覆盖 13 个核心模块
+// 全项目变异测试：46 个变异点覆盖 13 个核心模块（#143 增 SR-1..7）
 // ═══════════════════════════════════════════════════════════
 const mutations = [
   // ── src/extensions.ts (3) ──
@@ -81,6 +81,15 @@ const mutations = [
   { name: 'TLS-6: error handler 索引删除移除', file: 'src/subagent/tools.ts', find: 'if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);', replace: 'if (false) unregisterBackgroundTask(ctx.agentId, backgroundId);' },
   { name: 'TLS-7: 守卫 closeOutputHandle 移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;', replace: 'if (spawnFailed) {\n              await unlink(file).catch(() => {});\n              return;', equivalent: true },
   { name: 'TLS-8: unregisterBackgroundTask agentId 校验移除', file: 'src/subagent/shell-tracker.ts', find: 'if (entry && entry.agentId === agentId) ctx.backgroundTasks.delete(backgroundId);', replace: 'if (entry) ctx.backgroundTasks.delete(backgroundId);', equivalent: true },
+  // ── src/subagent/store.ts #143（A48-W2 F2）cleanupSubagentRecord (6) ──
+  { name: 'SR-1: sessionId gate removed (orphan cleanup)', file: 'src/subagent/store.ts', find: '  if (!record?.sessionId) return;', replace: '  if (false) return;' },
+  // EQUIVALENT: running + resultFetched=true 不可达（验收只能在终态后），running 闸门由 resultFetched 闸门功能覆盖
+  { name: 'SR-2: running gate removed', file: 'src/subagent/store.ts', find: "  if (bySession.status === 'running') return;", replace: '  if (false) return;', equivalent: true },
+  { name: 'SR-3: resultFetched gate removed (unreviewed cleanup)', file: 'src/subagent/store.ts', find: '  if (bySession.resultFetched !== true) return;', replace: '  if (false) return;' },
+  { name: 'SR-4: resultFetched gate inverted', file: 'src/subagent/store.ts', find: '  if (bySession.resultFetched !== true) return;', replace: '  if (bySession.resultFetched === true) return;' },
+  { name: 'SR-5: record delete removed', file: 'src/subagent/store.ts', find: '  ctx.subagents.delete(bySession.id);', replace: '' },
+  { name: 'SR-6: reverse-lookup guard removed', file: 'src/subagent/store.ts', find: '  if (!bySession) return;', replace: '  if (false) return;' },
+  { name: 'SR-7: subagent-records registration removed', file: 'src/session-resource-manager.ts', find: "sessionResourceManager.registerAgentResource('subagent-records', (agentId) => cleanupSubagentRecord(agentId));\n", replace: '' },
 ];
 
 let killedByTest = 0;

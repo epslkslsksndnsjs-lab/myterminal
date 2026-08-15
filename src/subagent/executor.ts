@@ -595,7 +595,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
   } finally {
     // 决策 8：清理顺序固定——统一收口到 SessionResourceManager（ADR-0032 #38）
-    // 注册顺序即现状 ①②③④：agent-shell-tasks / file-state / replacement-decisions / subagent-outputs（#152）
+    // 注册顺序即现状 ①②③④⑤：agent-shell-tasks / file-state / replacement-decisions / subagent-outputs（#152）/ subagent-records（#143）
     sessionResourceManager.disposeAgent(agentId);
     messages.length = 0;               // ⑤ 释放 messages（决策 9）
     // ⑥ 终态事件与 store 更新在 finishXxx 里已做

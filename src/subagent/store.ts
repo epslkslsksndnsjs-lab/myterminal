@@ -138,6 +138,33 @@ export function markResultFetched(id: string, ctx: SubagentContext = defaultCont
   record.resultFetched = true;
 }
 
+
+/** ADR-0048 #143（A48-W2 F2）：subagent 记录收口清理——agent 终结（disposeAgent）时经
+ *  sessionId 反查对应 session 的 record。清理闸门：仅「终态且父已验收（resultFetched）」即清；
+ *  running 在世不误删（Home.tsx:160 / store.ts 完成闸门的在世读取），未验收按决策 7 保留给
+ *  1h 兜底；无 sessionId 的 record（executor 决策 5/25 自建路径）无反查目标，留给 1h 兜底。 */
+export function cleanupSubagentRecord(agentId: string, ctx: SubagentContext = defaultContext): void {
+  const record = ctx.subagents.get(agentId);
+  if (!record?.sessionId) return;
+  const bySession = getSubagentBySessionId(record.sessionId, ctx);
+  if (!bySession) return;
+  if (bySession.status === 'running') return;
+  if (bySession.resultFetched !== true) return;
+  ctx.subagents.delete(bySession.id);
+}
+
+export function collectSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  const record = ctx.subagents.get(id);
+  if (!record) return undefined;
+  ctx.subagents.delete(id);
+  return record;
+}
+
+export function getSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
+  return ctx.subagents.get(id);
+}
+
+
 export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
