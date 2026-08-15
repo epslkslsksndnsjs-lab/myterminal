@@ -27,6 +27,7 @@ import {
   getRecentAuditLogs,
   setCleanupDelayMs,
   getCleanupDelayMs,
+  markResultFetched,
   clearAllSubagents,
 } from '../dist/subagent/store.js';
 
@@ -260,7 +261,7 @@ test('subagent store updateSubagentCost works', () => {
   assert.equal(r2.usage.outputTokens, 1000);
 });
 
-// 用例 17：1 小时清理定时器——可注入间隔
+// 用例 17：1 小时清理定时器——可注入间隔；ADR-0048 D5 中（#153）：未验收豁免，验收后回收
 test('subagent store auto-cleanup after delay', async () => {
   clearAllSubagents();
   const origDelay = getCleanupDelayMs();
@@ -272,10 +273,14 @@ test('subagent store auto-cleanup after delay', async () => {
 
     assert.ok(getSubagent('sub-timer'), 'should exist before timeout');
 
-    // Wait for cleanup
+    // 过清理点：未验收 → 豁免清理（完成闸门证据不灭失，#153）
     await new Promise(resolve => setTimeout(resolve, 100));
+    assert.ok(getSubagent('sub-timer'), 'un-reviewed terminal record is exempt from fallback cleanup');
 
-    assert.equal(getSubagent('sub-timer'), undefined, 'should be cleaned up after delay');
+    // 验收后 → 下一清理点按兜底回收
+    markResultFetched('sub-timer');
+    await new Promise(resolve => setTimeout(resolve, 120));
+    assert.equal(getSubagent('sub-timer'), undefined, 'should be cleaned up after review + delay');
   } finally {
     setCleanupDelayMs(origDelay);
   }

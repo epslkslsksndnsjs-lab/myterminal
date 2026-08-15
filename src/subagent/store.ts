@@ -121,10 +121,20 @@ export function updateSubagentStatus(
 
   // 终态时启动清理定时器
   if (status === 'completed' || status === 'failed' || status === 'aborted') {
-    // 1 小时兜底清理（决策 7），timer 必须 unref()
-    setTimeout(() => {
-      ctx.subagents.delete(id);
-    }, cleanupDelayMs).unref();
+    // 1 小时兜底清理（决策 7），timer 必须 unref()。
+    // ADR-0048 D5 中（#153）：到点仍未验收（父未取过终态 result）→ 豁免清理并重武装——
+    // 完成闸门依赖本记录拦「熬过 1h 收工」旁路；已验收才按兜底删除。
+    const scheduleCleanup = (): void => {
+      setTimeout(() => {
+        const current = ctx.subagents.get(id);
+        if (!current || current.resultFetched === true) {
+          ctx.subagents.delete(id);
+        } else {
+          scheduleCleanup();
+        }
+      }, cleanupDelayMs).unref();
+    };
+    scheduleCleanup();
   }
 
   return record;
