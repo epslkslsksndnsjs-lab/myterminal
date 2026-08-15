@@ -1056,12 +1056,11 @@ const taskCreateTool = buildTool({
       status: 'pending' as const,
     };
 
-    // ADR-0032 #47：store 单源。record 缺失时 lazy createSubagent 兜底（与 executor.ts 同款），
-    // 清空注入的主目标任务，使 record.tasks 仅承载 task_create 子任务（保持 allDone 语义与旧 localTasks 一致）。
+    // ADR-0032 #47：store 单源。record 缺失时 lazy createSubagent 兜底（与 executor.ts 同款）；
+    // A48-W1 M1（#145）：createSubagent 不再注入主任务，record.tasks 仅承载 task_create 子任务。
     let record = getSubagent(ctx.agentId);
     if (!record) {
       record = createSubagent(ctx.agentId, { subject: String(input.subject ?? 'task session') });
-      record.tasks = [];
     }
 
     record.tasks.push(task);

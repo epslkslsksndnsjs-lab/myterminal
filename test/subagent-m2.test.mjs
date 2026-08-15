@@ -186,9 +186,7 @@ test('subagent store full CRUD flow', () => {
 
   const record = createSubagent('sub-1', { subject: 'Test task', description: 'Test description' });
   assert.equal(record.status, 'running');
-  assert.equal(record.tasks.length, 1);
-  assert.equal(record.tasks[0].subject, 'Test task');
-  assert.equal(record.tasks[0].status, 'pending');
+  assert.equal(record.tasks.length, 0, 'A48-W1 M1（#145）：不再注入主任务，tasks 仅由 task_create 写入');
   assert.equal(record.usage.inputTokens, 0);
 
   // get
@@ -336,7 +334,7 @@ test('integration: full subagent lifecycle', () => {
   assert.ok(completed);
   assert.equal(completed.status, 'completed');
   assert.equal(completed.result, 'All tasks completed successfully');
-  assert.ok(completed.tasks.length >= 1, 'record 应至少含主目标任务（store 单源，任务经 tools 写入）');
+  assert.equal(completed.tasks.length, 0, 'A48-W1 M1（#145）：无 task_create 即无任务（不再注入主任务幻影）');
   assert.equal(completed.auditLogs.length, 2);
   assert.ok(completed.usage.inputTokens > 0);
   assert.equal(getSubagent(agentId), completed, '记录保留，可重复读取');

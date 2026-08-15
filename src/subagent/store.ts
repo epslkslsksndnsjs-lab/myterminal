@@ -78,12 +78,9 @@ export function createSubagent(
   const record: SubagentRecord = {
     id,
     status: 'running',
-    tasks: [{
-      id: `task_${Date.now().toString(36)}`,
-      subject: fields.subject,
-      description: fields.description ?? '',
-      status: 'pending',
-    }],
+    // A48-W1 M1（#145）：不注入主任务——tasks 仅由 task_create 写入，杜绝幻影 pending
+    //（生产路径永不转移该任务 → allDone 恒 false、STATE_SNAPSHOT/status 带幻影）。
+    tasks: [],
     origin: fields.origin,
     abortController: new AbortController(),
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
