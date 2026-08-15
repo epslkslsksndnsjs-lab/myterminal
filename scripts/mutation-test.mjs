@@ -2,9 +2,14 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 // ═══════════════════════════════════════════════════════════
-// 全项目变异测试：46 个变异点覆盖 13 个核心模块（#143 增 SR-1..7）
+// 全项目变异测试：变异点覆盖 13 个核心模块（计数见下方条目实测）
 // ═══════════════════════════════════════════════════════════
 const mutations = [
+  // ── src/openapi.ts (3) ──
+  { name: 'OPEN-1: pool aggregation skips subagent_start', file: 'src/openapi.ts', find: 'for (const schema of Object.values(BUILTIN_INPUT_SCHEMAS)) {', replace: 'for (const schema of Object.values(BUILTIN_INPUT_SCHEMAS)) { if ((schema as { properties?: Record<string, unknown> }).properties?.objective) continue;' },
+  { name: 'OPEN-2: union drops maxLength merge', file: 'src/openapi.ts', find: "minKeyword('minLength'); maxKeyword('maxLength');", replace: "minKeyword('minLength');" },
+  { name: 'OPEN-3: TaskPackage not derived', file: 'src/openapi.ts', find: 'const taskPackage = objectSchema(taskSource.properties, taskSource.required ?? [], taskSource.additionalProperties);', replace: 'const taskPackage = objectSchema({});' },
+
   // ── src/extensions.ts (3) ──
   { name: 'EXT-1: policy classification removed', file: 'src/extensions.ts', find: "isPolicyRejection ? 'policy_rejected' : 'failed'", replace: "'failed'" },
   { name: 'EXT-2: alias key not deleted', file: 'src/extensions.ts', find: '      delete normalized[alias];\n', replace: '' },
