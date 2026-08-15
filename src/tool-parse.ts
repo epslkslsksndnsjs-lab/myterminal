@@ -242,6 +242,22 @@ export function denoiseCommandResult(result: JsonObject): JsonObject {
   return out;
 }
 
+/** builtin-target 扩展内层整形（A48-W1 M3 #147）：按 target 名套 TOOL_SHAPES L1 reduce
+ * （denoise 起步，与 command-kind #108 R5 同政策——源处整形），后接 D16.1 count 规则并
+ * 剥 pagination/__reduction 内部提示（D17 绝不进模型上下文）——与直接调用该 builtin 的
+ * L1 层输出逐字段一致。未注册条目兜底 denoiseCommandResult。不调 L3（内层不耗配额、
+ * 不重复整形，外层按自定义名仍 passthrough）。 */
+export function reduceBuiltinTargetResult(targetName: string, result: JsonObject): JsonObject {
+  // ToolReducer 形参含 ctx，但 TOOL_SHAPES 全部 reducer 实际不使用 ctx（形参名 _ctx 或
+  // 缺失）——内层整形无 ShapeContext，按 (result) 单参直调（窄化断言）。
+  const reduce = (TOOL_SHAPES.get(targetName)?.reduce ?? denoiseCommandResult) as (r: JsonObject) => JsonObject;
+  const reduced = reduce(result);
+  const counted = applyCountRule(reduced);
+  delete counted.pagination;
+  delete counted.__reduction;
+  return counted;
+}
+
 // ── P2-03（#99，0050 H5 / ADR-0047 D16.3）+ 增补-08（#107）：git_log 聚合字段 commitCount ──
 //
 // D-10 原则4：派生字段一律代码后置补、不进任何 L3 schema。git_log 已豁免 L3（增补-04

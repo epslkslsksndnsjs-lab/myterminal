@@ -93,6 +93,9 @@ const mutations = [
   // ── src/subagent/store.ts (2) — ADR-0048 D5 中（#153）未验收清理豁免 ──
   { name: 'SUB-1: reviewed-check removed (unconditional cleanup bypass)', file: 'src/subagent/store.ts', find: 'if (!current || current.resultFetched === true) {', replace: 'if (!current) {' },
   { name: 'SUB-2: re-arm removed (late-reviewed record never cleaned)', file: 'src/subagent/store.ts', find: '          scheduleCleanup();', replace: '          /* mutation: no re-arm */' },
+  // ── src/tool-parse.ts / src/extensions.ts (#147) ──
+  { name: 'TBP-1: builtin-target reduce fallback removed', file: 'src/tool-parse.ts', find: '(TOOL_SHAPES.get(targetName)?.reduce ?? denoiseCommandResult)', replace: '(TOOL_SHAPES.get(targetName)?.reduce)' },
+  { name: 'TBP-2: builtin-target inner shaping bypassed', file: 'src/extensions.ts', find: 'return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };', replace: 'return { target: target.name, result: await target.invoke(merged, context) };' },
 ];
 
 let killedByTest = 0;

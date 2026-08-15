@@ -9,7 +9,7 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
-import { clearOperationCache, denoiseCommandResult, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
+import { clearOperationCache, denoiseCommandResult, reduceBuiltinTargetResult, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
 import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
@@ -786,7 +786,9 @@ export class ExtensionService {
     if (custom.handler.kind === 'builtin') {
       const target = this.builtins.get(custom.handler.target)!; const merged = { ...(custom.handler.defaults ?? {}), ...args };
       const targetErrors = validateJsonSchema(target.inputSchema, merged); if (targetErrors.length) throw new MyTerminalError('INVALID_INPUT', targetErrors.join('; '));
-      return { target: target.name, result: await target.invoke(merged, context) };
+      // A48-W1 M3（#147）：内层按 target 名套 TOOL_SHAPES L1 reduce（denoise 起步），
+      // 与 command-kind（#108 R5）同政策——裸包噪声键/派生绕过不再进模型上下文。
+      return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };
     }
     const cwd = resolveWorkspacePath(this.config.workspaceDir, this.config.stateDir, custom.handler.cwd || '.');
     // 增补-09（#108，R5）：command-kind 扩展与 execute_cli 同政策——返回前过 denoiseCommandResult，
