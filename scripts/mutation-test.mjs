@@ -69,6 +69,18 @@ const mutations = [
   { name: 'OPD-2: output dir removal disabled', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: '/* mutation: skip removal */' },
   { name: 'OPD-3: output dir registration not cleared', file: 'src/subagent/output-dir.ts', find: 'ctx.outputDirs.delete(agentId);', replace: '/* mutation: skip delete */' },
   { name: 'OPD-4: ENOENT force removed (throws on missing dir)', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: 'rmSync(dir, { recursive: true, force: false });' },
+  // ── src/subagent/tools.ts + shell-tracker.ts（#156 R4，8）──
+  { name: 'TLS-1: 显式链 spawnFailed 守卫失效', file: 'src/subagent/tools.ts', find: 'if (spawnFailed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();', replace: 'if (false) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();' },
+  { name: 'TLS-2: 显式链守卫 unlink 移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();', replace: 'if (spawnFailed) {\n              closeOutputHandle();\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();' },
+  { name: 'TLS-3: spawnFailed 置位移除（error handler）', file: 'src/subagent/tools.ts', find: 'spawnFailed = true;', replace: 'spawnFailed = false;' },
+  // EQUIVALENT（实测 survive 后标注：TLS-4 路径不可达——timeout 要求 spawn 存活 120s 而失败毫秒级；
+  // TLS-7 fd 无测试观测口径（bun getActiveResourcesInfo 不列 FileHandle）；TLS-8 跨 agent 同名 backgroundId 碰撞无覆盖）
+  { name: 'TLS-4: 超时链守卫失效', file: 'src/subagent/tools.ts', find: 'if (spawnFailed) {\n                closeOutputHandle();\n                await unlink(file).catch(() => {});\n                return;\n              }\n              registerBackground(bgId, child);', replace: 'if (false) {\n                closeOutputHandle();\n                await unlink(file).catch(() => {});\n                return;\n              }\n              registerBackground(bgId, child);', equivalent: true },
+  // 实测 KILLED (build)：if(false) 破坏 TS 窄化 → unlink(undefined)/string|undefined 参数类型错误
+  { name: 'TLS-5: error handler 回滚 unlink 移除', file: 'src/subagent/tools.ts', find: 'if (outputPath) void unlink(outputPath).catch(() => {});', replace: 'if (false) void unlink(outputPath).catch(() => {});' },
+  { name: 'TLS-6: error handler 索引删除移除', file: 'src/subagent/tools.ts', find: 'if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);', replace: 'if (false) unregisterBackgroundTask(ctx.agentId, backgroundId);' },
+  { name: 'TLS-7: 守卫 closeOutputHandle 移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;', replace: 'if (spawnFailed) {\n              await unlink(file).catch(() => {});\n              return;', equivalent: true },
+  { name: 'TLS-8: unregisterBackgroundTask agentId 校验移除', file: 'src/subagent/shell-tracker.ts', find: 'if (entry && entry.agentId === agentId) ctx.backgroundTasks.delete(backgroundId);', replace: 'if (entry) ctx.backgroundTasks.delete(backgroundId);', equivalent: true },
 ];
 
 let killedByTest = 0;

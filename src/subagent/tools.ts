@@ -10,14 +10,14 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { JsonObject, JsonSchema } from '../types.js';
 import { recordFileRead, validateEdit, applyEdit } from './file-state.js';
-import { trackShellTask, registerBackgroundTask } from './shell-tracker.js';
+import { trackShellTask, registerBackgroundTask, unregisterBackgroundTask } from './shell-tracker.js';
 import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
 import { truncateResult, truncateCappedResult, MAX_RESULT_SIZE_CHARS } from './result-budget.js';
 import { getSubagent, createSubagent } from './store.js';
@@ -351,6 +351,8 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
     return new Promise<JsonObject>((resolvePromise) => {
       let settled = false;
       let backgrounded = false;
+      // R4（#156）：spawn 'error' 标记——.then 守卫据此回滚（不登记死进程/不留空文件/不泄漏句柄）
+      let spawnFailed = false;
 
       // ADR-0048 D8（第四轮修订）：转后台输出落盘——backgroundId 命名文件
       // 落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>（workspace 内状态目录先例
@@ -531,7 +533,13 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       // error/exit 监听器必须注册在显式分支 return 之前——
       // 否则显式后台模式无监听：spawn 失败即未捕获 'error' 事件崩溃，命令完成也不关句柄（fd 泄漏）
       child.on('error', (err: Error) => {
+        spawnFailed = true;
         if (timeoutTimer) clearTimeout(timeoutTimer);
+        // R4（#156）：spawn 失败回滚——error 迟到于 .then 时（已建文件/已登记）由这里补清理；
+        // error 先到时 .then 的 spawnFailed 守卫再兜底（见下方两条链）。前台路径全 no-op。
+        closeOutputHandle();
+        if (outputPath) void unlink(outputPath).catch(() => {});
+        if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);
         // D8：后台命令建文件失败已杀进程，错误分支跳过（settled 已置）
         if (settled) return;
         settled = true;
@@ -588,6 +596,13 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             // 就绪后直写；转后台前已产输出（D8 第 11 条）亦在 pendingText），
             // 追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
             await appendOutput('');
+            // R4（#156）：spawn 已失败（error handler 已 settle）→ 不登记死进程、
+            // 不泄漏句柄、不留空 .output（error handler 已 resolve，这里只回滚副作用）
+            if (spawnFailed) {
+              closeOutputHandle();
+              await unlink(file).catch(() => {});
+              return;
+            }
             registerBackground(bgId, child);
             if (childExited) closeOutputHandle();
             if (!settled) {

@@ -34,6 +34,17 @@ export function registerBackgroundTask(
   ctx.backgroundTasks.set(backgroundId, { agentId, child });
 }
 
+// R4（#156）：spawn 失败回滚——按 backgroundId 删除单条索引（registerBackgroundTask 的对称操作；
+// 只删同 agent 条目，防跨 agent 同名 backgroundId 误删）
+export function unregisterBackgroundTask(
+  agentId: string,
+  backgroundId: string,
+  ctx: SubagentContext = defaultContext,
+): void {
+  const entry = ctx.backgroundTasks.get(backgroundId);
+  if (entry && entry.agentId === agentId) ctx.backgroundTasks.delete(backgroundId);
+}
+
 /** 按 backgroundId 查后台进程句柄——供落盘输出文件读取与收尸查/杀 */
 export function getBackgroundTask(
   backgroundId: string,
