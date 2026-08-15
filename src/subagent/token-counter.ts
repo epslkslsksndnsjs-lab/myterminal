@@ -12,7 +12,9 @@ export type ContentBlock =
   | { type: 'image'; source?: unknown };
 
 export type NormalizedMessage = { role: 'user' | 'assistant'; content: ContentBlock[] };
-export type TokenUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number };
+// ADR-0048 D10（#138）：cache_creation_input_tokens 补记——缓存创建那次是加价写入，
+// 不读即成本盲区。与 cost-tracker.ts 的 TokenUsage 同改（两处重复定义纪律）。
+export type TokenUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 
 // ── Token 估算（决策 29）──
 

@@ -5,18 +5,23 @@ export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens?: number;
+  // ADR-0048 D10（#138）：cache_creation_input_tokens 补记——宽容派网关读不到
+  // （T1 实测 DeepSeek=0/缺失），记 0/展示即可；严格派网关进账本防成本盲区。
+  cache_creation_input_tokens?: number;
 }
 
 export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 export class CostTracker {
   private inputTokens = 0;
   private outputTokens = 0;
   private cacheReadTokens = 0;
+  private cacheCreationTokens = 0;
 
   constructor() {}
 
@@ -26,6 +31,9 @@ export class CostTracker {
     if (usage.cache_read_input_tokens) {
       this.cacheReadTokens += usage.cache_read_input_tokens;
     }
+    if (usage.cache_creation_input_tokens) {
+      this.cacheCreationTokens += usage.cache_creation_input_tokens;
+    }
   }
 
   getUsage(): UsageSummary {
@@ -33,6 +41,7 @@ export class CostTracker {
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
       cacheReadTokens: this.cacheReadTokens,
+      cacheCreationTokens: this.cacheCreationTokens,
     };
   }
 }

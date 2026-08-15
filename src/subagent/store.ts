@@ -86,7 +86,7 @@ export function createSubagent(
     }],
     origin: fields.origin,
     abortController: new AbortController(),
-    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
     auditLogs: [],
   };
   ctx.subagents.set(id, record);
@@ -185,6 +185,7 @@ export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext 
     record.auditLogs = record.auditLogs.slice(-50);
   }
 }
+
 
 export function countRunning(ctx: SubagentContext = defaultContext): number {
   let count = 0;
