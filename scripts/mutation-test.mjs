@@ -12,7 +12,7 @@ const mutations = [
   { name: 'EXT-3: finishAudit fallback disabled', file: 'src/extensions.ts', find: '(!finalError || !finalError.code)', replace: '(false)', equivalent: true },
 
   // ── src/store.ts (3) ──
-  { name: 'STO-1: auditFact fallback removed', file: 'src/store.ts', find: "rawErrorCode || (status === 'failed' || status === 'timeout' ? 'UNKNOWN_ERROR' : undefined)", replace: 'rawErrorCode' },
+  { name: 'STO-1: auditFact fallback removed', file: 'src/audit-log.ts', find: "rawErrorCode || (status === 'failed' || status === 'timeout' ? 'UNKNOWN_ERROR' : undefined)", replace: 'rawErrorCode' },
   { name: 'STO-2: terminal immutability removed (checkpoint)', file: 'src/store.ts', find: "if (TERMINAL_PHASES.has(session.phase)) throw new MyTerminalError('SESSION_TERMINAL', 'Terminal sessions are immutable; create a continuation session.')", replace: "if (false) throw new MyTerminalError('SESSION_TERMINAL', 'Terminal sessions are immutable; create a continuation session.')" },
   { name: 'STO-3: grandchild prevention removed', file: 'src/store.ts', find: "if (actor.parentSessionId) throw new MyTerminalError('MAX_SESSION_DEPTH', 'Child sessions cannot delegate another session.')", replace: "if (false) throw new MyTerminalError('MAX_SESSION_DEPTH', 'Child sessions cannot delegate another session.')" },
 
@@ -22,7 +22,7 @@ const mutations = [
 
   // ── src/config.ts (4) ──
   { name: 'CFG-1: boundedInteger clamp disabled', file: 'src/config.ts', find: 'return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;', replace: 'return Number.isFinite(parsed) ? parsed : fallback;' },
-  { name: 'CFG-2: provider validation skipped', file: 'src/config.ts', find: "!VALID_PROVIDERS.includes(sub.provider)", replace: "false" },
+  { name: 'CFG-2: subagent apiKey required check skipped', file: 'src/config.ts', find: 'if (typeof sub.apiKey !== \'string\' || !sub.apiKey.trim()) {', replace: 'if (false) {' },
   { name: 'CFG-3: credential length check removed', file: 'src/config.ts', find: 'settings.connectorKey.length < 24 || settings.actionsToken.length < 24', replace: 'false' },
   { name: 'CFG-4: port feasibility always skipped', file: 'src/config.ts', find: 'settings.port === 0', replace: 'true' },
 

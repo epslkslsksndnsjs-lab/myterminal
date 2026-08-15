@@ -47,11 +47,11 @@ const NO_INPUT: () => JsonSchema = () => ({ type: 'object', properties: {}, addi
 export const BUILTIN_INPUT_SCHEMAS = {
   // ── 工作区与文件 ──
   workspace_info: NO_INPUT(),
-  list_dir: { type: 'object', properties: { path: { type: 'string', default: '.' } }, additionalProperties: false },
+  list_dir: { type: 'object', properties: { path: { type: 'string', default: '.' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 500, default: 500 } }, additionalProperties: false },
   find_files: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false },
   search_text: { type: 'object', properties: { query: { type: 'string', minLength: 1 }, path: { type: 'string', default: '.' }, regex: { type: 'boolean', default: false }, limit: { type: 'integer', minimum: 1, maximum: 500 } }, required: ['query'], additionalProperties: false },
   read_file: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, maxBytes: { type: 'integer', minimum: 1, maximum: 1_000_000 } }, required: ['path'], additionalProperties: false },
-  read_file_range: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 } }, required: ['path', 'startLine', 'endLine'], additionalProperties: false },
+  read_file_range: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 }, maxBytes: { type: 'integer', minimum: 1, maximum: 1_000_000 } }, required: ['path', 'startLine', 'endLine'], additionalProperties: false },
   write_file: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, content: { type: 'string' }, expectedSha256: { type: 'string' }, createParents: { type: 'boolean' } }, required: ['path', 'content'], additionalProperties: false },
   apply_patch: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, expectedSha256: { type: 'string' }, replacements: { type: 'array', minItems: 1, items: { type: 'object', properties: { oldText: { type: 'string' }, newText: { type: 'string' }, replaceAll: { type: 'boolean' } }, required: ['oldText', 'newText'], additionalProperties: false } } }, required: ['path', 'replacements'], additionalProperties: false },
 
@@ -71,7 +71,7 @@ export const BUILTIN_INPUT_SCHEMAS = {
   // ── 会话 ──
   session_register: { type: 'object', properties: { mode: { type: 'string', enum: ['root', 'delegate'], default: 'root' }, name: { type: 'string', minLength: 1, maxLength: 80 }, role: { type: 'string', maxLength: 80 }, continuesSessionId: { type: 'string' }, task: { type: 'object', properties: TASK_PROPERTIES, required: ['objective', 'background', 'deliverables', 'acceptanceCriteria', 'constraints'], additionalProperties: false } }, required: ['mode', 'name'], additionalProperties: false },
   session_inherit: { type: 'object', properties: { sessionId: { type: 'string', minLength: 1 }, claimCode: { type: 'string', minLength: 1 }, sessionToken: { type: 'string', minLength: 1 } }, required: ['sessionId'], additionalProperties: false },
-  session_list: NO_INPUT(),
+  session_list: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 20 } }, additionalProperties: false },
   session_checkpoint: { type: 'object', properties: { phase: { type: 'string', enum: ['pending', 'working', 'waiting', 'blocked', 'completed', 'cancelled'] }, summary: { type: 'string', minLength: 1, maxLength: 4000 }, nextSteps: STRING_LIST, blockers: STRING_LIST, artifacts: STRING_LIST, milestone: { type: 'string', maxLength: 1000 }, tags: STRING_LIST, nextCalls: { type: 'array', minItems: 1, maxItems: 3, items: PLANNED_CALL }, replanReason: { type: 'string', minLength: 1, maxLength: 1000 } }, required: ['phase', 'summary'], additionalProperties: false },
   session_context: NO_INPUT(),
   session_history: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 500 }, includeAncestors: { type: 'boolean', default: true } }, additionalProperties: false },
@@ -84,8 +84,8 @@ export const BUILTIN_INPUT_SCHEMAS = {
   // ── 消息 ──
   message_send: { type: 'object', properties: { to: { type: 'string', minLength: 1 }, body: { type: 'string', minLength: 1, maxLength: 20_000 } }, required: ['to', 'body'], additionalProperties: false },
   message_inbox: { type: 'object', properties: { markRead: { type: 'boolean', default: false }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 } }, additionalProperties: false },
-  message_list: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 1000 } }, additionalProperties: false },
-  message_conversation: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false },
+  message_list: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1000 } }, additionalProperties: false },
+  message_conversation: { type: 'object', properties: { with: { type: 'string', minLength: 1 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 5000 } }, required: ['with'], additionalProperties: false },
 
   // ── Skill / Subagent ──
   skill: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },

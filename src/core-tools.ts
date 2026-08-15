@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { createReadStream, realpathSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, publicSession, type MyTerminalStore } from './store.js';
@@ -179,7 +181,11 @@ async function runShellCommand(args: {
 }
 
 function relative(config: MyTerminalConfig, absolute: string): string {
-  return path.relative(config.workspaceDir, absolute) || '.';
+  // 基准取 realpath 后的 workspaceDir：resolveWorkspacePath 对存在的路径返回 realpath 形式
+  // （macOS /var→/private/var 等 symlink 场景下与 config.workspaceDir 不一致），若不 realpath，
+  // 输出的相对 path 会带 .. 前缀、且回传作输入时无法被 resolveWorkspacePath 复原（W1-03 #76
+  // 翻页 round-trip 实测）。realpath 后两方同源，输出干净、可回传。
+  return path.relative(realpathSync(config.workspaceDir), absolute) || '.';
 }
 
 export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalStore): Map<string, ToolDefinition> {
@@ -209,8 +215,19 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: BUILTIN_INPUT_SCHEMAS.list_dir, annotations: readOnly,
     invoke: async (input, context) => {
       const directory = resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.');
-      const entries = await readdir(directory, { withFileTypes: true });
-      return { path: relative(config, directory), entries: entries.filter((entry) => !IGNORE_DIRECTORIES.has(entry.name)).slice(0, 500).map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })), truncated: entries.length > 500 };
+      const all = (await readdir(directory, { withFileTypes: true })).filter((entry) => !IGNORE_DIRECTORIES.has(entry.name));
+      // W1-03（#76）：分页切片（默认 0/500、上限 500 与 500 帽对齐）；上报 total + page，
+      // 供 L1 reducer 派生 totalCount / truncated / 分页 continuation（对齐 session_list T07）
+      const offset = typeof input.offset === 'number' && input.offset >= 0 ? Math.floor(input.offset) : 0;
+      const limit = typeof input.limit === 'number' && input.limit >= 1 ? Math.min(Math.floor(input.limit), 500) : 500;
+      const page = all.slice(offset, offset + limit);
+      return {
+        path: relative(config, directory),
+        entries: page.map((entry) => ({ name: entry.name, type: entry.isDirectory() ? 'directory' : entry.isFile() ? 'file' : 'other' })),
+        total: all.length,
+        page: { offset, limit },
+        truncated: offset + page.length < all.length,
+      };
     },
   });
   add({
@@ -221,8 +238,12 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const query = asString(input.query, 'query').toLowerCase();
       const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
       const files = await walkFiles(resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.'), { limit: 10_000 });
-      const matches = files.map((file) => relative(config, file)).filter((file) => file.toLowerCase().includes(query)).slice(0, limit);
-      return { matches, truncated: matches.length === limit };
+      const matches = files.map((file) => relative(config, file)).filter((file) => file.toLowerCase().includes(query));
+      // totalMatches：截断前的真实匹配总量（D16.2 totalCount 的唯一合法来源；W1-01 #74 的
+      // reduceCollectionCount 剥除并统一为 totalCount，绝不泄漏进模型上下文，D17）
+      // 增补-09（#108，R17）：恰中 limit（matches.length === limit）不算截断——handler 手握
+      // 全量，恰限时 truncated=true 会与 count==totalCount 自相矛盾误导模型；仅 `>` 才截断。
+      return { matches: matches.slice(0, limit), truncated: matches.length > limit, totalMatches: matches.length };
     },
   });
   add({
@@ -269,11 +290,68 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     inputSchema: BUILTIN_INPUT_SCHEMAS.read_file_range, annotations: readOnly,
     invoke: async (input) => {
       const file = resolveWorkspacePath(config.workspaceDir, config.stateDir, asString(input.path, 'path'));
-      const content = await readFile(file, 'utf8');
-      const lines = content.split(/\r?\n/);
       const start = Math.max(1, Number(input.startLine));
-      const end = Math.max(start, Math.min(lines.length, Number(input.endLine)));
-      return { path: relative(config, file), startLine: start, endLine: end, totalLines: lines.length, content: lines.slice(start - 1, end).map((line, index) => `${start + index}: ${line}`).join('\n'), sha256: createHash('sha256').update(content).digest('hex') };
+      const end = Math.max(start, Number(input.endLine));
+      // 默认 256_000、上限 1_000_000，与 read_file 对称（D15/T08）
+      const cap = Math.min(1_000_000, Math.max(1, typeof input.maxBytes === 'number' ? input.maxBytes : 256_000));
+
+      // 流式读取：逐块更新 sha256（字节精确，等同原 readFile 全量哈希），仅保留
+      // [start, end] 区间行，绝不把整文件读入内存（D15/T08：不再整文件进内存）。
+      // StringDecoder 正确处理跨 64KB 块边界的多字节（CJK）字符，避免 UTF-8 断裂损坏。
+      const stream = createReadStream(file);
+      const hash = createHash('sha256');
+      const decoder = new StringDecoder('utf8');
+      let buffer = '';
+      let lineNo = 0;
+      let newlineCount = 0;
+      let endedWithNewline = false;
+      const picked: string[] = [];
+      for await (const chunk of stream) {
+        hash.update(chunk);
+        buffer += decoder.write(chunk);
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          let line = buffer.slice(0, nl);
+          if (line.endsWith('\r')) line = line.slice(0, -1);
+          lineNo += 1;
+          newlineCount += 1;
+          if (lineNo >= start && lineNo <= end) picked.push(`${lineNo}: ${line}`);
+          buffer = buffer.slice(nl + 1);
+          endedWithNewline = true;
+        }
+        if (buffer.length > 0) endedWithNewline = false;
+      }
+      if (buffer.length > 0) {
+        // flush 残余多字节序列（无残留则为空串），并把末段（无尾随换行）记为最后一行的正文
+        buffer += decoder.end();
+        lineNo += 1;
+        if (lineNo >= start && lineNo <= end) picked.push(`${lineNo}: ${buffer}`);
+      }
+      if (endedWithNewline) lineNo += 1; // 尾随空行计入（匹配 split(/\r?\n/) 语义）
+      // totalLines 严格等价于 content.split(/\r?\n/).length = newlineCount + 1
+      // （含空文件=1，与 read_file 一致），而非 lineNo（否则空文件会回归为 0）
+      const totalLines = newlineCount + 1;
+      const clampedEnd = Math.min(end, totalLines);
+
+      let content = picked.join('\n');
+      let truncated = false;
+      if (Buffer.byteLength(content, 'utf8') > cap) {
+        // 按字节截断（模型上下文保护）；回退到码点边界，避免切断多字节字符产生 U+FFFD 损坏
+        const buf = Buffer.from(content, 'utf8');
+        let cut = Math.min(cap, buf.length);
+        while (cut > 0 && (buf[cut] & 0xc0) === 0x80) cut--; // 跳过 UTF-8 续字节
+        content = buf.subarray(0, cut).toString('utf8');
+        truncated = true;
+      }
+      return {
+        path: relative(config, file),
+        startLine: start,
+        endLine: clampedEnd,
+        totalLines,
+        content,
+        sha256: hash.digest('hex'),
+        truncated,
+      };
     },
   });
   add({
@@ -393,7 +471,14 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input, context) => {
       const revision = asString(input.revision, 'revision');
       if (!/^[A-Za-z0-9_./~^{}:@+-]+$/.test(revision)) throw new Error('Unsafe Git revision syntax.');
-      return await runCommand({ executable: 'git', argv: ['show', '--stat', '--oneline', '--', revision], cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
+      // W2-04 #87（0050 I-29 / D-12）：真实 revision 放 `--` 前（`-- <revision>` 会把
+      // revision 当 pathspec → 按 revision 查询恒空）。例外：以 '-' 开头的 revision 不可能是
+      // git 对象名（git 禁止 ref 以 '-' 开头），仍走 `--` 保护形式当 pathspec（恒空、exit 0）——
+      // 保全 #35 选项注入不变式（'-p' 不得被当 patch option），与修复前逐字节一致。
+      const argv = revision.startsWith('-')
+        ? ['show', '--stat', '--oneline', '--', revision]
+        : ['show', revision, '--stat', '--oneline'];
+      return await runCommand({ executable: 'git', argv, cwd: resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.cwd) || '.'), timeoutSec: 30, maxOutputChars: config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
     },
   });
   add({
@@ -444,7 +529,15 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'session_list', title: 'List sessions', description: 'List the audited session hierarchy, phases, presence, and continuation links.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.session_list, annotations: readOnly,
-    invoke: async (_input, context) => { actor(context); return { sessions: store.listSessions().map(publicSession) }; },
+    invoke: async (input, context) => {
+      actor(context);
+      // D15/T07：服务端按 offset/limit 切片（默认 20、上限 200，与 BUILTIN_INPUT_SCHEMAS.session_list 对齐）；
+      // 同时上报 total + page，供 L1 reducer 派生 totalCount / truncated / 分页 continuation。
+      const offset = typeof input.offset === 'number' && input.offset >= 0 ? Math.floor(input.offset) : 0;
+      const limit = typeof input.limit === 'number' && input.limit >= 1 ? Math.min(Math.floor(input.limit), 200) : 20;
+      const all = store.listSessions().map(publicSession);
+      return { sessions: all.slice(offset, offset + limit), total: all.length, page: { offset, limit } };
+    },
   });
   add({
     name: 'session_checkpoint', title: 'Checkpoint session', description: 'Record durable session state. When the optional enhanced Actions long-task harness is enabled, a working checkpoint requires 1-3 exact concrete nextCalls and the returned nextCall must run immediately.',
@@ -527,12 +620,12 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   add({
     name: 'message_list', title: 'List own collaboration messages', description: 'List recent inbound and outbound messages involving the authenticated session.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.message_list, annotations: readOnly,
-    invoke: async (input, context) => { const current = actor(context); const messages = store.messagesForSession(current.id, typeof input.limit === 'number' ? input.limit : 100); return { messages, observations: store.observeMessages(messages) }; },
+    invoke: async (input, context) => { const current = actor(context); const page = store.messagesForSessionPage(current.id, typeof input.offset === 'number' ? input.offset : undefined, typeof input.limit === 'number' ? input.limit : 100); return { ...page, observations: store.observeMessages(page.messages) }; },
   });
   add({
     name: 'message_conversation', title: 'Read two-way conversation', description: 'Read the complete recent two-way conversation between the authenticated session and another session selected by name or ID.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.message_conversation, annotations: readOnly,
-    invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
+    invoke: async (input, context) => { const conversation = store.conversation(actor(context).id, asString(input.with, 'with'), typeof input.offset === 'number' ? input.offset : undefined, typeof input.limit === 'number' ? input.limit : 1000); return { conversation, observations: store.observeMessages(conversation.messages) }; },
   });
   add({
     name: 'skill', title: 'Run skill',

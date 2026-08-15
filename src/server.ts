@@ -7,6 +7,10 @@ import { buildOpenApi } from './openapi.js';
 import { createBuiltinTools } from './core-tools.js';
 import { ExtensionService } from './extensions.js';
 import { MyTerminalMcpTransport } from './mcp.js';
+import { clearL3Quota } from './l3/engine.js';
+import { clearOperationCache } from './tool-parse.js';
+import { resetL3Adapter, setL3ClusterMode } from './l3/registry.js';
+import { l3Health as l3HealthSnapshot, resetL3Health, resetL3Warmup, startL3Warmup, type L3HealthSnapshot } from './l3/warmup.js';
 import { ClusterExtensionRouter } from './cluster-router.js';
 import { safeEqual } from './security.js';
 import { MyTerminalStore } from './store.js';
@@ -125,6 +129,8 @@ export class MyTerminalRuntime {
   }
 
   runtimeHealth(): RuntimeHealth { return { ...this.healthState, environment: { ...this.healthState.environment } }; }
+  /** D-8 通道2（#95 W3-03）：L3 就绪状态快照（/health l3 字段 + TUI 状态页数据源）。 */
+  l3Health(): L3HealthSnapshot | undefined { return l3HealthSnapshot(); }
   controlChannelStatus(): ControlChannelState | undefined { return this.controlChannel?.snapshot(); }
 
   private settingsSnapshot(): MyTerminalSettings {
@@ -363,6 +369,11 @@ export class MyTerminalRuntime {
     });
     if (this.config.port === 0) {
       await this.becomeStandaloneLeader(0);
+      // D18.2：standalone（无 cluster）→ L3 默认开
+      setL3ClusterMode(false);
+      // ADR-0051 D-6（#91 W2-08）：standalone 异步预热（fire-and-forget，start 不等待；
+      // 全失败仅记日志；env 关 / cluster 默认关由 l3Enabled 内部 gate）
+      startL3Warmup((message, level) => this.log(message, level));
       this.publishWorkspaceRuntime();
       this.startConfiguredPassiveLock();
       this.startResumeMonitor();
@@ -395,6 +406,13 @@ export class MyTerminalRuntime {
       Object.assign(wrapped, { code: 'EADDRINUSE', host: this.config.host, port: this.config.port, syscall: 'listen' });
       throw wrapped;
     }
+    // 增补-12（#111 用户实测）：leader（持有公网端口）默认开 L3、参与者默认关
+    // （D18.2 语义修正——固定端口单实例首启即 leader，不再无条件 L3 关；env 仍可覆盖）
+    setL3ClusterMode(!this.publicServer?.listening);
+    // 预热不绑 port-0 分支：start 尾部统一按 l3Enabled() 门控触发（standalone 与 cluster
+    // leader 都预热；参与者 env 强制开时也预热——startL3Warmup 内部 l3Enabled 门控 +
+    // 幂等门闩，关 / 已预热均 no-op）
+    startL3Warmup((message, level) => this.log(message, level));
     this.heartbeatTimer = setInterval(() => {
       try { this.cluster?.heartbeat(); }
       catch (error) { this.log(`Cluster heartbeat failed: ${error instanceof Error ? error.message : String(error)}`, 'error'); }
@@ -457,6 +475,10 @@ export class MyTerminalRuntime {
       this.publicServer = server;
       this.address = server.address() as AddressInfo;
       this.cluster.setLeader();
+      // 增补-12（#111）选举迁移：接管成功 → L3 翻转为 leader 默认开 + 惰性补触发预热
+      // （参与者态默认关未预热；接管后按 l3Enabled 补开——幂等门闩保证不重复加载）
+      setL3ClusterMode(false);
+      startL3Warmup((message, level) => this.log(message, level));
       this.log(`This workspace became leader for ${this.config.host}:${this.config.port}`);
       this.startControlChannelMonitor();
     } catch (error) {
@@ -534,6 +556,17 @@ export class MyTerminalRuntime {
     // Otherwise a detached command can keep a close request open and continue
     // mutating the workspace after the runtime lease has been released.
     await this.extensions.shutdown();
+    // ADR-0050 E2/E3（#81 W1-08）：运行时关闭 → 全量清 L3 配额 + 释放 L3 适配器单例
+    // （D6 护栏3「会话结束从 Map 删除」全量面；D8.2「进程退出/会话结束释放」）
+    clearL3Quota();
+    resetL3Adapter();
+    // 增补-10（#109 R15）：关闭收尾 → 全量清 operationCache（Q8 生命周期全清面，
+    // 与 extensions.shutdown 内全清互为兜底：shutdown 管排空窗口，此处管关闭后）
+    clearOperationCache();
+    // ADR-0051 D-6（#91 W2-08）：释放预热门闩——「下次启动自动预热」（D-8.1）
+    resetL3Warmup();
+    // ADR-0051 D-8（#95 W3-03）：重置就绪状态——下次启动从 loading 重新走状态机
+    resetL3Health();
     await publicClosed;
     await this.mcp.close();
     if (this.clusterMcp) await this.clusterMcp.close();
@@ -559,7 +592,7 @@ export class MyTerminalRuntime {
         res.status(503).json({ ok: false, product: 'myterminal', workspaceId: localWorkspaceId, error: 'Workspace route mismatch.' });
         return;
       }
-      res.status(healthy ? 200 : 503).json({ ok: healthy, product: 'myterminal', version: CURRENT_VERSION, workspaceId: localWorkspaceId, toolsExposed: 3, sessions: this.store.listSessions().length, activeMcpSessions: this.activeMcpSessions(), pendingActions: this.extensions.activeActionCount(), runtime: this.runtimeHealth(), controlChannel: this.controlChannelStatus() });
+      res.status(healthy ? 200 : 503).json({ ok: healthy, product: 'myterminal', version: CURRENT_VERSION, workspaceId: localWorkspaceId, toolsExposed: 3, sessions: this.store.listSessions().length, activeMcpSessions: this.activeMcpSessions(), pendingActions: this.extensions.activeActionCount(), runtime: this.runtimeHealth(), controlChannel: this.controlChannelStatus(), l3: this.l3Health() });
     });
     this.app.get('/openapi.json', (_req, res) => res.json(buildOpenApi({ ...this.config, publicBaseUrl: this.resolvedPublicBaseUrl() })));
     this.app.get('/openapi-3.1.json', (_req, res) => res.json(buildOpenApi({ ...this.config, publicBaseUrl: this.resolvedPublicBaseUrl() })));

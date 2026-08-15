@@ -9,6 +9,8 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
+import { clearOperationCache, denoiseCommandResult, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
+import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
 const RESERVED_NAMES = new Set(['extension_discover', 'extension_register', 'extension_call']);
@@ -102,6 +104,18 @@ function resultProblem(value: unknown): ResultProblem | undefined {
   return record.result === undefined ? undefined : resultProblem(record.result);
 }
 
+/**
+ * 归一化 error.details，消除 decorateContinuation 对 string 型 details 的 `{ ...string }` 炸键
+ * （展开成字符索引键、原文丢失，#30 / L567 已确证 shipped bug）。
+ * - string → { text }
+ * - object → 原样拷贝（不与原对象共享引用）
+ * - undefined / null → {}
+ */
+export function normalizeErrorDetails(details?: JsonObject | string | null): JsonObject {
+  if (typeof details === 'string') return { text: details };
+  return { ...(details ?? {}) };
+}
+
 function explicitIdentity(input: JsonObject): SessionIdentity | undefined {
   if (input.identity === undefined || input.identity === null) return undefined;
   const identity = objectValue(input.identity, 'identity');
@@ -112,6 +126,9 @@ function explicitIdentity(input: JsonObject): SessionIdentity | undefined {
 export class ExtensionService {
   private readonly activeActions = new Map<string, { sessionId: string; action: string; source: InvocationContext['transport']; args: JsonObject; startedAt: number }>();
   private readonly backgroundTasks = new Map<string, BackgroundTask>();
+  // ADR-0051 增补-01（#100）：在飞后台任务完成链（completeBackgroundTask / failBackgroundTask
+  // 的 promise）。close 排空时与 operation 一起等待；settler 落定即从集合移除。
+  private readonly backgroundSettlers = new Set<Promise<void>>();
   private readonly closedActionIds = new Set<string>();
   private readonly operationControllers = new Map<string, AbortController>();
   private readonly operationPromises = new Map<string, Promise<JsonObject>>();
@@ -132,17 +149,21 @@ export class ExtensionService {
 
   activeActionCount(): number { return this.activeActions.size; }
 
-  async shutdown(graceMs = 4_000): Promise<void> {
+  async shutdown(graceMs = 5_000): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.accepting = false;
     clearInterval(this.maintenanceTimer);
     this.shutdownPromise = (async () => {
       for (const controller of this.operationControllers.values()) controller.abort();
+      // ADR-0051 增补-01（#100）：close 排空——在飞 operation 与其后台任务完成链
+      // （completeBackgroundTask / failBackgroundTask，含 applyShape → finishAudit 落盘）
+      // 一起等，窗口上限 graceMs（默认 5s）；超限后由下方强制收尾兜底，不阻塞关闭。
       const operations = [...this.operationPromises.values()];
-      if (operations.length) {
+      const settlers = [...this.backgroundSettlers];
+      if (operations.length || settlers.length) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
-          Promise.allSettled(operations),
+          Promise.allSettled([...operations, ...settlers]),
           new Promise<void>((resolve) => { timer = setTimeout(resolve, graceMs); }),
         ]);
         if (timer) clearTimeout(timer);
@@ -157,6 +178,9 @@ export class ExtensionService {
       for (const [id, action] of [...this.activeActions]) {
         this.finishAudit(action.sessionId, id, action.source, action.action, action.args, action.startedAt, 'failed', { ok: false, error }, error);
       }
+      // 增补-10（#109 R15）：强制收尾完成 → 清空 operationCache 全量（Q8 生命周期全清面）。
+      // 放在排空之后调用，避免排空窗口内在飞 applyShape 重新填充的条目残留。
+      clearOperationCache();
     })();
     return this.shutdownPromise;
   }
@@ -199,6 +223,8 @@ export class ExtensionService {
     status: Exclude<ToolAuditEvent['status'], 'running'>,
     result: unknown,
     error?: { code: string; message?: string },
+    shaping?: ShapingAudit,
+    auditRecord?: ShapingAuditRecord,
   ): void {
     if (this.closedActionIds.has(actionId)) return;
     let finalError = error;
@@ -209,6 +235,10 @@ export class ExtensionService {
     const event: ToolAuditEvent = {
       id: actionId, timestamp: new Date(started).toISOString(), completedAt, source, action, status, durationMs: Date.now() - started, error: finalError,
       workspace: this.config.workspaceDir, session: sessionId, args, result,
+      ...(shaping ? { shaping } : {}),
+      // D7 双版本审计（0050 F1 / W1-09）：raw/shaped 只进审计链（JSONL），
+      // 模型可见通道（session_history / session_context）读取时剥除（D17）。
+      ...(auditRecord ? { rawResult: auditRecord.rawResult, shapedResult: auditRecord.shapedResult } : {}),
     };
     const persisted = this.store.auditEvent(sessionId, event);
     this.onAudit?.(persisted);
@@ -218,6 +248,50 @@ export class ExtensionService {
   }
 
   // ─── withAudit: shared audit scaffolding (ADR-0032 #30) ─────────────────────
+
+  /**
+   * ADR-0047（#29）：工具响应整形出口——包住最终装饰响应（含 decorateContinuation 后的
+   * 长任务结构，D13）。T01 骨架阶段全量 passthrough（零行为变化回归基线）；shaper 自身
+   * 任何失败 → fail-open 返回原始响应（D11），失败原因只进审计、绝不进结果（D17）。
+   * subagent 通道（D2）不整形，原样返回。
+   */
+  private async applyShape(
+    response: ToolResponse,
+    sessionId: string | undefined,
+    transport: InvocationContext['transport'],
+  ): Promise<{ response: ToolResponse; shaping: ShapingAudit | undefined; auditRecord?: ShapingAuditRecord }> {
+    if (transport === 'subagent') return { response, shaping: undefined };
+    let shaping: ShapingAudit | undefined;
+    let auditRecord: ShapingAuditRecord | undefined;
+    try {
+      const shaped = await shapeToolResponse(response, {
+        transport,
+        sessionId,
+        resolveTool: (name) => this.resolveTool(name),
+        audit: (record) => { shaping = record.shaping; auditRecord = record; },
+      });
+      return { response: shaped, shaping, auditRecord };
+    } catch {
+      // 逃逸级 fail-open（D11）：shaper 内部失败（reducer-threw / cap-threw / l3-* / nested-*）
+      // 已就地分类并随 audit 记录带出（tool-parse.ts 各 catch）；能逃逸到此的只剩意外引擎错误，
+      // 如实记 engine-error——不再一律误标 reducer-threw（0050 F1 附带 a）。
+      return { response, shaping: { applied: false, reason: 'engine-error' } };
+    }
+  }
+
+  /** 按工具名解析 ToolDefinition（builtin + custom，D5 路由用）；未注册 → undefined。 */
+  private resolveTool(name: string): ToolDefinition | undefined {
+    const builtin = this.builtins.get(name);
+    if (builtin) return builtin;
+    const custom = this.store.listExtensions().find((item) => item.name === name);
+    if (!custom) return undefined;
+    // custom extension 无 invoke 实现（handler 驱动），shaper 只读其形状声明
+    return {
+      name: custom.name, title: custom.title, description: custom.description,
+      inputSchema: custom.inputSchema, annotations: custom.annotations,
+      invoke: async () => ({}),
+    };
+  }
 
   private deriveAuditError(error: unknown): { code: string; message: string } {
     return { code: error instanceof MyTerminalError ? error.code : 'EXTENSION_ERROR', message: error instanceof Error ? error.message : String(error) };
@@ -249,21 +323,26 @@ export class ExtensionService {
     try {
       if (handlers.begin !== false) this.beginAudit(sessionId, actionId, source, action, args, started);
       const response = await handlers.onSuccess({ actionId, started });
-      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', response);
-      return response;
+      // ADR-0047（#29）：withAudit 出口统一过 shaper（subagent 通道除外，D2 不整形），
+      // 审计记录整形后响应 + shaping 原因（D7）。
+      const shaped = await this.applyShape(response, sessionId, source);
+      this.finishAudit(sessionId, actionId, source, action, args, started, 'completed', shaped.response, undefined, shaped.shaping, shaped.auditRecord);
+      return shaped.response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const response = await handlers.onError({ actionId, started, auditError }, error);
       const status = handlers.errorStatus?.(auditError) ?? 'failed';
-      this.finishAudit(sessionId, actionId, source, action, args, started, status, response, auditError);
-      return response;
+      const shaped = await this.applyShape(response, sessionId, source);
+      this.finishAudit(sessionId, actionId, source, action, args, started, status, shaped.response, auditError, shaped.shaping, shaped.auditRecord);
+      return shaped.response;
     } finally {
       if (!this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
     }
   }
 
   async discover(input: JsonObject = {}, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
-    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    // ADR-0047（#29）：守卫路径也经 shaper 出口（“所有工具响应经 shaper”）；shutdown 窗口无会话无审计，shaping 不落盘
+    if (!this.accepting) return (await this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport)).response;
     let authenticated: { id: string } | undefined;
     try {
       authenticated = this.authenticate(input, context, true) ?? undefined;
@@ -274,10 +353,10 @@ export class ExtensionService {
     } catch (error) {
       const failed = failure(error);
       const sessionId = authenticated?.id;
-      return this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
+      return (await this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport)).response;
     }
     if (!authenticated) {
-      return { ok: true, data: {
+      return (await this.applyShape({ ok: true, data: {
         agentMd: loadAgentMd(this.config.settingsPath),
         identityRequired: true,
         instructions: {
@@ -291,7 +370,7 @@ export class ExtensionService {
         },
         bootstrapTools: ['extension_discover()', 'session_register(mode=root,workspaceId)', 'session_inherit(sessionId,claimCode)', 'session_inherit(sessionId,sessionToken=<previous token>)'],
         skills: listSkills(path.dirname(this.config.settingsPath), this.config.workspaceDir),
-      } };
+      } }, undefined, context.transport)).response;
     }
     return this.withAudit(authenticated.id, context.transport, 'extension_discover', input, {
       onSuccess: () => {
@@ -349,7 +428,7 @@ export class ExtensionService {
   }
 
   async register(input: JsonObject, context: InvocationContext = { transport: 'test' }): Promise<ToolResponse> {
-    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    if (!this.accepting) return (await this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport)).response;
     // ADR-0032 #30 修复：main 基线中 authenticate + beforeOrdinaryCall 同在方法级 try 内，
     // beginAudit 在其后（auditStarted=false）→ 两者抛错都不写 audit，只返回
     // attachEvents(failure(error), sessionId)。authenticate 抛时 sessionId 未赋值。
@@ -358,7 +437,7 @@ export class ExtensionService {
       authenticated = this.authenticate(input, context, false)!;
       this.store.beforeOrdinaryCall(authenticated.id);
     } catch (error) {
-      return this.attachEvents(failure(error), authenticated?.id);
+      return (await this.applyShape(this.attachEvents(failure(error), authenticated?.id), authenticated?.id, context.transport)).response;
     }
     const session = authenticated;
     return this.withAudit(session.id, context.transport, 'extension_register', input, {
@@ -398,7 +477,7 @@ export class ExtensionService {
   }
 
   async call(input: JsonObject, context: InvocationContext): Promise<ToolResponse> {
-    if (!this.accepting) return { ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } };
+    if (!this.accepting) return (await this.applyShape({ ok: false, error: { code: 'RUNTIME_SHUTTING_DOWN', message: 'The runtime is shutting down.', retryable: true } }, undefined, context.transport)).response;
     this.trimBackgroundTasks();
     let sessionId: string | undefined;
     const started = Date.now();
@@ -424,9 +503,9 @@ export class ExtensionService {
       }
       if (input.tool === 'task_poll') {
         if (!authenticated) throw new MyTerminalError('IDENTITY_REQUIRED', 'task_poll requires an authenticated session.');
-        const response = this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, response.ok ? 'completed' : 'failed', response, response.error);
-        return response;
+        const shaped = await this.applyShape(this.attachEvents(this.pollBackgroundTask(authenticated.id, args, context.transport), authenticated.id), authenticated.id, context.transport);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, shaped.response.ok ? 'completed' : 'failed', shaped.response, shaped.response.error, shaped.shaping, shaped.auditRecord);
+        return shaped.response;
       }
       const operation = this.trackOperation(actionId, controller, this.invokeTool(input.tool, args, invocationContext));
       if (authenticated && !CONTROL_TOOLS.has(input.tool) && this.config.nonBlockingTasksEnabled) {
@@ -440,23 +519,30 @@ export class ExtensionService {
           detached = true;
           const task: BackgroundTask = { id: actionId, sessionId: authenticated.id, tool: input.tool, input: structuredClone(args), source: context.transport, startedAt: started, status: 'running' };
           this.backgroundTasks.set(task.id, task);
-          void operation.then(
+          // ADR-0051 增补-01（#100）：完成链入排空集合，落定即移除。rejection 由
+          // shutdown 的 allSettled 兜底；非关闭路径下显式吞掉，避免 unhandled 噪音。
+          const settler = operation.then(
             (result) => this.completeBackgroundTask(task, result),
             (error: unknown) => this.failBackgroundTask(task, error),
           );
-          return this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
+          this.backgroundSettlers.add(settler);
+          void settler.then(
+            () => this.backgroundSettlers.delete(settler),
+            () => this.backgroundSettlers.delete(settler),
+          );
+          return (await this.applyShape(this.attachEvents(this.decorateContinuation({ ok: true, data: { tool: input.tool, result: { status: 'running', taskId: task.id, startedAt: new Date(started).toISOString(), fastReturnMs: FAST_RETURN_MS } } }, authenticated.id, {
             reason: 'background_task_running',
             nextCall: { tool: 'task_poll', input: { taskId: task.id }, purpose: 'Confirm the detached operation completed before advancing the continuation plan.' },
-          }, context.transport), authenticated.id);
+          }, context.transport), authenticated.id), authenticated.id, context.transport)).response;
         }
         if (outcome.kind === 'error') throw outcome.error;
         const result = outcome.result;
         const problem = resultProblem(result);
         if (!problem) this.store.completeContinuationCall(authenticated.id, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
-        const response = this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id);
-        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), response, problem);
-        return response;
+        const shaped = await this.applyShape(this.attachEvents(this.decorateContinuation(base, authenticated.id, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), authenticated.id), authenticated.id, context.transport);
+        this.finishAudit(authenticated.id, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping, shaped.auditRecord);
+        return shaped.response;
       }
       const result = await operation;
       if (!sessionId && result.identity && typeof result.identity === 'object') sessionId = String((result.identity as JsonObject).sessionId || '');
@@ -470,18 +556,18 @@ export class ExtensionService {
         const problem = resultProblem(result);
         if (!problem) this.store.completeContinuationCall(sessionId, input.tool, args);
         const base: ToolResponse = problem ? { ok: false, data: { tool: input.tool, result }, error: problem } : { ok: true, data: { tool: input.tool, result } };
-        const response = this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId);
-        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), response, problem);
-        return response;
+        const shaped = await this.applyShape(this.attachEvents(this.decorateContinuation(base, sessionId, problem ? { reason: 'planned_call_failed' } : undefined, context.transport), sessionId), sessionId, context.transport);
+        this.finishAudit(sessionId, actionId, context.transport, input.tool, args, started, this.resultToAuditStatus(problem), shaped.response, problem, shaped.shaping, shaped.auditRecord);
+        return shaped.response;
       }
-      return this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId);
+      return (await this.applyShape(this.attachEvents({ ok: true, data: { tool: input.tool, result } }, sessionId), sessionId, context.transport)).response;
     } catch (error) {
       const auditError = this.deriveAuditError(error);
       const isPolicyRejection = auditError.code === 'NEXT_CALL_REQUIRED' || auditError.code === 'CONTINUATION_PLAN_REQUIRED';
       const failed = failure(error);
-      const response = this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId);
-      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', response, auditError);
-      return response;
+      const shaped = await this.applyShape(this.attachEvents(sessionId ? this.decorateContinuation(failed, sessionId, undefined, context.transport) : failed, sessionId), sessionId, context.transport);
+      if (sessionId && auditStarted) this.finishAudit(sessionId, actionId, context.transport, action, args, started, isPolicyRejection ? 'policy_rejected' : 'failed', shaped.response, auditError, shaped.shaping, shaped.auditRecord);
+      return shaped.response;
     } finally {
       if (!detached && !this.closedActionIds.has(actionId)) this.activeActions.delete(actionId);
     }
@@ -564,29 +650,46 @@ export class ExtensionService {
     return {
       ...response,
       data: { ...(response.data ?? {}), continuation },
-      ...(!response.ok && response.error ? { error: { ...response.error, details: { ...(response.error.details ?? {}), continuation } } } : {}),
+      ...(!response.ok && response.error ? { error: { ...response.error, details: { ...normalizeErrorDetails(response.error.details), continuation } } } : {}),
     };
   }
 
-  private completeBackgroundTask(task: BackgroundTask, result: JsonObject): void {
+  private async completeBackgroundTask(task: BackgroundTask, result: JsonObject): Promise<void> {
     if (task.status !== 'running') return;
     const problem = resultProblem(result);
     if (!problem) this.store.completeContinuationCall(task.sessionId, task.tool, task.input);
-    task.status = this.resultToAuditStatus(problem);
-    task.completedAt = new Date().toISOString();
+    const status = this.resultToAuditStatus(problem);
     const base: ToolResponse = problem ? { ok: false, data: { tool: task.tool, result }, error: problem } : { ok: true, data: { tool: task.tool, result } };
-    task.response = this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source);
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, task.status, task.response, problem);
+    // ADR-0047（#29）：完成态在存储前整形（D18.2 执行点），完成审计记 shaping 原因（D7）
+    const shaped = await this.applyShape(this.decorateContinuation(base, task.sessionId, problem ? { reason: 'planned_call_failed' } : undefined, task.source), task.sessionId, task.source);
+    // ADR-0051 增补-01（#100）：先落审计、后翻终态——task_poll 观察到终态 ⟹ 审计已可读。
+    // 消除观察方随即删 state 目录（或 close 后清理）时 appendHistory 的 ENOENT 竞态
+    // （W1-08-E1a/E1b 全量并行必现根因）。
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, status, shaped.response, problem, shaped.shaping, shaped.auditRecord);
+    if (task.status !== 'running') return; // shutdown 超限强制收尾（failed）→ 不覆盖其终态
+    task.status = status;
+    task.completedAt = new Date().toISOString();
+    task.response = shaped.response;
+    // ADR-0050 E1（#81 W1-08）：task 完成 → 清该 taskId 的 Q8 operation 缓存条目
+    clearOperationCache(task.id);
+    // ADR-0051 增补-07（#106）：完成态按 poll 同款 key 预填 Q8 缓存——首次 poll 命中，
+    // 不再对「已整形内容」重跑 L3（A2 审计 F1：双烧 D6 配额 + 非确定性输出漂移）
+    seedOperationCache(task.id, task.response);
     this.trimBackgroundTasks();
   }
 
-  private failBackgroundTask(task: BackgroundTask, error: unknown): void {
+  private async failBackgroundTask(task: BackgroundTask, error: unknown): Promise<void> {
     if (task.status !== 'running') return;
     const auditError = this.deriveAuditError(error);
+    const shaped = await this.applyShape(this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source), task.sessionId, task.source);
+    // ADR-0051 增补-01（#100）：先落审计、后翻终态（同 completeBackgroundTask，见上）
+    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', shaped.response, auditError, shaped.shaping, shaped.auditRecord);
+    if (task.status !== 'running') return; // shutdown 超限强制收尾（failed）→ 不覆盖其终态
     task.status = 'failed';
     task.completedAt = new Date().toISOString();
-    task.response = this.decorateContinuation(failure(error), task.sessionId, { reason: 'planned_call_failed' }, task.source);
-    this.finishAudit(task.sessionId, task.id, task.source, task.tool, task.input, task.startedAt, 'failed', task.response, auditError);
+    task.response = shaped.response;
+    // ADR-0050 E1（#81 W1-08）：task 失败（终态）同样清该 taskId 的缓存条目
+    clearOperationCache(task.id);
     this.trimBackgroundTasks();
   }
 
@@ -603,7 +706,11 @@ export class ExtensionService {
   private trimBackgroundTasks(): void {
     const cutoff = Date.now() - BACKGROUND_TASK_RETENTION_MS;
     for (const task of this.backgroundTasks.values()) {
-      if (task.status !== 'running' && task.completedAt && Date.parse(task.completedAt) < cutoff) this.backgroundTasks.delete(task.id);
+      if (task.status !== 'running' && task.completedAt && Date.parse(task.completedAt) < cutoff) {
+        // ADR-0050 E1（#81 W1-08）：任务删除 → 顺带清该 taskId 的 Q8 缓存条目（删任务不清缓存的缺口）
+        clearOperationCache(task.id);
+        this.backgroundTasks.delete(task.id);
+      }
     }
     const completed = [...this.backgroundTasks.values()]
       .filter((task) => task.status !== 'running')
@@ -613,6 +720,8 @@ export class ExtensionService {
     for (const task of completed) {
       if (this.backgroundTasks.size <= BACKGROUND_TASK_MAX_COUNT && retainedBytes <= BACKGROUND_TASK_MAX_BYTES) break;
       retainedBytes -= responseBytes(task);
+      // ADR-0050 E1（#81 W1-08）：计数/字节驱逐删除 → 同样清缓存条目
+      clearOperationCache(task.id);
       this.backgroundTasks.delete(task.id);
     }
   }
@@ -665,7 +774,11 @@ export class ExtensionService {
     if (builtin) {
       const normalized = this.normalizeAliases(args, builtin.aliases);
       const errors = validateJsonSchema(builtin.inputSchema, normalized); if (errors.length) throw new MyTerminalError('INVALID_INPUT', errors.join('; '));
-      return await builtin.invoke(normalized, context);
+      const result = await builtin.invoke(normalized, context);
+      // ADR-0050 E2（#81 W1-08）：会话结束（session_release / session_unregister 成功）
+      // → 清该会话 L3 配额（D6 护栏3「会话结束从 Map 删除」）。仅接线，不改原语语义。
+      if ((name === 'session_release' || name === 'session_unregister') && context.authenticatedSession) clearL3Quota(context.authenticatedSession.id);
+      return result;
     }
     const custom = this.store.listExtensions().find((item) => item.name === name);
     if (!custom) throw new MyTerminalError('NOT_FOUND', `Extension not found: ${name}`);
@@ -676,7 +789,9 @@ export class ExtensionService {
       return { target: target.name, result: await target.invoke(merged, context) };
     }
     const cwd = resolveWorkspacePath(this.config.workspaceDir, this.config.stateDir, custom.handler.cwd || '.');
-    return await runCommand({ executable: renderTemplate(custom.handler.executable, args), argv: (custom.handler.args ?? []).map((arg) => renderTemplate(arg, args)), cwd, timeoutSec: custom.handler.timeoutSec ?? this.config.commandTimeoutSec, maxOutputChars: this.config.maxOutputChars, signal: context.signal }) as unknown as JsonObject;
+    // 增补-09（#108，R5）：command-kind 扩展与 execute_cli 同政策——返回前过 denoiseCommandResult，
+    // 剥 command/cwd/signal/timedOut/cancelled 五噪声键（不再原样进模型上下文）。
+    return denoiseCommandResult(await runCommand({ executable: renderTemplate(custom.handler.executable, args), argv: (custom.handler.args ?? []).map((arg) => renderTemplate(arg, args)), cwd, timeoutSec: custom.handler.timeoutSec ?? this.config.commandTimeoutSec, maxOutputChars: this.config.maxOutputChars, signal: context.signal }) as unknown as JsonObject);
   }
 
   private attachEvents(response: ToolResponse, sessionId?: string): ToolResponse {

@@ -81,6 +81,7 @@ export class TuiController {
       this.diff.revision(),
       this.update.checking, this.update.latestVersion || '', this.update.error || '',
       this.currentRuntime.runtimeHealth().phase,
+      this.currentRuntime.l3Health()?.status ?? 'off',
     ].join(':');
   }
 

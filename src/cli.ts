@@ -23,6 +23,7 @@ Usage:
   bun run dev                 Start the TUI (includes first-run setup)
   bun run start               Start the built TUI
   bun run dist/cli.js --headless Start after TUI setup, without terminal controls
+  bun run dist/cli.js l3-model fetch Download the L3 local model (sha256-pinned) to the install root
 
 The TUI manages workspace, network, limits, and connection credentials.
 Optional environment overrides for automation:
@@ -146,6 +147,15 @@ async function main(): Promise<void> {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
     help();
     return;
+  }
+  // ADR-0051 D-7（#94 W3-02）：`myterminal l3-model fetch` 子命令（stateless，先于 settings/runtime）
+  if (process.argv[2] === 'l3-model') {
+    if (process.argv[3] !== 'fetch') {
+      console.error(`未知 l3-model 子命令：${process.argv[3] ?? ''}（可用：fetch）`);
+      process.exit(1);
+    }
+    const { runL3ModelFetchCli } = await import('./l3/model-fetch.js');
+    process.exit(await runL3ModelFetchCli());
   }
   const headless = process.argv.includes('--headless') || !process.stdin.isTTY || !process.stdout.isTTY;
   const env = effectiveEnvironment(headless);

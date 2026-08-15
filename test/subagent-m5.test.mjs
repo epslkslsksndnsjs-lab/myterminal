@@ -2,7 +2,7 @@
 // 决策 18 / 30 Bug 4 / 31 / 38 / 39 / 40
 // 目标：≥ 19 用例，覆盖率 ≥ 90%
 
-import { describe, test } from 'node:test';
+import { describe, test, afterEach } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -41,7 +41,7 @@ function eventCollector() {
 
 // ── 全局清理 ──
 
-test.afterEach(() => {
+afterEach(() => {
   clearAllSubagents();
   resetReplacementDecisions();
 });

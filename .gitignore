@@ -16,3 +16,8 @@ docs/adr/
 .scratch/
 tool-returns/
 _release-assets/
+
+# L3 模型文件（1.2GB+，绝不入 git——下载走 myterminal l3-model fetch，D-7 分发决策）
+models/
+*.gguf
+*.gguf.part

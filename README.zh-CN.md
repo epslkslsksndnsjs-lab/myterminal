@@ -4,7 +4,7 @@
 
 MyTerminal 的核心目的，是让 **ChatGPT 的普通 Chat 对话模式也能以可控方式在本地电脑上工作**。通过为自定义 GPT 配置 Action，或接入 ChatGPT App，普通 ChatGPT 对话就可以查看和编辑获准的本地项目、运行受约束的工具、协调多个工作 session 并汇报进展；用户始终通过本地 TUI 保留控制权。MyTerminal 是 ChatGPT Chat 与本地电脑之间的桥梁，不是另一个聊天客户端。
 
-MyTerminal 0.1.2 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、用户自定义 Agent 上下文（AGENT.md）、Git 风格实时 diff、覆盖整个终端窗口的中英双语 OpenTUI 界面、用户自定义的 **Skill** 可复用智能体工作流系统，以及支持多 LLM 提供商的隔离 **Subagent** 系统。
+MyTerminal 0.1.2 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、用户自定义 Agent 上下文（AGENT.md）、Git 风格实时 diff、覆盖整个终端窗口的中英双语 OpenTUI 界面、用户自定义的 **Skill** 可复用智能体工作流系统，以及支持 Anthropic 协议 LLM 的隔离 **Subagent** 系统。
 
 ![MyTerminal session 层级](docs/assets/tui/sessions-zh-CN.svg)
 
@@ -106,7 +106,11 @@ Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name
 
 ### Subagent 系统
 
-Subagent 是隔离的智能体循环，拥有独立的 8 工具集、上下文窗口和费用追踪器。它异步运行于已配置的 LLM 提供商（openai、anthropic、deepseek、glm 或 qwen，默认读取 config.json；支持单次调用覆盖）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。提供商配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
+Subagent 是隔离的智能体循环，拥有独立的 8 工具集、上下文窗口和费用追踪器。它异步运行于 `config.json` 配置的 Anthropic Messages 兼容 LLM 端点（`subagent.apiKey` / `subagent.baseUrl` / `subagent.model` 三必填）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
+
+### L3 工具结果整形
+
+工具结果经过分层整形管线（`TOOL_SHAPES`）：确定性 L1 reduce、L2 路由，以及可选的 L3 本地模型层（随框架分发的 Qwen GGUF），为少数工具做自由文本结果抽取。L3 fail-open——模型不在发布包内；运行 `myterminal l3-model fetch`（sha256 钉死、幂等）下载后启用 L3。在此之前结果回落确定性 L1/L2，无功能损失。L3 对 standalone 进程默认开、共享端口 cluster 参与者默认关（`MYTERMINAL_L3_ENABLED` 可覆盖）。
 
 ## 可审计协作
 
@@ -125,7 +129,7 @@ MyTerminal session 是工作上下文，不是 ChatGPT 对话 ID。
 
 ## TUI 用户控制面板
 
-七个全屏页面分别是：概览、会话、消息、差异、扩展、设置和日志。
+九个全屏页面分别是：概览、会话、消息、时间线、Diff、扩展、设置、日志和子代理。
 
 ![MyTerminal 概览](docs/assets/tui/overview-zh-CN.svg)
 

@@ -595,12 +595,29 @@ export class MyTerminalStore {
     return structuredClone(this.state.messages.filter((message) => message.from === session.id || message.to === session.id).slice(-Math.max(1, Math.min(1000, limit))));
   }
 
-  conversation(sessionId: string, otherSessionId: string, limit = 1000): { sessions: JsonObject[]; messages: MyTerminalMessage[] } {
+  /** W1-04 (#77)：message_list 分页版（0050 A4）。与 inboxPage 同构：切片 + 上报 total/offset/nextOffset，
+   *  供 L1 reducer 派生 count/totalCount/truncated 与分页 continuation；offset 缺省 = 最新一页（与
+   *  messagesForSession 末段语义一致）。 */
+  messagesForSessionPage(sessionId: string, offset?: number, limit = 100): { total: number; offset: number; nextOffset?: number; messages: MyTerminalMessage[] } {
+    const session = this.requireSession(sessionId);
+    const messages = this.state.messages.filter((message) => message.from === session.id || message.to === session.id);
+    const count = Math.max(1, Math.min(1000, limit));
+    const start = offset === undefined ? Math.max(0, messages.length - count) : Math.max(0, Math.min(messages.length, offset));
+    const page = messages.slice(start, start + count);
+    return { total: messages.length, offset: start, nextOffset: start + count < messages.length ? start + count : undefined, messages: structuredClone(page) };
+  }
+
+  /** W1-04 (#77)：conversation 分页化（0050 A4）。offset 缺省 = 最新一页（与旧 slice(-N) 末段语义一致）；
+   *  新增 total/offset/nextOffset 上报，供 L1 reducer 派生 count/totalCount/truncated 与分页 continuation。 */
+  conversation(sessionId: string, otherSessionId: string, offset?: number, limit = 1000): { sessions: JsonObject[]; messages: MyTerminalMessage[]; total: number; offset: number; nextOffset?: number } {
     const session = this.requireSession(sessionId);
     const other = this.requireSession(otherSessionId);
     const messages = this.state.messages.filter((message) =>
       (message.from === session.id && message.to === other.id) || (message.from === other.id && message.to === session.id));
-    return { sessions: [publicSession(session), publicSession(other)], messages: structuredClone(messages.slice(-Math.max(1, Math.min(5000, limit)))) };
+    const count = Math.max(1, Math.min(5000, limit));
+    const start = offset === undefined ? Math.max(0, messages.length - count) : Math.max(0, Math.min(messages.length, offset));
+    const page = messages.slice(start, start + count);
+    return { sessions: [publicSession(session), publicSession(other)], messages: structuredClone(page), total: messages.length, offset: start, nextOffset: start + count < messages.length ? start + count : undefined };
   }
 
   historyPage(sessionId: string, offset = 0, limit = 100, includeAncestors = true): { total: number; offset: number; nextOffset?: number; entries: JsonObject[] } {
@@ -814,9 +831,26 @@ export class MyTerminalStore {
   private historyPath(sessionId: string): string { return path.join(this.historyDir, `${sessionId}.jsonl`); }
   private appendHistory(sessionId: string, type: string, data: JsonObject): void {
     const entry: SessionHistoryEntry = { at: this.iso(), type, data };
-    appendFileSync(this.historyPath(sessionId), `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    const encoded = `${JSON.stringify(entry)}\n`;
+    appendFileSync(this.historyPath(sessionId), encoded, { mode: 0o600 });
+    // #102（ADR-0051 增补-03）：增量维护 tail 缓存——历史文件只增不改，缓存窗口 = 旧窗口 +
+    // 新条目（超出 HISTORY_TAIL_LIMIT 截去最旧）。此前每次 append 全量失效缓存，下轮
+    // readRecentHistory 重读整个历史文件（含逐字节 historyIndex 扫描 + 全量 JSON.parse）：
+    // 120 消息探测每查询写 ~1.2MB 审计 → 查询耗时随累计历史 139ms→584ms 线性增长。
+    // 缓存放「写入字节的解析快照」而非原对象：emitEvent/sendMessage 的条目对象同时挂在
+    // state.events/messages 上，会被 acknowledgeEvents/inboxPage(markRead) 原地改字段，
+    // 快照保证缓存与文件逐字一致（#70 别名门禁同类考量）。
+    const cached = this.historyTailCache.get(sessionId);
+    if (cached) {
+      try { cached.entries.push(JSON.parse(encoded) as SessionHistoryEntry); } catch { this.historyTailCache.delete(sessionId); /* #104（R13/#43-7）：parse 失败不假同步——删缓存下轮重建，不得让 size/mtime 与缺条目缓存共存 */ }
+      if (cached.entries.length > HISTORY_TAIL_LIMIT) cached.entries.splice(0, cached.entries.length - HISTORY_TAIL_LIMIT);
+      // #104（R11）：账本按 UTF-8 字节累计——encoded.length 是 UTF-16 码元数，含 CJK
+      // 条目（路径/会话名/args）时账本 < 文件字节 → 缓存永久失配、每次读全量重建；
+      // 账本语义是「全文件字节」（判命中用 cached.size === stat.size），splice 不扣账。
+      cached.size += Buffer.byteLength(encoded, 'utf8');
+      try { cached.mtimeMs = statSync(this.historyPath(sessionId)).mtimeMs; } catch { /* 缓存失配 → 下轮重建 */ }
+    }
     this.historyIndexes.delete(sessionId);
-    this.historyTailCache.delete(sessionId);
   }
   private readRecentHistory(sessionId: string): SessionHistoryEntry[] {
     const file = this.historyPath(sessionId);

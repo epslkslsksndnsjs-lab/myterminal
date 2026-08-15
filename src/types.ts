@@ -1,3 +1,5 @@
+import type { ToolReducer } from './tool-parse.js';
+
 export type JsonObject = Record<string, unknown>;
 
 export type SessionPhase = 'pending' | 'working' | 'waiting' | 'blocked' | 'completed' | 'cancelled';
@@ -5,6 +7,21 @@ export type SessionPresence = 'unclaimed' | 'claimed' | 'stale';
 export type ActionsContinuationMode = 'off' | 'adaptive' | 'next-call' | 'lookahead-3';
 
 export type SessionIdentity = { sessionId: string; sessionToken: string };
+
+/**
+ * ADR-0047：整形审计（D7/D11/D17）。`{ applied, reason? }` 只进审计、永不进模型上下文。
+ * reason 的权威枚举（ShapingReason）在 tool-parse.ts，此处为审计持久化的宽松形态。
+ */
+export type ShapingAudit = {
+  applied: boolean;
+  reason?: string;
+  /** D15/T07 主动精简审计（可选，仅 active-trim reducer 产）：精简详情，只进审计、永不进模型上下文（D17） */
+  reduced?: boolean;
+  fieldsReduced?: number;
+  entriesTruncated?: number;
+  originalSize?: number;
+  reducedSize?: number;
+};
 
 export type ToolAuditStatus = 'running' | 'completed' | 'failed' | 'timeout' | 'policy_rejected';
 export type ToolAuditSource = 'apps' | 'actions' | 'tui' | 'test' | 'subagent' | 'mcp'; // ADR-0009 决策 3；ADR-0029 新增 'mcp'
@@ -22,6 +39,13 @@ export type ToolAuditEvent = {
   session: string;
   args?: unknown;
   result?: unknown;
+  /** ADR-0047：整形审计（T01 #29 起）。`{ applied, reason? }` 只进审计、永不进模型上下文（D17）。 */
+  shaping?: ShapingAudit;
+  /** ADR-0051 W1-09 (#82) / 0050 F1：D7 双版本审计——整形前原始版与整形后版。
+   *  rawResult 含完整未截断 error（D12 诊断保全）；只进审计链（JSONL），模型可见通道
+   *  （session_history / session_context）读取时剥除，绝不进模型上下文（D17）。 */
+  rawResult?: unknown;
+  shapedResult?: unknown;
 };
 
 export type TaskPackage = {
@@ -261,4 +285,6 @@ export type ToolDefinition = {
   annotations: ExtensionAnnotations;
   aliases?: Record<string, string>;
   invoke: (input: JsonObject, context: InvocationContext) => Promise<JsonObject>;
+  /** ADR-0047（D5）：可选内联 L1 形状声明（工具自检），路由第一优先于中心表 TOOL_SHAPES。零模型 reducer；未声明走中心表/ passthrough。 */
+  shapeResult?: ToolReducer;
 };

@@ -1332,8 +1332,17 @@ test('operations exceeding 200ms detach, keep running, and complete through task
     assert.equal(detached.body.data.continuation.nextCall.tool, 'task_poll');
     const early = await call(server, 'task_poll', { taskId }, identity);
     assert.equal(early.body.data.result.status, 'running');
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    const completed = await call(server, 'task_poll', { taskId }, identity);
+    // win32 CI 子进程启动慢：固定 350ms 等待可能仍 running → 改有界轮询
+    // （每 100ms 一次，上限 15s）；完成断言强度不变——最终必须 completed
+    const pollStarted = performance.now();
+    let completed;
+    for (;;) {
+      const poll = await call(server, 'task_poll', { taskId }, identity);
+      if (poll.body.data.result.status === 'completed') { completed = poll; break; }
+      assert.equal(poll.body.data.result.status, 'running');
+      assert.ok(performance.now() - pollStarted < 15_000, `task_poll 未在 15s 内完成（status=${poll.body.data.result.status}）`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     assert.equal(completed.body.data.result.status, 'completed');
     assert.equal(completed.body.data.result.operation.data.result.stdout, 'done');
     assert.equal(completed.body.data.continuation.reason, 'continuation_plan_exhausted');
@@ -1630,6 +1639,30 @@ test('TUI snapshots are referentially cached until a runtime revision changes', 
     runtime.log('snapshot revision changed');
     assert.notEqual(controller.snapshot(), first);
   } finally { fs.rmSync(dirs.workspaceDir, { recursive: true, force: true }); }
+});
+
+test('TUI renderRevision changes when L3 status transitions loading → ready (R14)', () => {
+  // fake runtime：duck-typed 最小实现（仅 renderRevision 所需成员；WorkspaceDiffTracker 只存 config）
+  let l3 = { status: 'loading', modelId: 'qwen3.5-2b' };
+  const fakeRuntime = {
+    config: {},
+    store: { revision: () => 'r1', snapshotForTui: () => ({}) },
+    runtimeLogRevision: () => 1,
+    runtimeHealth: () => ({ phase: 'active' }),
+    l3Health: () => l3,
+    logs: [],
+  };
+  const controller = new TuiController(fakeRuntime, async () => { throw new Error('not used'); });
+  const loadingRevision = controller.renderRevision();
+  l3 = { status: 'ready', modelId: 'qwen3.5-2b', warmLatencyMs: 42 };
+  assert.notEqual(controller.renderRevision(), loadingRevision, 'loading→ready 状态迁移反映到 renderRevision（活通道刷新可感知）');
+});
+
+test('L3 operation cache full-clear is wired on extension shutdown and server close (R15)', () => {
+  const extensions = fs.readFileSync(new URL('../src/extensions.ts', import.meta.url), 'utf8');
+  const server = fs.readFileSync(new URL('../src/server.ts', import.meta.url), 'utf8');
+  assert.match(extensions, /clearOperationCache\(\)/, 'shutdown 强制收尾全清（无参调用）');
+  assert.match(server, /clearOperationCache\(\)/, 'server.close 全清（无参调用）');
 });
 
 test('runtime logs rotate at bounded size and tail pages avoid loading the full file', () => {

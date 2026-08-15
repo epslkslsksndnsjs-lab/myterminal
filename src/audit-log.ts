@@ -47,11 +47,18 @@ export class AuditLog {
     const args = redacted.args;
     const result = redacted.result;
     const error = event.error ? redacted.error : undefined;
+    // ADR-0051 W1-09 (#82) / 0050 F1：D7 双版本审计。raw/shaped 由扩展层从整形器原样
+    // 带出（含 handler 内部字段，可能嵌敏感值），落盘前必须走同一红化通道——
+    // 裸字段会被 `...event` 展开后由这里覆盖，杜绝 token 之类泄入 JSONL。
+    const rawResult = event.rawResult !== undefined ? redacted.rawResult : undefined;
+    const shapedResult = event.shapedResult !== undefined ? redacted.shapedResult : undefined;
     const data = {
       ...event,
       error,
       args,
       result,
+      ...(rawResult !== undefined ? { rawResult } : {}),
+      ...(shapedResult !== undefined ? { shapedResult } : {}),
       // Compatibility fields keep older history readers and continuation projections useful.
       tool: event.action,
       ok: event.status === 'completed',
@@ -69,6 +76,8 @@ export class AuditLog {
       ...event,
       args,
       result,
+      ...(rawResult !== undefined ? { rawResult } : {}),
+      ...(shapedResult !== undefined ? { shapedResult } : {}),
       error: error && typeof error === 'object' ? error as ToolAuditEvent['error'] : undefined,
     };
   }

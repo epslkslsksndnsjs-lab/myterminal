@@ -1,4 +1,5 @@
 import type { JsonObject, MyTerminalMessage, MyTerminalSession, SessionHistoryEntry } from './types.js';
+import { stripAuditRawFields } from './tool-parse.js';
 
 /**
  * ADR-0032 batch5 knife#11 (#63): pure context-projection seam.
@@ -34,12 +35,13 @@ export const CONTEXT_PROJECTION_LIMIT = 16_000;
 /** Assembly step — verbatim semantics of the pre-knife `store.context()` body. */
 export function buildContextProjection(input: ContextProjectionInput): JsonObject {
   const { session, history, parent, predecessor, toPublic } = input;
-  const audits = history.filter((item) => item.type === 'tool_audit').slice(-10).map((item) => item.data);
+  // W1-09（0050 F1）：raw/shaped 双版本只进审计链，projectContext 是模型上下文 → 剥除（D17）
+  const audits = history.filter((item) => item.type === 'tool_audit').slice(-10).map((item) => stripAuditRawFields(item.data as JsonObject));
   const candidates = input.messages.filter((message) => message.from === session.id || message.to === session.id);
   const unread = candidates.filter((message) => message.to === session.id && !message.readAt).slice(-20);
   const messages = [...candidates.filter((message) => message.readAt || message.to !== session.id).slice(-(20 - unread.length)), ...unread];
-  const parentAudits = parent ? (input.parentHistory ?? []).filter((item) => item.type === 'tool_audit').slice(-10).map((item) => item.data) : [];
-  const predecessorAudits = predecessor ? (input.predecessorHistory ?? []).filter((item) => item.type === 'tool_audit').slice(-10).map((item) => item.data) : [];
+  const parentAudits = parent ? (input.parentHistory ?? []).filter((item) => item.type === 'tool_audit').slice(-10).map((item) => stripAuditRawFields(item.data as JsonObject)) : [];
+  const predecessorAudits = predecessor ? (input.predecessorHistory ?? []).filter((item) => item.type === 'tool_audit').slice(-10).map((item) => stripAuditRawFields(item.data as JsonObject)) : [];
   const predecessorMessages = predecessor ? input.messages.filter((message) => message.from === predecessor.id || message.to === predecessor.id).slice(-20) : [];
   return {
     session: toPublic(session), objective: session.task?.objective,

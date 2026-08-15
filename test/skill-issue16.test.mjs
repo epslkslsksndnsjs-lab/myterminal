@@ -12,7 +12,7 @@
 // 绿灯（修复后应全绿）：
 //   E   目录式布局仍正常（回归保护）
 
-import test from 'node:test';
+import { test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
