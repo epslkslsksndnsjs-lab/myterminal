@@ -537,8 +537,10 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         if (timeoutTimer) clearTimeout(timeoutTimer);
         // R4（#156）：spawn 失败回滚——error 迟到于 .then 时（已建文件/已登记）由这里补清理；
         // error 先到时 .then 的 spawnFailed 守卫再兜底（见下方两条链）。前台路径全 no-op。
+        // #159：已 settle（快照已发出、后台任务已登记）后的 abort 是正常收尸——落盘文件
+        // 必须留存供 read_file（D8 铁律），不得回滚删除；仅首终态（未 settle）失败才清理。
         closeOutputHandle();
-        if (outputPath) void unlink(outputPath).catch(() => {});
+        if (outputPath && !settled) void unlink(outputPath).catch(() => {});
         if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);
         // D8：后台命令建文件失败已杀进程，错误分支跳过（settled 已置）
         if (settled) return;
