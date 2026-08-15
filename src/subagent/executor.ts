@@ -12,7 +12,6 @@
 // ADR-0007 决策 29：token 校准——精确值校准 CostTracker
 // ADR-0007 决策 37：任何路径下 tool_use 必须有配对 tool_result
 
-import { join } from 'node:path';
 import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter, ChatParams, StreamChunk } from './llm-adapter.js';
 import { LlmError, collectStream, createAdapter, normalizeMessages, STREAM_IDLE_TIMEOUT_MS, withReliability } from './llm-adapter.js';
@@ -28,6 +27,8 @@ import { getToolNames, getAllToolSchemas } from './tools.js';
 import type { SubagentToolContext } from './tools.js';
 import { emitAgUi } from './tui-bridge.js';
 import { sessionResourceManager } from '../session-resource-manager.js';
+import { defaultContext } from './context.js';
+import { getAgentOutputDir } from './output-dir.js';
 import type { AgUiEvent } from './tui-bridge.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -307,12 +308,15 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   // ADR-0048 D8（第四轮修订）：后台输出落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>
   // （workspace 内状态目录先例 .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → glob/grep 忽略；
   // git 侧由输出层自忽略 .gitignore 兜住（R6/#157））
+  // D8 中（#152）：同步登记 outputDirs——agent 收尸（disposeAgent）按此删除目录
+  const outputDir = getAgentOutputDir(cwd, agentId);
+  defaultContext.outputDirs.set(agentId, outputDir);
   const ctx: SubagentToolContext = {
     cwd,
     signal,
     agentId,
     readOnly: options.readOnly ?? false,
-    outputDir: join(cwd, '.myterminal', 'subagent-outputs', agentId),
+    outputDir,
   };
 
   // token 追踪（ADR-0046 D1：纯 token 累加器，不再核算成本）
@@ -591,7 +595,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
   } finally {
     // 决策 8：清理顺序固定——统一收口到 SessionResourceManager（ADR-0032 #38）
-    // 注册顺序即现状 ①②③：agent-shell-tasks / file-state / replacement-decisions
+    // 注册顺序即现状 ①②③④：agent-shell-tasks / file-state / replacement-decisions / subagent-outputs（#152）
     sessionResourceManager.disposeAgent(agentId);
     messages.length = 0;               // ⑤ 释放 messages（决策 9）
     // ⑥ 终态事件与 store 更新在 finishXxx 里已做

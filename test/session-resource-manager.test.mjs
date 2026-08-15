@@ -2,7 +2,7 @@
 //
 // G4 约束：本测试锁定"现状清理集/顺序/行为"，重构后必须保持绿、快照 diff 为零。
 // 覆盖：
-//   A. 注册快照——生产单例的 agent 资源名/顺序固定（现状 finally 的 ①②③）
+//   A. 注册快照——生产单例的 agent 资源名/顺序固定（现状 finally 的 ①②③④）
 //   B. 泄漏回归——disposeAgent 真正清掉三类 agent 资源（shell / file-state / replacement）
 //   C. dispatch 契约——各作用域 disposer 按注册顺序各调用一次，入参透传
 
@@ -25,6 +25,7 @@ test('agent resource registration snapshot matches current finally set/order', (
     'agent-shell-tasks',
     'file-state',
     'replacement-decisions',
+    'subagent-outputs',
   ]);
 });
 

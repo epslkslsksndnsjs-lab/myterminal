@@ -21,6 +21,7 @@ import { trackShellTask, registerBackgroundTask } from './shell-tracker.js';
 import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
 import { truncateResult, truncateCappedResult, MAX_RESULT_SIZE_CHARS } from './result-budget.js';
 import { getSubagent, createSubagent } from './store.js';
+import { getAgentOutputDir } from './output-dir.js';
 import { redact } from '../redact.js';
 import { createGrep } from './grep-utils.js';
 import { IGNORE_DIRECTORIES, walkFiles } from '../utils/fs.js';
@@ -362,7 +363,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       let bytesWritten = 0;
       let capped = false;
       let pendingText = '';
-      const outputDir = ctx.outputDir ?? join(ctx.cwd, '.myterminal', 'subagent-outputs', ctx.agentId);
+      const outputDir = ctx.outputDir ?? getAgentOutputDir(ctx.cwd, ctx.agentId);
 
       // D8 第 4 条：写入侧盘帽——累计超限 → 截断提示 + 丢弃后续 chunk（pipe 模式不杀进程；
       // diskOutput.ts #capped 语义）。content.length（UTF-16）欠计 UTF-8 字节 ≤3×，

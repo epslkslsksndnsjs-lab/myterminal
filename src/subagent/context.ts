@@ -39,6 +39,9 @@ export interface SubagentContext {
   /** shell-tracker.ts — backgroundId→{agentId,child} 索引（D8 第四轮修订：转后台命令查/杀句柄） */
   readonly backgroundTasks: Map<string, { agentId: string; child: ChildProcess }>;
 
+  /** output-dir.ts — agentId→后台输出落盘目录登记（D8 #152：收尸删除按此路径） */
+  readonly outputDirs: Map<string, string>;
+
   /** tui-bridge.ts — AG-UI 事件总线（原模块级 subagentEvents EventEmitter） */
   readonly events: EventEmitter;
 
@@ -60,6 +63,7 @@ export function createSubagentContext(): SubagentContext {
     readFileStates: new Map(),
     agentShellTasks: new Map(),
     backgroundTasks: new Map(),
+    outputDirs: new Map(),
     events,
     runner: null,
   };
