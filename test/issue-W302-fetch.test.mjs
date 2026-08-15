@@ -308,15 +308,21 @@ test('AC5 错误路径：CLI 处理器返回 1 并输出失败原因', async () 
 
 // ── AC1：CLI 子命令注册（spawn node，遵循 cli-regression 手法）─────────────────
 
-test('AC1 CLI 帮助可见 l3-model fetch', () => {
-  // 与下方通过的 bogus 用例完全同形：process.execPath + 显式 MYTERMINAL_HOME（round3 实测
-  // 缺 MYTERMINAL_HOME 的形态 status=null 7ms 即失败，带 HOME 的形态 410ms 真实执行——唯一已知差异）
+test('AC1 CLI 帮助可见 l3-model fetch', async () => {
   const root = makeInstallRoot('w302-help-');
   try {
-    const help = spawnSync(process.execPath, [CLI, '--help'], {
-      encoding: 'utf8', timeout: 15_000, env: { ...process.env, MYTERMINAL_HOME: root },
-    });
-    // status=null 时透出 spawn 错误码/原因（ENOENT/E2BIG/…），下一轮 CI 日志直接定位，不再盲猜
+    // round4 实测真实错误：spawnSync bun.exe ETIMEDOUT（8.42ms OS 层即败，仅 --help 参数触发）。
+    // 两重兜底：1) `--` 分隔符防 bun CLI 拦截 --help（stop-parsing-flags 标准手法）；
+    //          2) ETIMEDOUT 视为瞬态重试 2 次（500ms 间隔，只包 spawn，断言不变）
+    let help;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      help = spawnSync(process.execPath, [CLI, '--', '--help'], {
+        encoding: 'utf8', timeout: 15_000, env: { ...process.env, MYTERMINAL_HOME: root },
+      });
+      if (!help.error || !String(help.error).includes('ETIMEDOUT') || attempt === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    // status=null 时透出 spawn 错误码/原因，下一轮 CI 日志直接定位，不再盲猜
     assert.strictEqual(help.status, 0, help.error ? String(help.error) : help.stderr);
     assert.match(help.stdout, /l3-model fetch/);
   } finally {
