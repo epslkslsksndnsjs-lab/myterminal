@@ -309,11 +309,19 @@ test('AC5 错误路径：CLI 处理器返回 1 并输出失败原因', async () 
 // ── AC1：CLI 子命令注册（spawn node，遵循 cli-regression 手法）─────────────────
 
 test('AC1 CLI 帮助可见 l3-model fetch', () => {
-  // win32 CI 上 spawnSync('node') 经 PATH 解析可能命中 .cmd shim（shell:false 无法执行）→ status null；
-  // 用 process.execPath（测试进程自身运行时）消除 PATH/PATHEXT 解析，三平台同一执行体
-  const help = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8', timeout: 15_000, env: { ...process.env } });
-  assert.strictEqual(help.status, 0, help.stderr);
-  assert.match(help.stdout, /l3-model fetch/);
+  // 与下方通过的 bogus 用例完全同形：process.execPath + 显式 MYTERMINAL_HOME（round3 实测
+  // 缺 MYTERMINAL_HOME 的形态 status=null 7ms 即失败，带 HOME 的形态 410ms 真实执行——唯一已知差异）
+  const root = makeInstallRoot('w302-help-');
+  try {
+    const help = spawnSync(process.execPath, [CLI, '--help'], {
+      encoding: 'utf8', timeout: 15_000, env: { ...process.env, MYTERMINAL_HOME: root },
+    });
+    // status=null 时透出 spawn 错误码/原因（ENOENT/E2BIG/…），下一轮 CI 日志直接定位，不再盲猜
+    assert.strictEqual(help.status, 0, help.error ? String(help.error) : help.stderr);
+    assert.match(help.stdout, /l3-model fetch/);
+  } finally {
+    rmTmp(root);
+  }
 });
 
 test('AC1 l3-model 未知子命令 → 报错退出 1（argv 派发已注册）', () => {
