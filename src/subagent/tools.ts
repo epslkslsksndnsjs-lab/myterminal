@@ -533,15 +533,17 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       // error/exit 监听器必须注册在显式分支 return 之前——
       // 否则显式后台模式无监听：spawn 失败即未捕获 'error' 事件崩溃，命令完成也不关句柄（fd 泄漏）
       child.on('error', (err: Error) => {
-        spawnFailed = true;
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        // R4（#156）：spawn 失败回滚——error 迟到于 .then 时（已建文件/已登记）由这里补清理；
-        // error 先到时 .then 的 spawnFailed 守卫再兜底（见下方两条链）。前台路径全 no-op。
-        // #159：已 settle（快照已发出、后台任务已登记）后的 abort 是正常收尸——落盘文件
-        // 必须留存供 read_file（D8 铁律），不得回滚删除；仅首终态（未 settle）失败才清理。
-        closeOutputHandle();
-        if (outputPath && !settled) void unlink(outputPath).catch(() => {});
-        if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);
+        // #160 修正（#156 回归）：Bun 在 post-spawn signal abort 也发 'error'（ABORT_ERR，
+        // pid 已生成）——仅当子从未成功 spawn（pid 未生成）才是 spawn 失败，此时才回滚
+        // （关句柄/unlink 已建文件/删索引条目）。已跑过的子被 abort 杀死时输出文件是
+        // 权威源，不得删除（#151 AC3 落盘行为不变）。
+        if (child.pid === undefined) {
+          spawnFailed = true;
+          closeOutputHandle();
+          if (outputPath) void unlink(outputPath).catch(() => {});
+          if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);
+        }
         // D8：后台命令建文件失败已杀进程，错误分支跳过（settled 已置）
         if (settled) return;
         settled = true;
@@ -598,9 +600,9 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             // 就绪后直写；转后台前已产输出（D8 第 11 条）亦在 pendingText），
             // 追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
             await appendOutput('');
-            // R4（#156）：spawn 已失败（error handler 已 settle）→ 不登记死进程、
-            // 不泄漏句柄、不留空 .output（error handler 已 resolve，这里只回滚副作用）
-            if (spawnFailed) {
+            // R4（#156）+ #160：spawn 已失败（error handler 已 settle）或子已在建文件窗口
+            // 内被 abort 杀死 → 不登记死进程、不泄漏句柄、不留空 .output
+            if (spawnFailed || child.killed) {
               closeOutputHandle();
               await unlink(file).catch(() => {});
               return;

@@ -135,7 +135,9 @@ describe('issue-150 subject maxLength 120 运行时强制', () => {
     assert.equal(sawErrorResult, true, '子应看到 is_error 拦截结果');
     const record = getSubagent(agentId);
     const tasks = record?.tasks ?? [];
-    assert.equal(tasks.length, 1, '仅存主任务种子，超长 subject 的 task 不得落入 store');
+    // #160 裁定：#145 后无主任务种子（tasks 仅 task_create 真实任务，ADR L148/L177），
+    // 超长 subject 被 handler 拦截未落 store → 链后 store 无任何 task
+    assert.equal(tasks.length, 0, '超长 subject 被拒后 store 不得有 task（无主任务种子）');
     assert.ok(!tasks.some((t) => t.subject.length > 120), 'store 中不得有超长 subject 的 task');
   });
 });
