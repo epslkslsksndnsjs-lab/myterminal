@@ -354,7 +354,8 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       // ADR-0048 D8（第四轮修订）：转后台输出落盘——backgroundId 命名文件
       // 落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>（workspace 内状态目录先例
       // .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → 子 glob/grep 自动忽略；
-      // .gitignore 不跟踪）。子 read_file 在 cwd 内可达（D8 第 2 条）。
+      // git 侧由输出层自忽略 .gitignore（`*`，R6/#157）兜住 → 用户 git status 零噪声）。
+      // 子 read_file 在 cwd 内可达（D8 第 2 条）。
       let backgroundId: string | undefined;
       let outputPath: string | undefined;
       let fileHandle: FileHandle | null = null;
@@ -393,6 +394,11 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       async function createOutputFile(id: string): Promise<string> {
         const file = join(outputDir, `${id}.output`);
         await mkdir(outputDir, { recursive: true });
+        // R6（#157）：输出层自忽略 .gitignore（`*` 含自身）→ 用户仓库 git status 零噪声；
+        // 不触碰用户仓库根 .gitignore。flag wx 幂等（EEXIST=已存在不覆盖用户编辑）；
+        // 任何失败非致命——权限不足等不阻断命令执行。
+        await writeFile(join(dirname(outputDir), '.gitignore'), '# MyTerminal background output — self-ignored\n*\n', { flag: 'wx' })
+          .catch(() => { /* 忽略 */ });
         const flags = process.platform === 'win32'
           ? 'wx'
           : fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;

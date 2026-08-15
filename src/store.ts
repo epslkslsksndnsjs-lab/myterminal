@@ -383,6 +383,25 @@ export class MyTerminalStore {
         .filter(({ record }) => record && TERMINAL_SUBAGENT_STATUSES.has(record.status) && !record.resultFetched);
       if (unreviewedSubagentResults.length) {
         const first = unreviewedSubagentResults[0].record!;
+        // A1（#157）：抛错前落审计痕迹——镜像下方 CHILD_REVIEW_REQUIRED 同机制
+        // （checkpoint + completion_blocked + save），拦截事件进审计链可查。
+        const unreviewedCheckpoint: SessionCheckpoint = {
+          at: now,
+          phase: 'working',
+          summary: `Completion blocked: ${unreviewedSubagentResults.length} child subagent result(s) unretrieved. Fetch each child's final result with subagent_status and review it before retrying root completion.`,
+          nextSteps: ['Retrieve each unretrieved child result with subagent_status.', 'Review the returned result, then retry root completion.'],
+          blockers: [], artifacts: [], tags: ['child-result-unreviewed'],
+        };
+        session.phase = 'working';
+        session.latestCheckpoint = unreviewedCheckpoint;
+        delete session.continuationPlan;
+        session.updatedAt = now;
+        delete session.checkpointStartedAt;
+        delete session.checkpointReminderEmittedAt;
+        this.appendHistory(session.id, 'checkpoint', unreviewedCheckpoint as unknown as JsonObject);
+        this.appendHistory(session.id, 'completion_blocked', { at: now, children: unreviewedSubagentResults.map(({ record }) => ({ sessionId: record!.sessionId, requiresReview: true })) });
+        if (session.controller) session.controller.lastActivityAt = now;
+        this.save();
         throw new MyTerminalError('CHILD_RESULT_UNREVIEWED', '先查子结果再收工', {
           taskId: first.id,
           childSessionId: first.sessionId,

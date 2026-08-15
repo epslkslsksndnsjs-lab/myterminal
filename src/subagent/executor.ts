@@ -305,7 +305,8 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
   // 工具上下文（决策 23）
   // ADR-0048 D8（第四轮修订）：后台输出落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>
-  // （workspace 内状态目录先例 .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → glob/grep 忽略）
+  // （workspace 内状态目录先例 .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → glob/grep 忽略；
+  // git 侧由输出层自忽略 .gitignore 兜住（R6/#157））
   const ctx: SubagentToolContext = {
     cwd,
     signal,
