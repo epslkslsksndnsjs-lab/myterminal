@@ -5,9 +5,9 @@
 //   AC2  超时转后台：到点不杀、转后台、返回 outputPath 引导语（已产输出不丢）
 //   AC3  子经 read_file 读输出文件（含 offset/limit 分页）
 //   AC4  会话终结收尸整个进程组（三级收尸链：进程组→单杀→2s SIGKILL 升级）
-//   AC5  sleep 类无意义命令不转后台（shouldAutoBackground 判据抄 Claude：base command ∈ ['sleep']）
+//   AC5  sleep 类无意义命令不转后台（shouldAutoBackground 判据：base command ∈ ['sleep']）
 //   AC6  无 cli_output 新增（8 工具不变）；schema 有 run_in_background + timeoutSec 上限 600
-//   AC7  落盘大小上限 + 截断提示（盘帽口径抄 Claude 5GB，数值本项目定；pipe 模式丢弃超限 chunk）
+//   AC7  落盘大小上限 + 截断提示（盘帽口径 5GB，数值本项目定；pipe 模式丢弃超限 chunk）
 //   AC8  前台语义不回归（echo → stdout/exitCode 原样，无 backgroundId）
 //
 // 测试方式：直调 getTool('execute_cli').call（subagent-m4 手法，从 ../dist 导入）。
@@ -218,7 +218,7 @@ test('AC1e 显式后台快命令：仍按后台语义返回，输出最终落盘
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   // echo 瞬时完成——exit 可能先于 data 排空、也可能先于建文件就绪（竞态路径）。
-  // 后台语义（Claude 同款）：stdout 快照为当时已产输出（快命令可为空），
+  // 后台语义：stdout 快照为当时已产输出（快命令可为空），
   // 完整性契约在落盘文件——read_file 随时可读。
   const result = await tool.call({ command: 'echo instant', run_in_background: true }, ctx);
   assert.ok(result.backgroundId, '快命令也应返回 backgroundId');
@@ -237,7 +237,7 @@ test('AC9a O1 防御：快命令 + 孙进程存活（sleep 60 &）——调用�
   // 审查 O1：孙进程持管道 fd 时 'end'/'close' 可能永不触发。修复 = drain 有界 2s 放行
   //（Promise.race 5s 兜底把无界挂起转成可断言的红）。
   // 注：Bun 实测建文件（~0.5ms）恒先于 shell 退出（~1-2ms），「exit 先于建文件」路径
-  // 黑盒不可达；快照空属 Claude 同款语义（resolve 先于数据）——完整性契约在落盘文件。
+  // 黑盒不可达；快照空属后台语义（resolve 先于数据）——完整性契约在落盘文件。
   const result = await Promise.race([
     tool.call({ command: 'sleep 60 & echo spawned', run_in_background: true }, ctx),
     new Promise((_, reject) => setTimeout(() => reject(new Error('drain 无界等待：调用挂起')), 5000)),
@@ -260,7 +260,7 @@ test('AC9b O2 契约守护：命令已完成后台调用恒返回后台语义', 
   // 审查 O2：进入后台模式后命令完成统一 deferred 走后台语义（backgroundId+outputPath），
   // 不按前台 exitCode 返回丢身份。注：Bun 微任务清空先于事件回调，「文件已建、.then
   // 未 resolve」窗口理论不可达（open 完成 → .then 微任务必然先于 exit 回调），此用例为
-  // 契约守护；快照完整性时序不保证（快命令 resolve 先于数据属 Claude 同款语义），不断言。
+  // 契约守护；快照完整性时序不保证（快命令 resolve 先于数据属后台语义），不断言。
   const result = await tool.call({ command: 'echo hello; sleep 2 &', run_in_background: true }, ctx);
   assert.ok(result.backgroundId, '后台语义：backgroundId');
   assert.strictEqual(result.exitCode, null, '后台语义：exitCode null');

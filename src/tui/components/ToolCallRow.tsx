@@ -1,5 +1,5 @@
 /**
- * ToolCallRow — Claude Code 风格工具调用行（ADR-0004 A.2）。
+ * ToolCallRow — 工具调用行组件（ADR-0004 A.2）。
  * 状态行常显 + args/result 默认折叠一行预览，Enter/点击展开。
  * expanded 由父级托管，组件不持有内部 state。
  */

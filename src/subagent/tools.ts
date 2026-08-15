@@ -44,16 +44,16 @@ const MAX_GREP_MATCHES = 200;
 
 // ── ADR-0048 D8（第四轮修订）：execute_cli 双模式 + 转后台落盘 ──
 
-// D8 第 1 条：超时上限 600s（Claude BashTool 同款：默认 120s 不变、上限 600s）
+// D8 第 1 条：超时上限 600s（默认 120s 不变、上限 600s）
 const EXECUTE_CLI_MAX_TIMEOUT_SEC = 600;
 // 审查 O1：转后台竞态 drain 的有界等待上限——孙进程持管道 fd 时 'end'/'close' 永不触发，
 // 超时强制放行避免工具调用永久挂起（快照尽力而为）
 const BACKGROUND_DRAIN_TIMEOUT_MS = 2000;
 
-// D8 第 4 条：落盘盘帽——抄 Claude 5GB 盘帽口径（diskOutput.ts MAX_TASK_OUTPUT_BYTES），
+// D8 第 4 条：落盘盘帽——5GB 上限（diskOutput.ts MAX_TASK_OUTPUT_BYTES），
 // 数值按本项目实际定 256MB：子 agent 后台输出再大也是异常态，256MB 已远超正常输出。
-// pipe 模式等价口径：写入侧累计超限 → 截断提示 + 丢弃后续 chunk（Claude DiskTaskOutput #capped，
-// 不杀进程——杀进程是 Claude 文件模式 watchdog 的职责，我们的写路径全在 JS 侧，无需轮询）。
+// pipe 模式等价口径：写入侧累计超限 → 截断提示 + 丢弃后续 chunk（#capped 语义：
+// 不杀进程——文件模式 watchdog 才杀进程，我们的写路径全在 JS 侧，无需轮询）。
 let backgroundOutputCapBytes = 256 * 1024 * 1024;
 export const BACKGROUND_OUTPUT_CAP_BYTES_DISPLAY = '256MB';
 
@@ -89,6 +89,11 @@ export function getSnapshotBufferForTest(): { stdoutChars: number; stderrChars: 
 // 首 token（base command）命中禁用列表 → 不自动转后台。误判两方向均不致命（D8 第 8 条）。
 // 显式 run_in_background=true 不受此判据约束（Claude 同款：explicit 恒 honored）。
 const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep']; // sleep 类应在前台跑（Claude 同款）
+======
+// D8 第 8 条：无意义命令判据——首 token（base command）命中禁用列表 → 不自动转后台。
+// 误判两方向均不致命（D8 第 8 条）。
+// 显式 run_in_background=true 不受此判据约束（explicit 恒 honored）。
+const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep']; // sleep 类应在前台跑
 function isAutobackgroundingAllowed(command: string): boolean {
   const baseCommand = command.trim().split(/\s+/)[0] ?? '';
   if (!baseCommand) return true;
@@ -364,8 +369,8 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       const outputDir = ctx.outputDir ?? join(ctx.cwd, '.myterminal', 'subagent-outputs', ctx.agentId);
 
       // D8 第 4 条：写入侧盘帽——累计超限 → 截断提示 + 丢弃后续 chunk（pipe 模式不杀进程；
-      // 抄 Claude diskOutput.ts #capped）。content.length（UTF-16）欠计 UTF-8 字节 ≤3×，
-      // 对磁盘防满防护足够（Claude 同款注释口径）。
+      // diskOutput.ts #capped 语义）。content.length（UTF-16）欠计 UTF-8 字节 ≤3×，
+      // 对磁盘防满防护足够。
       async function appendOutput(text: string | undefined): Promise<void> {
         if (capped) return;
         if (!fileHandle) {
@@ -389,7 +394,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       }
 
       // D8 第 4 条：创建输出文件——O_NOFOLLOW 防 symlink 攻击 + O_EXCL 防抢先占位
-      // （抄 Claude diskOutput.ts initTaskOutput）。O_NOFOLLOW 仅 Unix（Windows 无此攻击面）。
+      // （diskOutput.ts initTaskOutput 语义）。O_NOFOLLOW 仅 Unix（Windows 无此攻击面）。
       async function createOutputFile(id: string): Promise<string> {
         const file = join(outputDir, `${id}.output`);
         await mkdir(outputDir, { recursive: true });
@@ -468,7 +473,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         signal: ctx.signal,
         detached: true,          // 决策 28：新进程组，杀时用 process.kill(-pid)
         // ADR-0048 D8（第四轮修订）：移除 spawn timeout 选项改自持计时器——
-        // 到点不杀、只登记转后台（Claude ShellCommand #handleTimeout 同款）
+        // 到点不杀、只登记转后台（#handleTimeout 语义）
       });
 
       // 决策 28：追踪 shell 进程
@@ -592,6 +597,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       }
 
       // ADR-0048 D8：显式后台——run_in_background=true 秒回 backgroundId+outputPath，命令继续跑
+      // （explicit 恒 honored，不受自动转后台判据约束）
       // （Claude BashTool run_in_background 同款：explicit 恒 honored，不受 isAutobackgroundingAllowed 约束）
       if (explicitBackground) {
         backgroundize(child);

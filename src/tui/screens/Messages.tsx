@@ -1,6 +1,6 @@
 /**
  * Messages — 消息页（ADR-0004 决策 7）。
- * 对话卡片（Claude Code 风）+ 气泡对话流 ConversationDetail。
+ * 对话卡片 + 气泡对话流 ConversationDetail。
  * M4a 重做。
  */
 import { conversationGroups } from '../../tui-model.js';

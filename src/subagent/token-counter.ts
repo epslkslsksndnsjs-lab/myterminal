@@ -44,7 +44,7 @@ export function estimateMessageTokens(messages: NormalizedMessage[]): number {
           total += estimateTokens(block.content);
           break;
         case 'image':
-          total += 2000; // 图片固定估算（Claude Code 同款，决策 29）
+          total += 2000; // 图片固定估算 2000（决策 29）
           break;
       }
     }

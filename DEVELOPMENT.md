@@ -684,7 +684,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 `shared.tsx`：`Heading`/`Line`/`SessionStatus`。
 
 ##### 组件（components/）
-`InputBar`（Normal/Editing 双模式，priority 350）、`MessageBubble`、`ToolCallRow`（Claude Code 风，惰性 stringify）、`FormDialog`（声明式多步表单引擎，priority 400）、`Modal`、`HelpOverlay`（priority 300）、`Mascot`（9 字符宽 ASCII，5 种 mood，独立眨眼定时器）、`BlinkingDot`；`chrome/`：`TopBar`（`processTopology`）、`BottomNav`（9 pill）、`StatusLine`（`hints`）。
+`InputBar`（Normal/Editing 双模式，priority 350）、`MessageBubble`、`ToolCallRow`（惰性 stringify）、`FormDialog`（声明式多步表单引擎，priority 400）、`Modal`、`HelpOverlay`（priority 300）、`Mascot`（9 字符宽 ASCII，5 种 mood，独立眨眼定时器）、`BlinkingDot`；`chrome/`：`TopBar`（`processTopology`）、`BottomNav`（9 pill）、`StatusLine`（`hints`）。
 
 ##### 模型层（model/）
 全部纯函数：`command-router.ts`（`routeCommand`/`commandCompletions`/`COMMANDS`）、`diff-groups.ts`（`groupDiffLines`）、`history-entry.ts`（`viewForHistoryEntry` 11 种类型）、`mascot-mood.ts`（`mascotMoodFor`）、`relative-time.ts`（`relativeTime`）、`timeline-merge.ts`（`mergeActivity`/`memoizedMergeActivity` 单槽 memoize）。
