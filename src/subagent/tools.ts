@@ -85,11 +85,6 @@ export function getSnapshotBufferForTest(): { stdoutChars: number; stderrChars: 
   };
 }
 
-// D8 第 8 条：无意义命令判据——Claude BashTool isAutobackgroundingAllowed 原判据原样移植：
-// 首 token（base command）命中禁用列表 → 不自动转后台。误判两方向均不致命（D8 第 8 条）。
-// 显式 run_in_background=true 不受此判据约束（Claude 同款：explicit 恒 honored）。
-const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep']; // sleep 类应在前台跑（Claude 同款）
-======
 // D8 第 8 条：无意义命令判据——首 token（base command）命中禁用列表 → 不自动转后台。
 // 误判两方向均不致命（D8 第 8 条）。
 // 显式 run_in_background=true 不受此判据约束（explicit 恒 honored）。
