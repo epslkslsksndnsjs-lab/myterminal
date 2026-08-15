@@ -111,6 +111,25 @@ const results = [];
 const TEST_GLOB = 'test/*.test.mjs';
 const EXCLUDE_TESTS = ['test/cli-regression.test.mjs'];
 
+// 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，
+// 防止突变体残留污染工作树（事故：套件被误杀致 STO-1 残留在 audit-log.ts，污染后续测量数字）。
+let activeMutation = null; // { file, orig }
+function restoreActiveMutation() {
+  if (activeMutation) {
+    try {
+      writeFileSync(activeMutation.file, activeMutation.orig);
+      console.log(`\n[interrupt] restored ${activeMutation.file}`);
+    } catch { /* 还原尽力而为，绝不掩盖退出信号 */ }
+    activeMutation = null;
+  }
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    restoreActiveMutation();
+    process.exit(128 + (sig === 'SIGINT' ? 2 : 15));
+  });
+}
+
 for (let i = 0; i < mutations.length; i++) {
   const m = mutations[i];
   if (m.equivalent) {
@@ -128,6 +147,7 @@ for (let i = 0; i < mutations.length; i++) {
     continue;
   }
   writeFileSync(m.file, mutated);
+  activeMutation = { file: m.file, orig };
   try {
     execSync('bun run build 2>&1', { stdio: 'pipe' });
   } catch {
@@ -135,6 +155,7 @@ for (let i = 0; i < mutations.length; i++) {
     results.push({ name: m.name, status: 'KILLED (build error)' });
     console.log('KILLED (build)');
     writeFileSync(m.file, orig);
+    activeMutation = null;
     continue;
   }
   try {
@@ -160,6 +181,7 @@ for (let i = 0; i < mutations.length; i++) {
     console.log(`KILLED (${failMatch ? failMatch[1] + ' fail' : 'nonzero exit'})`);
   }
   writeFileSync(m.file, orig);
+  activeMutation = null;
 }
 
 // 恢复正确状态
