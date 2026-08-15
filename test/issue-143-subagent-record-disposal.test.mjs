@@ -78,14 +78,15 @@ test('143-s4: 无 sessionId 的 record（executor 自建路径）不参与反查
   assert.ok(getSubagent('sa-orphan'), '无 sessionId 无对应 session 可反查，留给 1h 兜底');
 });
 
-// ── S5：1h 定时器兜底语义不变（AC3）──
-test('143-s5: 1h 定时器兜底仍按 cleanupDelayMs 清理终态 record', async () => {
+// ── S5：1h 定时器兜底语义（AC3；#153 后已验收终态仍走兜底，未验收豁免）──
+test('143-s5: 1h 定时器兜底仍按 cleanupDelayMs 清理已验收终态 record', async () => {
   clearAllSubagents();
   const prev = getCleanupDelayMs();
   setCleanupDelayMs(30);
   try {
     makeTerminal('sa-timer');
-    assert.ok(getSubagent('sa-timer'), '终态后 record 仍保留（未到兜底时间）');
+    markResultFetched('sa-timer');
+    assert.ok(getSubagent('sa-timer'), '已验收终态 record 仍保留（未到兜底时间）');
 
     await Bun.sleep(90);
 

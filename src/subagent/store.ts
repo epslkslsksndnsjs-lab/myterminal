@@ -163,18 +163,6 @@ export function cleanupSubagentRecord(agentId: string, ctx: SubagentContext = de
   ctx.subagents.delete(bySession.id);
 }
 
-export function collectSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
-  const record = ctx.subagents.get(id);
-  if (!record) return undefined;
-  ctx.subagents.delete(id);
-  return record;
-}
-
-export function getSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
-  return ctx.subagents.get(id);
-}
-
-
 export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
