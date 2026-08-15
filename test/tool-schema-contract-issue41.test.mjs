@@ -299,10 +299,11 @@ test('[NEGATIVE-3] 派生器抛错信息带上出错路径，便于定位', asyn
 // [LOCK-6] 协议层 inputSchema 对 main 基线的全量守卫（二轮审查补锁）
 //
 // 背景：MCP_BASELINE（main 09f2246 全量快照）一直存有 inputSchema，但 LOCK-1~5
-// 从不断言它——正是这个盲区让 #2a（extension_call 放宽）一轮漏网、19 处漂移长期
+// 从不断言它——正是这个盲区让 #2a（extension_call 放宽）一轮漏网、漂移长期
 // 隐形。本锁逐工具 diff inputSchema，除下方【显式 allowlist】外任何差异立即红灯。
 //
-// allowlist 的 19 处均已逐项审阅并实证（scripts/probe-mcp-schema-drift.mjs）：
+// allowlist 条目均已逐项审阅并实证（scripts/probe-mcp-schema-drift.mjs），
+// 当前 42 处（= INPUT_SCHEMA_ALLOWLIST.size，新增条目须同步本注释）：
 //   A 类（11 处）default 仅进展示层——派生器用 .meta({default}) 而非 .default()，
 //     实测 parse({}) => {}，服务端行为零变化，仅客户端可见契约新增广告；
 //   B 类（8 处）约束收紧——与运行期单源一致，invokeTool 的 validateJsonSchema
@@ -311,13 +312,15 @@ test('[NEGATIVE-3] 派生器抛错信息带上出错路径，便于定位', asyn
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 形如 `${tool} :: ${path}` → { baseline, current, reason }
-// ADR-0048 T2 #133（D3 subagent_start 契约精简）重生成 mcp-tools-issue41.json 后
-// 基线已重定：此前 19 处漂移（A 类展示层 default 广告 ×11 + B 类约束收紧 ×8，见 git
-// history 本 Map 旧版本）全部并入新基线，旧条目随 stale 反向守卫自然失效——
-// 这正是 fixture 采集器尾注预告的「allowlist 同步清理」。此后任何协议层漂移
-// 一律零容忍（violations 直红），如需放行须重新显式登记本条清单。
-const INPUT_SCHEMA_ALLOWLIST = new Map([]);
-
+const INPUT_SCHEMA_ALLOWLIST = new Map([
+  // ── A48-W1 低危B-4（#149）：删 note/patch 死字段的 6 处协议层契约变更放行 ──
+  ['extension_register :: properties.spec.properties.handler.properties.defaults.properties.note.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删note死字段' }],
+  ['extension_register :: properties.spec.properties.handler.properties.defaults.properties.patch.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删patch死字段' }],
+  ['extension_call :: properties.input.properties.note.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删note死字段' }],
+  ['extension_call :: properties.input.properties.patch.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删patch死字段' }],
+  ['extension_call :: properties.arguments.properties.note.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删note死字段' }],
+  ['extension_call :: properties.arguments.properties.patch.type', { baseline: 'string', current: undefined, reason: 'A48-W1低危B-4:删patch死字段' }],
+]);
 function flattenSchema(node, path, out) {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) {
     out.set(path, node);

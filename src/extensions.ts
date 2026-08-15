@@ -63,7 +63,9 @@ function callArguments(input: JsonObject): JsonObject {
 
 function validateSpec(value: unknown, builtins: Map<string, ToolDefinition>): CustomExtensionSpec {
   const spec = objectValue(value, 'spec') as unknown as CustomExtensionSpec;
-  if (typeof spec.name !== 'string' || !EXTENSION_NAME.test(spec.name) || RESERVED_NAMES.has(spec.name)) throw new MyTerminalError('INVALID_INPUT', 'Extension name must match [a-z][a-z0-9_]{2,63} and cannot use a facade name.');
+  // A48-W1 低危B-3：builtin 名冲突守卫——自定义扩展名撞 builtin 工具名会在 discover 目录出现双条目
+  //（[...builtins, ...custom] 拼接无去重），此处注册即拒。
+  if (typeof spec.name !== 'string' || !EXTENSION_NAME.test(spec.name) || RESERVED_NAMES.has(spec.name) || builtins.has(spec.name)) throw new MyTerminalError('INVALID_INPUT', 'Extension name must match [a-z][a-z0-9_]{2,63} and cannot use a facade or builtin tool name.');
   if (typeof spec.title !== 'string' || !spec.title.trim() || spec.title.length > 100) throw new MyTerminalError('INVALID_INPUT', 'Extension title must contain 1-100 characters.');
   if (typeof spec.description !== 'string' || spec.description.length < 10 || spec.description.length > 800) throw new MyTerminalError('INVALID_INPUT', 'Extension description must contain 10-800 characters.');
   if (!spec.inputSchema || spec.inputSchema.type !== 'object' || spec.inputSchema.additionalProperties !== false) throw new MyTerminalError('INVALID_INPUT', 'inputSchema must be an object schema with additionalProperties=false.');

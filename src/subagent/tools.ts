@@ -1091,7 +1091,9 @@ const taskUpdateTool = buildTool({
     type: 'object',
     properties: {
       taskId: { type: 'string', description: 'Task ID from task_create' },
-      status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'blocked'] },
+      // A48-W1 低危B-2：enum 收窄为 in_progress/completed/blocked——'pending' 仅 task_create 初始态，
+      // validTransitions 无任何迁入 pending 的路径，输入里保留只会误导（永远 Invalid transition）。
+      status: { type: 'string', enum: ['in_progress', 'completed', 'blocked'] },
       blockedReason: { type: 'string', maxLength: 1000, description: 'Reason for blocking. Required when status=blocked (max 1000 chars).' },
     },
     required: ['taskId', 'status'],
@@ -1102,7 +1104,7 @@ const taskUpdateTool = buildTool({
 
   async call(input, ctx) {
     const taskId = input.taskId as string;
-    const newStatus = input.status as 'pending' | 'in_progress' | 'completed' | 'blocked';
+    const newStatus = input.status as 'in_progress' | 'completed' | 'blocked';
     const blockedReason = input.blockedReason as string | undefined;
 
     // D12（ADR-0048 #135）：blocked 必填 blockedReason（≤1000 字符）——写明哪个参数与任务不符

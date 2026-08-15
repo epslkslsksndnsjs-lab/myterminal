@@ -28,7 +28,8 @@ const optionalIdentitySchema = identitySchema.nullish();
  * extension_call/extension_register 入参的协议层 schema —— **main 09f2246 基线逐字还原**。
  *
  * 语义（#70 门禁探针实证，见 scripts/probe-41-baseline-vs-seams.mjs）：
- *   · 44 个**已声明**字段的类型校验在协议层生效（`limit:"abc"`、`mode:"wildcard"` 等即拒）；
+ *   · 42 个**已声明**字段的类型校验在协议层生效（`limit:"abc"`、`mode:"wildcard"` 等即拒；
+ *     A48-W1 低危B-4 删 note/patch 死字段，44→42）；
  *   · `.catchall(z.unknown())` 只放行**未声明**的额外键（面向任意 custom extension 的开放性）。
  * #41 曾把它退化为 `z.record`（全通），使 6 类类型错误从「协议层即拒」变「放行」——
  * 那是真实行为放宽，违反批5「纯重构行为不变」铁律，已还原。
@@ -42,7 +43,6 @@ export const extensionToolInput = z.object({
   workspaceId: z.string().optional(),
   mode: z.enum(['root', 'delegate']).optional(),
   phase: z.enum(['pending', 'working', 'waiting', 'blocked', 'completed', 'cancelled']).optional(),
-  note: z.string().optional(),
   sessionId: z.string().optional(),
   sessionToken: z.string().optional(),
   claimCode: z.string().optional(),
@@ -72,7 +72,6 @@ export const extensionToolInput = z.object({
   with: z.string().optional(),
   path: z.string().optional(),
   content: z.string().optional(),
-  patch: z.string().optional(),
   encoding: z.string().optional(),
   sha256: z.string().optional(),
   createParents: z.boolean().optional(),

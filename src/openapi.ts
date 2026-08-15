@@ -41,7 +41,7 @@ export function buildOpenApi(config: MyTerminalConfig) {
     nextCalls: { type: 'array', minItems: policy.enabled ? policy.minCalls : 1, maxItems: policy.enabled ? policy.maxCalls : 3, items: { $ref: '#/components/schemas/PlannedToolCall' }, description: `${policy.enabled ? 'Required' : 'Optional'} for phase=working in ${continuationMode} mode. Facade operation names are not valid planned tools.` },
     replanReason: { type: 'string', minLength: 1, maxLength: 1000 }, taskId: { type: 'string' }, sha256: { type: 'string' }, encoding: { type: 'string', enum: ['utf-8', 'base64'] },
     targetSessionId: { type: 'string' }, eventIds: stringArray, to: { type: 'string' }, body: { type: 'string' }, markRead: { type: 'boolean' }, limit: { type: 'integer' },
-    path: { type: 'string' }, query: { type: 'string' }, pattern: { type: 'string' }, include: { type: 'string' }, exclude: { type: 'string' }, maxResults: { type: 'integer' },
+    path: { type: 'string' }, query: { type: 'string' }, pattern: { type: 'string' },
     maxBytes: { type: 'integer' }, startLine: { type: 'integer' }, endLine: { type: 'integer' }, content: { type: 'string' }, expectedSha256: { type: 'string' }, createParents: { type: 'boolean' },
     replacements: { type: 'array', items: objectSchema({ oldText: { type: 'string' }, newText: { type: 'string' }, replaceAll: { type: 'boolean' } }, ['oldText', 'newText']) },
     command: { type: 'string' }, cwd: { type: 'string' }, timeoutSec: { type: 'integer' }, revision: { type: 'string' }, includeTest: { type: 'boolean' },

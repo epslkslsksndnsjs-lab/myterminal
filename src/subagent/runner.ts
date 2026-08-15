@@ -236,6 +236,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
 
       // 发送 abort 信号
       record.abortController.abort();
+      // A48-W1 低危B-1：'aborting' 是瞬时确认值（abort 已发出、终态未落），
+      // 不在 SubagentStatus 联合内（store.ts:13 的 running/completed/failed/aborted）——
+      // 持久状态由终结路径置 'aborted'（本窗测试 subagent-m8/status-color 锁定该值，勿改）。
       return { status: 'aborting' };
     },
 
