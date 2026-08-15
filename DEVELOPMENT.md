@@ -1147,3 +1147,21 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 1. **全项目 mutation-test.mjs 在隔离检出目录上跑有污染风险**：后台运行被 timeout 挪后台后继续变异 core-tools.ts（maxOutputChars→maxOutputCharsDisabled 11 处）、config.ts 且未还原 → 手动 git checkout 还原 + kill 进程。教训：跑变异脚本须前台限时 + 事后 `git status` 核对；本票变异验证改用针对性变异（临时备份→变异→单文件测试→还原）。
 2. 测试基建：`cleanTask` 五项全必填非空（background/deliverables/acceptanceCriteria/constraints 不能给空）；child checkpoint completed 会向 parent 发 event，s6 放行前须 `acknowledgeEvents`（否则落旧 CHILD_REVIEW_REQUIRED）。
 3. MCP InMemoryTransport 双端 connect 须 `Promise.all`（顺序 await 会挂起超时）。
+
+## 13. ADR-0048 #154 — backgroundize 抽取 + 反向依赖认领（2026-08-16）
+
+- 基线：wk-154 @ 266d371（adr-0048-parent-child-handoff = main）
+- 性质：低危两件——execute_cli 后台化单函数抽取（纯重构，行为零变化）+ src/store.ts 反向依赖认领记录
+- 调度：调度3 派单（myterminal-34）→ 本窗（pid 87973，myterminal-7c）接单；MCP 查库结论已贴 #154 评论（5304459895）
+
+### 一、backgroundize 单函数抽取
+
+| 文件 | 改动 |
+|---|---|
+| `src/subagent/tools.ts` | execute_cli call() 内新增局部函数 `backgroundize(child)`——显式后台分支（run_in_background=true）与超时自动转后台分支的 `createOutputFile(bgId).then(...).catch(failBackground)` 链逐字相同，合并为单函数两处共用。纯抽取：settled/backgrounded/childExited/outputPath/fileHandle/out 捕获关系不变，行为零变化，全量回归与抽取前一致为硬验收 |
+
+### 二、反向依赖认领：src/store.ts → src/subagent/store.ts
+
+- **现状**：`src/store.ts:13-14`（核心会话存储 MyTerminalStore）反向 import 子系统运行时内存态——`SubagentStatus`（type）+ `getSubagentBySessionId`（runtime）。核心 store 内用法仅一处：checkpoint 完成闸门（D5 #136）在 directChildren 上反查 SubagentRecord 的 status/resultFetched；`getSubagentBySessionId` 对 `ctx.subagents` Map 做 O(n) 线性扫描。
+- **为何可接受**：①闸门判据（终态+未验收）本质是运行时会话事实，落盘到 StoredState 会复制运行时真值并引入同步复杂度；②n = 进程内活跃 subagent 数，量级小，O(n) 扫描开销可忽略；③只读方向（store 不修改 subagent 态），无循环写依赖。
+- **演进方向**：若 SubagentRecord 持久化为第一类状态（schema v3+），将闸门数据源下沉——runner finalize 时把 resultFetched/终态写进 session 状态，store 自持判据，取消反向依赖；或经注册表/事件接口倒置，核心 store 不直达子系统。

@@ -566,9 +566,9 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         });
       });
 
-      // ADR-0048 D8：显式后台——run_in_background=true 秒回 backgroundId+outputPath，命令继续跑
-      // （Claude BashTool run_in_background 同款：explicit 恒 honored，不受 isAutobackgroundingAllowed 约束）
-      if (explicitBackground) {
+      // ADR-0048 #154：两后台分支共用单函数——createOutputFile.then 链逐字相同，抽 backgroundize
+      // （显式 run_in_background 与超时转后台：建文件→排空→flush→登记→后台语义 resolve）
+      function backgroundize(child: ChildProcess): void {
         // 局部 const 跨回调捕获（闭包变量跨函数边界不窄化——TS control-flow）
         const bgId = `bg_${randomUUID().slice(0, 8)}`;
         backgroundId = bgId;
@@ -578,7 +578,8 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             // 竞态：exit 先于 data 排空——等流结束再取快照（快命令输出不丢）
             if (childExited) await drainStreams(child);
             // 只 flush pendingText：每次 data 已逐条进 appendOutput（句柄就绪前暂存，
-            // 就绪后直写），追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
+            // 就绪后直写；转后台前已产输出（D8 第 11 条）亦在 pendingText），
+            // 追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
             await appendOutput('');
             registerBackground(bgId, child);
             if (childExited) closeOutputHandle();
@@ -588,6 +589,12 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             }
           })
           .catch(failBackground);
+      }
+
+      // ADR-0048 D8：显式后台——run_in_background=true 秒回 backgroundId+outputPath，命令继续跑
+      // （Claude BashTool run_in_background 同款：explicit 恒 honored，不受 isAutobackgroundingAllowed 约束）
+      if (explicitBackground) {
+        backgroundize(child);
         return;
       }
 
@@ -601,25 +608,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
           // #151：转后台时点收紧内存——前台阶段已积累的也截到快照帽（总量已在 outTotal 记账）
           out.stdout = out.stdout.slice(0, MAX_RESULT_SIZE_CHARS);
           out.stderr = out.stderr.slice(0, MAX_RESULT_SIZE_CHARS);
-          // 局部 const 跨回调捕获（闭包变量跨函数边界不窄化——TS control-flow）
-          const bgId = `bg_${randomUUID().slice(0, 8)}`;
-          backgroundId = bgId;
-          void createOutputFile(bgId)
-            .then(async (file) => {
-              outputPath = file;
-              // 竞态：exit 先于 data 排空——等流结束再取快照
-              if (childExited) await drainStreams(child);
-              // 只 flush pendingText：转后台前已产输出（D8 第 11 条）全在 pendingText，
-              // 追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
-              await appendOutput('');
-              registerBackground(bgId, child);
-              if (childExited) closeOutputHandle();
-              if (!settled) {
-                settled = true;
-                resolvePromise(backgroundResult(bgId, file));
-              }
-            })
-            .catch(failBackground);
+          backgroundize(child);
         } else {
           // sleep 类不转后台——超时杀（决策 32 语义保持：exitCode 非 null，非 is_error）
           child.kill('SIGTERM');
