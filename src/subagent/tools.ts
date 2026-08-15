@@ -19,7 +19,7 @@ import type { JsonObject, JsonSchema } from '../types.js';
 import { recordFileRead, validateEdit, applyEdit } from './file-state.js';
 import { trackShellTask, registerBackgroundTask } from './shell-tracker.js';
 import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
-import { truncateResult } from './result-budget.js';
+import { truncateResult, truncateCappedResult, MAX_RESULT_SIZE_CHARS } from './result-budget.js';
 import { getSubagent, createSubagent } from './store.js';
 import { redact } from '../redact.js';
 import { createGrep } from './grep-utils.js';
@@ -63,6 +63,26 @@ export function setBackgroundOutputCapForTest(bytes: number): void {
 }
 export function resetBackgroundOutputCapForTest(): void {
   backgroundOutputCapBytes = 256 * 1024 * 1024;
+}
+
+// #151 内存快照帽的测试观察钩子（先例：setBackgroundOutputCapForTest）——
+// 最近一次 execute_cli 调用的内存缓冲占用；仅供 GB 级模拟流内存有界断言，生产无用。
+type SnapshotBuffers = {
+  out: { stdout: string; stderr: string };
+  outTotal: { stdout: number; stderr: number };
+};
+let snapshotBuffersForTest: SnapshotBuffers | undefined;
+
+/** 仅供测试——读取最近一次 execute_cli 调用的内存快照缓冲占用（#151 内存有界断言）。 */
+export function getSnapshotBufferForTest(): { stdoutChars: number; stderrChars: number; stdoutTotalChars: number; stderrTotalChars: number } | undefined {
+  if (!snapshotBuffersForTest) return undefined;
+  const { out, outTotal } = snapshotBuffersForTest;
+  return {
+    stdoutChars: out.stdout.length,
+    stderrChars: out.stderr.length,
+    stdoutTotalChars: outTotal.stdout,
+    stderrTotalChars: outTotal.stderr,
+  };
 }
 
 // D8 第 8 条：无意义命令判据——Claude BashTool isAutobackgroundingAllowed 原判据原样移植：
@@ -391,20 +411,37 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         }
       }
 
-      // D8 第 11 条：转后台返回体——backgroundId + 已产输出（truncateResult 封顶）+ 引导语
-      function backgroundResult(id: string, file: string, outStr: string | undefined, errStr: string | undefined): JsonObject {
+      // D8 第 11 条：转后台返回体——backgroundId + 已产输出（truncateCappedResult 封顶）+ 引导语
+      // #151：快照从内存帽缓冲取（outTotal 全量记账），语义与 truncateResult(全量) 逐字节一致
+      function backgroundResult(id: string, file: string): JsonObject {
         return {
           backgroundId: id,
           outputPath: file,
           message: `Output is being written to: ${file}`,
-          stdout: truncateResult(outStr ?? ''),
-          stderr: truncateResult(errStr ?? ''),
+          stdout: truncateCappedResult(out.stdout, outTotal.stdout),
+          stderr: truncateCappedResult(out.stderr, outTotal.stderr),
           exitCode: null,
         };
       }
 
       // stdout/stderr 收进对象容器——TS 对回调捕获的 let 变量会扩大为 string|undefined（TS2345）
       const out = { stdout: '', stderr: '' };
+      // #151：内存侧快照帽——后台化后 out.* 只留快照截断量（truncateCappedResult 同源 50K），
+      // 全量字符数记计数器；快照后（settled）停止累积。落盘文件为权威源（盘帽 256MB 照旧）。
+      const outTotal = { stdout: 0, stderr: 0 };
+      // 测试观察钩子（先例：setBackgroundOutputCapForTest）——供 GB 级模拟流内存有界断言
+      snapshotBuffersForTest = { out, outTotal };
+      function appendSnapshot(kind: 'stdout' | 'stderr', text: string): void {
+        if (settled) return; // 快照已定——停止累积（后台生命周期不再无限增长）
+        outTotal[kind] += text.length;
+        if (explicitBackground || backgrounded) {
+          // 后台化后封顶到快照帽，超量丢弃（快照只取截断量；盘帽文件才是权威源）
+          if (out[kind].length >= MAX_RESULT_SIZE_CHARS) return;
+          out[kind] = (out[kind] + text).slice(0, MAX_RESULT_SIZE_CHARS);
+          return;
+        }
+        out[kind] += text; // 前台照旧全量（退出时同源截断）
+      }
       // 转后台失败兜底：建文件失败（磁盘/权限）→ 杀进程 + 报错（比后台失联更可诊断）
       function failBackground(err: unknown): void {
         if (!settled) {
@@ -412,8 +449,8 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
           resolvePromise({
             is_error: true,
             message: `Failed to start background task: ${(err as Error).message}`,
-            stdout: truncateResult(out.stdout ?? ''),
-            stderr: truncateResult(out.stderr ?? ''),
+            stdout: truncateCappedResult(out.stdout, outTotal.stdout),
+            stderr: truncateCappedResult(out.stderr, outTotal.stderr),
             exitCode: null,
           });
         }
@@ -439,12 +476,12 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
 
       child.stdout?.on('data', (d: Buffer) => {
         const text = d.toString();
-        out.stdout += text;
+        appendSnapshot('stdout', text);
         void appendOutput(text);
       });
       child.stderr?.on('data', (d: Buffer) => {
         const text = d.toString();
-        out.stderr += text;
+        appendSnapshot('stderr', text);
         void appendOutput(text);
       });
 
@@ -520,8 +557,9 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         const interpretation = interpretExitCode(command, code);
 
         resolvePromise({
-          stdout: truncateResult(out.stdout),
-          stderr: truncateResult(out.stderr),
+          // #151：前台退出路径同样走全量记账截断（out 未帽时与 truncateResult 等价）
+          stdout: truncateCappedResult(out.stdout, outTotal.stdout),
+          stderr: truncateCappedResult(out.stderr, outTotal.stderr),
           exitCode: code,
           is_error: interpretation.isError || false,
           ...(interpretation.message ? { message: interpretation.message } : {}),
@@ -546,7 +584,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             if (childExited) closeOutputHandle();
             if (!settled) {
               settled = true;
-              resolvePromise(backgroundResult(bgId, file, out.stdout, out.stderr));
+              resolvePromise(backgroundResult(bgId, file));
             }
           })
           .catch(failBackground);
@@ -560,6 +598,9 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         if (child.exitCode !== null || child.killed) return;
         if (isAutobackgroundingAllowed(command)) {
           backgrounded = true;
+          // #151：转后台时点收紧内存——前台阶段已积累的也截到快照帽（总量已在 outTotal 记账）
+          out.stdout = out.stdout.slice(0, MAX_RESULT_SIZE_CHARS);
+          out.stderr = out.stderr.slice(0, MAX_RESULT_SIZE_CHARS);
           // 局部 const 跨回调捕获（闭包变量跨函数边界不窄化——TS control-flow）
           const bgId = `bg_${randomUUID().slice(0, 8)}`;
           backgroundId = bgId;
@@ -575,7 +616,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
               if (childExited) closeOutputHandle();
               if (!settled) {
                 settled = true;
-                resolvePromise(backgroundResult(bgId, file, out.stdout, out.stderr));
+                resolvePromise(backgroundResult(bgId, file));
               }
             })
             .catch(failBackground);

@@ -5,7 +5,7 @@
 
 // ── 常量（决策 19）──
 
-const MAX_RESULT_SIZE_CHARS = 50_000;     // 单结果上限
+export const MAX_RESULT_SIZE_CHARS = 50_000; // 单结果上限（#151 内存快照帽复用同源——一个数字两处用）
 const PREVIEW_SIZE = 2_000;               // 截断后预览字符数
 const MAX_RESULTS_PER_MESSAGE = 200_000;  // 消息组预算
 const BUDGET_COMPRESS_THRESHOLD = PREVIEW_SIZE * 2; // 已经很小的结果不压缩（≤ 4000 字符）
@@ -52,6 +52,17 @@ export function truncateResult(content: string): string {
 
   const preview = content.slice(0, PREVIEW_SIZE);
   return `${preview}\n\n[Result truncated. Original size: ${content.length} chars. Use read_file with offset/limit to see more.]`;
+}
+
+/**
+ * #151：内存封顶后的快照截断——content 已帽到 MAX_RESULT_SIZE_CHARS（超量丢弃），
+ * totalChars 为全量字符数（诚实记账）。输出与 truncateResult(全量) 逐字节一致：
+ * ≤ 帽 → 原样；超帽 → 2000 预览 + Original size 通知。
+ */
+export function truncateCappedResult(content: string, totalChars: number): string {
+  if (totalChars <= MAX_RESULT_SIZE_CHARS) return content;
+  const preview = content.slice(0, PREVIEW_SIZE);
+  return `${preview}\n\n[Result truncated. Original size: ${totalChars} chars. Use read_file with offset/limit to see more.]`;
 }
 
 // ── 辅助：压缩为预览（Bug 1 修复共用逻辑）──
