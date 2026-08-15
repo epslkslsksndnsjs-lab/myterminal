@@ -21,7 +21,7 @@ export type ToolResult = {
 // ── 跨 turn 冻结 Map（ADR-0032 #34 收敛意图 + ADR-0035 #77 按 agentId 分桶止血）──
 // 模块级按 agentId 分桶：每个 agent 独立一份 replacementDecisions，
 // resetReplacementDecisions(agentId) 只清该 agent 的桶，互不串扰。
-// （SubagentContext.replacementDecisions 字段由 #85 决定是否复用，本刀不动它。）
+// （SubagentContext.replacementDecisions 字段已随 A48-W1 清理删除——本模块级分桶为唯一实现。）
 const agentReplacementDecisions = new Map<string, Map<string, 'full' | 'preview'>>();
 
 function bucketFor(agentId: string): Map<string, 'full' | 'preview'> {

@@ -187,11 +187,6 @@ export class WorkspaceDiffTracker {
     ].join(':');
   }
 
-  resetCapability(): void {
-    this.repositoryState = 'unknown';
-    this.repositoryCheckedAt = 0;
-  }
-
   async refresh(showLoading = true): Promise<void> {
     if (this.refreshing) return;
     this.refreshing = true;

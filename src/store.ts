@@ -324,6 +324,7 @@ export class MyTerminalStore {
     this.mcpBindings.delete(mcpSessionId);
   }
 
+  /** 测试专用断言（A48-W1 标注）：生产路径请用 resolveMcpBinding（含时空态刷新）。 */
   hasMcpBinding(mcpSessionId: string): boolean {
     return this.mcpBindings.has(mcpSessionId);
   }

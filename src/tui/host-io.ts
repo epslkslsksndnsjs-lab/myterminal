@@ -22,21 +22,10 @@ export async function copyToHostClipboard(text: string): Promise<boolean> {
   return false;
 }
 
-function bestEffortSpawn(command: string, args: string[]): void {
-  const child = spawn(command, args, { stdio: 'ignore', shell: false });
-  child.on('error', () => undefined);
-}
-
 export function playAttentionSound(): void {
-  // 暂时关闭提醒声音 —— 恢复时取消注释下方三行
-  // if (process.platform === 'darwin') bestEffortSpawn('afplay', ['/System/Library/Sounds/Ping.aiff']);
-  // else if (process.platform === 'win32') bestEffortSpawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[console]::beep(880,180)']);
-  // else bestEffortSpawn('canberra-gtk-play', ['--id=dialog-warning']);
+  // 提示音已禁用（A48-W1 清理：bestEffortSpawn 死代码删除，原平台命令见 git 历史）。
 }
 
 export function notifySystem(title: string, message: string): void {
-  // 暂时关闭系统通知 —— 恢复时取消注释下方三行
-  // if (process.platform === 'darwin') bestEffortSpawn('osascript', ['-e', `display notification "${message.replace(/["\\]/g, '')}" with title "${title.replace(/["\\]/g, '')}"`]);
-  // else if (process.platform === 'linux') bestEffortSpawn('notify-send', [title, message]);
-  // else if (process.platform === 'win32') bestEffortSpawn('msg.exe', ['*', `${title}: ${message}`]);
+  // 系统通知已禁用（同上，恢复实现见 git 历史）。
 }

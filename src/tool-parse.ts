@@ -940,6 +940,7 @@ type ResolvedShape =
   | { kind: 'passthrough' };
 
 function resolveShape(toolName: string, toolDef: ToolDefinition | undefined): ResolvedShape {
+  // legacy 内联钩子：src/ 零生产者（A48-W1 核实），行为由 T03-AC1b 锁测试固定
   if (toolDef?.shapeResult) return { kind: 'l1', reduce: toolDef.shapeResult };
   const shape = TOOL_SHAPES.get(toolName);
   // D-4 路由裁决（Q9）：条目同时含 reduce+schema 时 schema 优先（走 L3），reduce 挂
