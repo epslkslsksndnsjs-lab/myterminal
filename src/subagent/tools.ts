@@ -898,12 +898,13 @@ const taskCreateTool = buildTool({
 
 const taskUpdateTool = buildTool({
   name: 'task_update',
-  description: 'Update a task status. States: pending → in_progress → completed.',
+  description: 'Update a task status. States: pending → in_progress → completed; or blocked (with blockedReason) when you cannot proceed.',
   inputSchema: {
     type: 'object',
     properties: {
       taskId: { type: 'string', description: 'Task ID from task_create' },
-      status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
+      status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'blocked'] },
+      blockedReason: { type: 'string', maxLength: 1000, description: 'Reason for blocking. Required when status=blocked (max 1000 chars).' },
     },
     required: ['taskId', 'status'],
     additionalProperties: false,
@@ -913,7 +914,18 @@ const taskUpdateTool = buildTool({
 
   async call(input, ctx) {
     const taskId = input.taskId as string;
-    const newStatus = input.status as 'pending' | 'in_progress' | 'completed';
+    const newStatus = input.status as 'pending' | 'in_progress' | 'completed' | 'blocked';
+    const blockedReason = input.blockedReason as string | undefined;
+
+    // D12（ADR-0048 #135）：blocked 必填 blockedReason（≤1000 字符）——写明哪个参数与任务不符
+    if (newStatus === 'blocked') {
+      if (!blockedReason || !blockedReason.trim()) {
+        return { is_error: true, message: 'blockedReason is required when status is blocked. State which parameter mismatches the task.' };
+      }
+      if (blockedReason.length > 1000) {
+        return { is_error: true, message: `blockedReason exceeds 1000 characters (got ${blockedReason.length}).` };
+      }
+    }
 
     // ADR-0032 #47：store 单源——直接读写 record.tasks
     const record = getSubagent(ctx.agentId);
@@ -930,21 +942,26 @@ const taskUpdateTool = buildTool({
 
     const task = tasks[taskIndex];
 
-    // 状态机校验（教程 s27）
+    // 状态机校验（教程 s27 + D12：blocked 近终态——允许 pending/in_progress→blocked、blocked→completed，
+    // 禁止 blocked→in_progress 回转）
     const validTransitions: Record<string, string[]> = {
-      pending: ['in_progress'],
-      in_progress: ['completed'],
+      pending: ['in_progress', 'blocked'],
+      in_progress: ['completed', 'blocked'],
+      blocked: ['completed'],
       completed: [],  // 终态不可变
     };
 
     if (!validTransitions[task.status]?.includes(newStatus)) {
       return {
         is_error: true,
-        message: `Invalid transition: ${task.status} → ${newStatus}. Valid transitions: pending → in_progress → completed.`,
+        message: `Invalid transition: ${task.status} → ${newStatus}. Valid transitions: pending → in_progress | blocked; in_progress → completed | blocked; blocked → completed.`,
       };
     }
 
-    tasks[taskIndex] = { ...task, status: newStatus };
+    // blocked 时落 blockedReason（父轮询 tasks 字段可见）；非 blocked 传了 blockedReason 忽略
+    tasks[taskIndex] = newStatus === 'blocked'
+      ? { ...task, status: newStatus, blockedReason: blockedReason!.trim() }
+      : { ...task, status: newStatus };
 
     // 教程 s27：allDone 自动清空（单源：直接清空 record.tasks）
     if (tasks.every((t) => t.status === 'completed')) {

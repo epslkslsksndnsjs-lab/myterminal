@@ -16,7 +16,9 @@ export type SubagentTask = {
   id: string;
   subject: string;
   description: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  /** D12（ADR-0048 #135）：blocked 时必填的原因（≤1000 字符）——父轮询 tasks 字段可见 */
+  blockedReason?: string;
 };
 
 export interface ToolAuditLog {

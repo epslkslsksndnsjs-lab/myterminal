@@ -613,7 +613,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 - 三层 compact：`microCompact`（零成本，保留最近 5 个 tool_result，更早的替换为占位）→ `autoCompact`（调 LLM 摘要，`MAX_COMPACT_FAILURES=3` 熔断）→ `normalizeMessages`。
 - `AbortSignal.any([abortController.signal, timeoutSignal])`；`collectStream`（含 Circuit Breaker）→ 决策 24 content 退出检测 → `executeToolCalls` → 追加 tool_result。
 - `finally`：`sessionResourceManager.disposeAgent(agentId)`。三态完成函数 `finishCompleted`/`finishFailed`/`finishAborted`。
-- `getSubagentSystemPrompt`：硬编码 system prompt（8 工具集 + 会话/交付物/退出语义）。
+- `getSubagentSystemPrompt`：硬编码 system prompt（8 工具集 + 会话/交付物/退出语义 + D12 fail-fast 纪律：干不了立即置 blocked + 最终报告 ≤2000 tokens 报告帽 + 三处零成本加固）。
 
 ##### 工具层 — [tools.ts](./src/subagent/tools.ts) / [tool-executor.ts](./src/subagent/tool-executor.ts)
 
@@ -628,7 +628,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 | `glob` | true | true | `walkFiles`+globToRegex，MAX_GLOB_RESULTS=200 |
 | `grep` | true | true | `createGrep`，MAX_GREP_MATCHES=200 |
 | `task_create` | true | true | 进度跟踪任务 |
-| `task_update` | true | true | 状态机更新（pending→in_progress→completed） |
+| `task_update` | true | true | 状态机更新（pending/in_progress→blocked 允许、blocked→completed 允许、blocked→in_progress 禁止；blocked 必填 blockedReason≤1000） |
 
 - `buildTool(config)` 工厂；`toolRegistry: Map`；`getTool`/`getAllToolSchemas`/`getToolNames({readOnly})`。
 - `resolvePath`：cwd 限制 + ADR-0015 realpath 防 symlink 逃逸。
