@@ -898,7 +898,7 @@ myterminal l3-model fetch                 # 下载 L3 本地模型（sha256 钉�
 
 `MYTERMINAL_WORKSPACE_DIR`、`MYTERMINAL_HOST`、`MYTERMINAL_PORT`、`MYTERMINAL_PUBLIC_BASE_URL`、`MYTERMINAL_ACTIONS_TOKEN`、`MYTERMINAL_CONNECTOR_KEY`、`MYTERMINAL_MAX_OUTPUT_CHARS`、`MYTERMINAL_COMMAND_TIMEOUT_SEC`。非 headless 模式这些变量会被删除，避免误覆盖 TUI 设置。
 
-L3 与错误帽开关不受上述删除影响（非 headless 下保留）：`MYTERMINAL_L3_ENABLED`（未设置 → standalone 开 / cluster 参与者关）、`MYTERMINAL_L3_MODEL_PATH`（覆盖 L3 模型路径）、`MYTERMINAL_L3_WARMUP`（默认开，`false` 关闭预热）、`MYTERMINAL_ERROR_MESSAGE_MAX_CHARS` / `MYTERMINAL_ERROR_DETAILS_MAX_CHARS`（错误双帽，默认 2000/6000）。
+L3 与错误帽开关不受上述删除影响（非 headless 下保留）：`MYTERMINAL_L3_ENABLED`（未设置 → standalone 开 / cluster 参与者关）、`MYTERMINAL_L3_MODEL_PATH`（覆盖 L3 模型路径）、`MYTERMINAL_L3_WARMUP`（默认开，`false` 关闭预热；测试进程默认 `false`，见 §9.7 测试全局 L3 隔离）、`MYTERMINAL_ERROR_MESSAGE_MAX_CHARS` / `MYTERMINAL_ERROR_DETAILS_MAX_CHARS`（错误双帽，默认 2000/6000）。
 
 #### 9.6 连接端点
 
@@ -916,6 +916,8 @@ bun run test                # 构建后跑 test/*.test.mjs（超时 120s）
 ```
 
 测试覆盖：OpenAPI 3.1、Actions/Apps identity、controller 接管、checkpoint 时机、parent/child 完成、事件 ACK、订阅、持久历史、脱敏、迁移、删除、续执行、OpenTUI 滚动与拖选、subagent M1-M8、tool-parse 整形（L1/L2/L3 路由、D7 双版本审计、D12 错误双帽、D13 task_poll 递归、D16.3 聚合字段）、skill v1/v2、redaction、错误码、安全边角等。
+
+测试全局 L3 隔离（增补-13 #112）：`bunfig.toml` 的 `[test] preload` 加载 `test/setup.ts`，测试 worker 启动时注入 `MYTERMINAL_L3_WARMUP=false`（预热 smoke probe 全局默认关）与 `MYTERMINAL_L3_MODEL_PATH=<不存在路径>`（直接加载路径——runL3 只查 `l3Enabled()`、不查预热旋钮——的 `loadModel` 恒快速失败；warmup 的 modelFileMissing 早退同样拦截）。主仓库 `models/` 存在真实模型时全量测试仍零 gguf 加载（历史炸点：RSS 20GB+、卡死 23 分钟）。需要预热语义的测试（W208/W303/issue-111 等）在文件顶部显式 `delete process.env.MYTERMINAL_L3_WARMUP` 或 withEnv 覆盖该 env，恢复默认开分支，覆盖能力原样保留（共享 worker 下该 delete 会泄漏给同 worker 后续文件——无害：MODEL_PATH 钉死无人删除，预热开时仍 zero-load）。回归锁：`test/issue-112-test-warmup-isolation.test.mjs`。
 
 #### 9.8 CI（.github/workflows/ci.yaml）
 
