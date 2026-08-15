@@ -21,10 +21,7 @@ import {
   createSubagent,
   getSubagent,
   updateSubagentStatus,
-  collectSubagentResult,
-  getSubagentResult,
   addAuditLog,
-  updateUsage,
   updateSubagentCost,
   countRunning,
   getRecentAuditLogs,
@@ -192,7 +189,6 @@ test('subagent store full CRUD flow', () => {
   assert.equal(record.tasks[0].subject, 'Test task');
   assert.equal(record.tasks[0].status, 'pending');
   assert.equal(record.usage.inputTokens, 0);
-  assert.ok(record.createdAt > 0);
 
   // get
   const fetched = getSubagent('sub-1');
@@ -204,22 +200,9 @@ test('subagent store full CRUD flow', () => {
   assert.ok(updated);
   assert.equal(updated.status, 'completed');
   assert.equal(updated.result, 'All done!');
-  assert.ok(updated.completedAt > 0, 'completedAt should be set for terminal state');
 });
 
-// 用例 14：collectSubagentResult 返回并删除
-test('subagent store collectSubagentResult removes record', () => {
-  clearAllSubagents();
-  createSubagent('sub-2', { subject: 'Collectable' });
-  updateSubagentStatus('sub-2', 'completed', { result: 'Done' });
-
-  const collected = collectSubagentResult('sub-2');
-  assert.ok(collected);
-  assert.equal(collected.result, 'Done');
-
-  // 再次 get 应该 undefined
-  assert.equal(getSubagent('sub-2'), undefined);
-});
+// 用例 14（collectSubagentResult 返回并删除）已随 ADR-0048 #144 F3 移除——collect 即删语义已废（幂等保留，清理只靠 1 小时定时器）。
 
 // 用例 15：auditLogs 超过 50 条只保留最近 50
 test('subagent store auditLogs caps at 50', () => {
@@ -264,15 +247,10 @@ test('subagent store countRunning filters correctly', () => {
   assert.equal(countRunning(), 1);
 });
 
-// 用例 16b：updateUsage + updateSubagentCost
-test('subagent store updateUsage and updateSubagentCost work', () => {
+// 用例 16b：updateSubagentCost（updateUsage 已随 ADR-0048 #144 F1 移除）
+test('subagent store updateSubagentCost works', () => {
   clearAllSubagents();
   createSubagent('sub-cost', { subject: 'Cost test' });
-
-  updateUsage('sub-cost', { inputTokens: 1000, outputTokens: 200, cacheReadTokens: 0 });
-  const r = getSubagent('sub-cost');
-  assert.ok(r);
-  assert.equal(r.usage.inputTokens, 1000);
 
   // updateSubagentCost（通过 UsageSummary 更新）
   updateSubagentCost('sub-cost', { inputTokens: 5000, outputTokens: 1000, cacheReadTokens: 0 });
@@ -338,29 +316,25 @@ test('integration: full subagent lifecycle', () => {
   });
 
   // 4. update cost
-  updateUsage(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500 });
+  updateSubagentCost(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500 });
 
-  // 5. getSubagentResult (reads without removing)
-  const before = getSubagentResult(agentId);
+  // 5. getSubagent (reads without removing)
+  const before = getSubagent(agentId);
   assert.ok(before);
   assert.equal(before.usage.inputTokens, 5000);
 
   // 6. complete
   updateSubagentStatus(agentId, 'completed', { result: 'All tasks completed successfully' });
 
-  // 7. collect result
-  const collected = collectSubagentResult(agentId);
-  assert.ok(collected);
-  assert.equal(collected.status, 'completed');
-  assert.equal(collected.result, 'All tasks completed successfully');
-  assert.ok(collected.tasks.length >= 1, 'record 应至少含主目标任务（store 单源，任务经 tools 写入）');
-  assert.equal(collected.auditLogs.length, 2);
-  assert.ok(collected.usage.inputTokens > 0);
-  assert.ok(collected.completedAt > 0);
-  assert.ok(collected.createdAt > 0);
-
-  // 8. verify cleanup
-  assert.equal(getSubagent(agentId), undefined);
+  // 7. read result（幂等保留，不删记录——清理只靠 1 小时定时器，见用例 17）
+  const completed = getSubagent(agentId);
+  assert.ok(completed);
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.result, 'All tasks completed successfully');
+  assert.ok(completed.tasks.length >= 1, 'record 应至少含主目标任务（store 单源，任务经 tools 写入）');
+  assert.equal(completed.auditLogs.length, 2);
+  assert.ok(completed.usage.inputTokens > 0);
+  assert.equal(getSubagent(agentId), completed, '记录保留，可重复读取');
 });
 
 // 用例 19：updateSubagentStatus with error field

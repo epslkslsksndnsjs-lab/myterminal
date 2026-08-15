@@ -52,8 +52,6 @@ export interface SubagentRecord {
   auditLogs: ToolAuditLog[];
   /** ADR-0048 D8（第四轮修订）：转后台命令元数据——句柄在 shell-tracker backgroundTasks 索引，此处只存 backgroundId→pid 供审计/可见性 */
   backgroundTasks?: Array<{ backgroundId: string; pid: number }>;
-  createdAt: number;
-  completedAt?: number;
 }
 
 // ── 存储（ADR-0032 #34：状态移入 SubagentContext）──
@@ -90,7 +88,6 @@ export function createSubagent(
     abortController: new AbortController(),
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
     auditLogs: [],
-    createdAt: Date.now(),
   };
   ctx.subagents.set(id, record);
   return record;
@@ -122,10 +119,8 @@ export function updateSubagentStatus(
   if (extra?.result !== undefined) record.result = extra.result;
   if (extra?.error !== undefined) record.error = extra.error;
 
-  // 终态时写 completedAt 并启动清理定时器
+  // 终态时启动清理定时器
   if (status === 'completed' || status === 'failed' || status === 'aborted') {
-    record.completedAt = Date.now();
-
     // 1 小时兜底清理（决策 7），timer 必须 unref()
     setTimeout(() => {
       ctx.subagents.delete(id);
@@ -141,17 +136,6 @@ export function markResultFetched(id: string, ctx: SubagentContext = defaultCont
   const record = ctx.subagents.get(id);
   if (!record) return;
   record.resultFetched = true;
-}
-
-export function collectSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
-  const record = ctx.subagents.get(id);
-  if (!record) return undefined;
-  ctx.subagents.delete(id);
-  return record;
-}
-
-export function getSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
-  return ctx.subagents.get(id);
 }
 
 export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext = defaultContext): void {
@@ -173,12 +157,6 @@ export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext 
   if (record.auditLogs.length > 50) {
     record.auditLogs = record.auditLogs.slice(-50);
   }
-}
-
-export function updateUsage(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, ctx: SubagentContext = defaultContext): void {
-  const record = ctx.subagents.get(id);
-  if (!record) return;
-  record.usage = { ...usage };
 }
 
 export function countRunning(ctx: SubagentContext = defaultContext): number {
