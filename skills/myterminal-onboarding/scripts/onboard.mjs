@@ -2,18 +2,29 @@
 /**
  * onboard.mjs — installs MyTerminal and configures its subagent LLM.
  *
- * Design contract: docs/adr/0043-myterminal-onboarding-skill.md
+ * Design contract: docs/adr/0053-onboarding-skill-adr0045-migration-l3-install.md
+ * (this ADR supersedes ADR-0043; the previous design contract, ADR-0043, is retired).
  *
  * Two halves:
  *   1. Pure logic (exported, unit-tested in test/adr43-onboarding-skill.test.mjs)
- *      — provider validation, path resolution, shell detection, config merge,
- *        idempotent profile append, version comparison.
- *   2. Side effects (CLI only) — clone, build, write config.json, append profile.
+ *      — path resolution, config merge, keyless connectivity probe, L3 recommendation,
+ *        version comparison.
+ *   2. Side effects (CLI only) — clone, build, write config.json.
  *
- * Hard rules:
- *   - The API key is NEVER written into config.json. Environment variables only.
+ * Hard rules (ADR-0053):
+ *   - The subagent block is written as the app's three-required contract (ADR-0045):
+ *     model + baseUrl + apiKey, all in config.json. The key is provided via stdin
+ *     (--key -), the file is written at 0600 with a backup, and the value NEVER
+ *     appears in any output — dry-run drafts and echoes report `apiKeySet` only.
+ *   - No outbound call ever carries the API key: the connectivity probe is keyless
+ *     (never sends credentials; expects 401/403 from a real Anthropic-compatible endpoint).
+ *   - The `provider` concept is gone (ADR-0045). A leftover `provider` field makes the
+ *     app silently ignore the whole subagent block (src/config.ts:142-147) — the merge
+ *     deletes it so the written config actually takes effect.
+ *   - Optional subagent fields (maxTurns/timeoutSec/...) are NOT written here — the app
+ *     applies its own defaults (src/config.ts applySubagentDefaults). No second default
+ *     source, no drift.
  *   - Running with no flags is READ-ONLY. Nothing is written until you pass a write flag.
- *   - Only the 5 providers that `createAdapter` actually supports are offered. No pretending.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -26,65 +37,54 @@ import { doSelfTest } from './self-test.mjs'; // --self-test logic lives in its 
 // ─────────────────────────────────────────────────────────────────────────────
 // Facts mirrored from the main repo. If the repo changes, these must change too
 // (test/adr43-onboarding-skill.test.mjs locks them).
-//   src/subagent/llm-adapter.ts            — single Anthropic adapter (ADR-0045)
 //   src/config.ts:24-30                    — settingsPath fallback chain
-//   src/config.ts:101-108                  — subagent defaults
+//   src/config.ts:110-120                  — applySubagentDefaults (optional field defaults + clamps)
+//   src/config.ts:142-157                  — legacy `provider` block is silently ignored; model/baseUrl/apiKey required
+//   src/subagent/llm-adapter.ts:294-295    — baseUrl normalization (strip trailing / and /v1)
+//   src/subagent/llm-adapter.ts:364        — request URL is <baseUrl>/v1/messages
+//   src/l3/registry.ts:27,63               — DEFAULT_L3_MODEL_PATH + models dir under the install root
 // ─────────────────────────────────────────────────────────────────────────────
-
-export const SUPPORTED_PROVIDERS = [
-  {
-    provider: 'openai',
-    envVar: 'OPENAI_API_KEY',
-    defaultModel: 'gpt-4o',
-    consoleUrl: 'https://platform.openai.com/api-keys',
-    note: 'Default. Native OpenAI protocol.',
-  },
-  {
-    provider: 'anthropic',
-    envVar: 'ANTHROPIC_API_KEY',
-    defaultModel: 'claude-3-5-sonnet-20241022',
-    consoleUrl: 'https://console.anthropic.com/settings/keys',
-    note: 'Native Anthropic protocol.',
-  },
-  {
-    provider: 'deepseek',
-    envVar: 'DEEPSEEK_API_KEY',
-    defaultModel: 'deepseek-chat',
-    consoleUrl: 'https://platform.deepseek.com/api_keys',
-    note: 'Cheapest. OpenAI-compatible protocol.',
-  },
-  {
-    provider: 'glm',
-    envVar: 'GLM_API_KEY',
-    defaultModel: 'glm-4',
-    consoleUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
-    note: 'Zhipu AI. OpenAI-compatible protocol. `glm-4-flash` is the cheap tier.',
-  },
-  {
-    provider: 'qwen',
-    envVar: 'DASHSCOPE_API_KEY',
-    defaultModel: 'qwen-max',
-    consoleUrl: 'https://dashscope.console.aliyun.com/apiKey',
-    note: 'Alibaba DashScope. Optional DASHSCOPE_BASE_URL override. Up to 1M context.',
-  },
-];
-
-export const SUBAGENT_DEFAULTS = {
-  enabled: true,
-  maxTurns: 50,
-  timeoutSec: 300,
-  maxParallel: 2,
-};
 
 export const MIN_BUN_VERSION = '1.3.0';
 export const REPO_URL = 'https://github.com/epslkslsksndnsjs-lab/myterminal.git';
 export const DEFAULT_INSTALL_DIRNAME = 'myterminal';
 
-export const PROFILE_MARKER_BEGIN = '# >>> myterminal-onboarding >>>';
-export const PROFILE_MARKER_END = '# <<< myterminal-onboarding <<<';
+/**
+ * L3 local model file name. Mirrors src/l3/registry.ts:27 (DEFAULT_L3_MODEL_PATH);
+ * the app resolves it as <installRoot>/models/<this file> (registry.ts:63).
+ */
+export const L3_MODEL_FILENAME = 'Qwen3.5-2B-Q4_K_M.gguf';
 
-/** Keys that must never survive into config.json. */
-const SECRET_KEYS = ['apiKey', 'api_key', 'key', 'token', 'secret'];
+/**
+ * Fixed thresholds for the deterministic L3 recommendation (ADR-0053 D7).
+ * freeDisk < 2GB → skip (download peak ~1.2GB .part + headroom);
+ * totalMemory < 8GB → skip (1.2GB weights + 32K context + runtime overhead).
+ * Threshold changes happen ONLY here; test/adr43-onboarding-skill.test.mjs locks
+ * the boundary values by injection.
+ */
+export const L3_RECOMMEND_THRESHOLDS = {
+  minFreeDiskBytes: 2 * 1024 ** 3,
+  minTotalMemoryBytes: 8 * 1024 ** 3,
+};
+
+/**
+ * Optional subagent fields, defaults and clamps — mirrored from
+ * src/config.ts:110-120 applySubagentDefaults. The skill does NOT write these;
+ * it only reports them so the AI agent can tell the user what is configurable
+ * (ADR-0053 D2 — no second default source, no drift).
+ */
+export const SUBAGENT_OPTIONAL_FIELDS = [
+  { field: 'maxTurns', default: 50, min: 1, max: 200 },
+  { field: 'timeoutSec', default: 300, min: 30, max: 3600 },
+  { field: 'maxParallel', default: 2, min: 1, max: 4 },
+  { field: 'contextWindow', default: 120_000, min: 1_000, max: 1_000_000 },
+  { field: 'maxOutput', default: 32_000, min: 1_000, max: 200_000 },
+  { field: 'compactThreshold', default: 80_000, min: 1_000, max: 500_000 },
+];
+
+/** Legacy key-like fields inside an existing subagent block. `apiKey` is the canonical
+ * field now (ADR-0045 D4) and is intentionally NOT in this list. */
+const LEGACY_SECRET_KEYS = ['api_key', 'key', 'token', 'secret'];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pure logic
@@ -94,28 +94,6 @@ const SECRET_KEYS = ['apiKey', 'api_key', 'key', 'token', 'secret'];
 function optionalEnv(value) {
   const candidate = typeof value === 'string' ? value.trim() : '';
   return candidate || undefined;
-}
-
-/**
- * Validate a provider name against the closed list the runtime actually supports.
- * Returns { ok: true, entry } or { ok: false, supported, message } — never throws.
- */
-export function validateProvider(name) {
-  const normalized = String(name ?? '').trim().toLowerCase();
-  const entry = SUPPORTED_PROVIDERS.find((p) => p.provider === normalized);
-  if (entry) return { ok: true, entry };
-
-  const supported = SUPPORTED_PROVIDERS.map((p) => p.provider);
-  return {
-    ok: false,
-    supported,
-    message:
-      `Provider "${name}" is not supported by this build of MyTerminal.\n` +
-      `Supported providers: ${supported.join(', ')}.\n` +
-      'Any other endpoint (including OpenAI-compatible ones such as OpenRouter, Ollama or ' +
-      'llama.cpp) requires a code change: add an adapter subclass and a new case in ' +
-      '`createAdapter` (src/subagent/llm-adapter.ts). It cannot be enabled by configuration alone.',
-  };
 }
 
 /** Same resolution order as `settingsPath` in src/config.ts. */
@@ -128,219 +106,122 @@ export function resolveConfigPath(env = process.env, homedir = os.homedir()) {
 }
 
 /**
- * Work out which shell profile holds the user's environment variables.
- * Native Windows is reported as manual — we never inject into the registry.
+ * Normalize a vendor Anthropic-compatible base URL exactly the way the app does
+ * (src/subagent/llm-adapter.ts:294-295): strip trailing slashes and a trailing /v1,
+ * since the app appends /v1/messages itself. `https://api.anthropic.com/v1/` → `https://api.anthropic.com`.
  */
-export function detectShellProfile({ platform = process.platform, env = process.env, homedir = os.homedir() } = {}) {
-  if (platform === 'win32') {
-    return {
-      kind: 'windows-native',
-      path: null,
-      manual: true,
-      wsl: false,
-      manualHint:
-        'Native Windows detected. Set the key manually, then restart your terminal:\n' +
-        '  setx <ENV_VAR> "<your-api-key>"\n' +
-        'Or: System Properties -> Advanced -> Environment Variables -> New (User variables).\n' +
-        'WSL is the smoother path if you have it: run this command inside WSL instead.',
-    };
-  }
-
-  const wsl = Boolean(optionalEnv(env.WSL_DISTRO_NAME) || optionalEnv(env.WSLENV));
-  const shell = String(env.SHELL ?? '');
-  const base = { manual: false, wsl, manualHint: null };
-
-  if (shell.includes('fish')) {
-    return { ...base, kind: 'fish', path: path.join(homedir, '.config', 'fish', 'config.fish') };
-  }
-  if (shell.includes('zsh')) {
-    return { ...base, kind: 'zsh', path: path.join(homedir, '.zshrc') };
-  }
-  if (shell.includes('bash')) {
-    // macOS login shells read .bash_profile; Linux interactive shells read .bashrc.
-    const file = platform === 'darwin' ? '.bash_profile' : '.bashrc';
-    return { ...base, kind: 'bash', path: path.join(homedir, file) };
-  }
-
-  // SHELL unset or unrecognised — fall back to the platform default.
-  if (platform === 'darwin') {
-    return { ...base, kind: 'zsh', path: path.join(homedir, '.zshrc') };
-  }
-  return { ...base, kind: 'bash', path: path.join(homedir, '.bashrc') };
+export function normalizeBaseUrl(baseUrl) {
+  const raw = String(baseUrl ?? '').trim().replace(/\/+$/, '');
+  return raw.endsWith('/v1') ? raw.slice(0, -3) : raw;
 }
 
-function escapeForDoubleQuotes(value) {
-  return String(value).replace(/([\\"$`])/g, '\\$1');
-}
-
-/** Render the exact line the user needs in their shell profile. */
-export function buildExportLine(provider, key, shellKind = 'bash') {
-  const check = validateProvider(provider);
-  if (!check.ok) throw new Error(check.message);
-
-  const name = check.entry.envVar;
-  const value = escapeForDoubleQuotes(key);
-  return shellKind === 'fish' ? `set -gx ${name} "${value}"` : `export ${name}="${value}"`;
-}
-
-/** Providers that accept an optional base URL override, and the env var that carries it. */
-// Only providers whose base URL is genuinely overridable via an env var. qwen reads
-// DASHSCOPE_BASE_URL (src/subagent/llm-adapter.ts:1140); glm/openai/deepseek hardcode their
-// base URL in the adapter and read no env, so emitting an export for them would be a no-op
-// (ADR-0043 D6: never pretend to configure what won't take effect).
-export const BASE_URL_ENV = {
-  qwen: 'DASHSCOPE_BASE_URL',
-};
-
-/**
- * Render the optional base-URL export line. Returns null when the provider does not support a
- * base URL or none was given (review gap P2-7). Only qwen (DASHSCOPE_BASE_URL) genuinely
- * honors it; glm/openai/deepseek hardcode their base URL in the adapter and ignore any env
- * override, so emitting one for them would be a dead line (ADR-0043 D6).
- */
-export function buildBaseUrlLine(provider, baseUrl, shellKind = 'bash') {
-  const check = validateProvider(provider);
-  if (!check.ok) return null;
-  const envVar = BASE_URL_ENV[check.entry.provider];
-  if (!envVar || !baseUrl) return null;
-  const value = escapeForDoubleQuotes(baseUrl);
-  return shellKind === 'fish' ? `set -gx ${envVar} "${value}"` : `export ${envVar}="${value}"`;
-}
-
-function stripSecrets(obj) {
-  const clean = { ...obj };
-  for (const secret of SECRET_KEYS) delete clean[secret];
-  return clean;
+function fmtBytes(n) {
+  if (n == null) return 'unknown';
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${n} B`;
 }
 
 /**
- * Known model-name prefixes per provider. Used to catch the silent failure where an
- * agent writes e.g. `qwen3.7-plus` under `provider: openai` — the config writes fine
- * but the subagent crashes at runtime (review gap P1-3). Heuristic, not a registry:
- * it only flags *clear* mismatches and *unknown* prefixes (advisory), never invents support.
+ * Deterministic L3 install recommendation from read-only machine facts (ADR-0053 D7).
+ * The recommendation is a computed fact, not the agent's judgment; the user decides.
+ * Always returns reasons. `freeDiskBytes`/`totalMemoryBytes` in bytes; pass the raw
+ * numbers (the boundary test injects 2GB/8GB edges).
  */
-export const MODEL_PREFIXES = {
-  openai: ['gpt-', 'o1', 'o3', 'o4', 'chatgpt-', 'ft:gpt-'],
-  anthropic: ['claude-'],
-  deepseek: ['deepseek-'],
-  glm: ['glm-', 'charglm-'],
-  qwen: ['qwen-'],
-};
+export function recommendL3({ freeDiskBytes, totalMemoryBytes } = {}) {
+  const reasons = [];
+  let verdict = 'install';
+  const disk = fmtBytes(freeDiskBytes);
+  const memory = fmtBytes(totalMemoryBytes);
 
-// Infix keywords that strongly imply a provider. Used (in addition to prefixes) to catch
-// mismatches the prefix check misses — e.g. "qwen3.7-plus" has no "qwen-" prefix but is clearly qwen.
-export const PROVIDER_MODEL_KEYWORDS = {
-  openai: ['gpt', 'o1', 'o3', 'o4', 'chatgpt'],
-  anthropic: ['claude'],
-  deepseek: ['deepseek'],
-  glm: ['glm'],
-  qwen: ['qwen'],
-};
-
-/**
- * Decide whether `model` is plausible for `provider`.
- * Returns { ok, reason, message, warning }.
- *   ok:false  → clear mismatch (belongs to another provider) — caller must throw.
- *   ok:true   → matches this provider, or empty (use default), or unknown model (advisory warning).
- * Never returns "supported" for an unknown provider — validateProvider handles that upstream.
- */
-export function validateModelForProvider(provider, model) {
-  const check = validateProvider(provider);
-  if (!check.ok) return { ok: false, reason: 'bad-provider', message: check.message };
-  const modelId = String(model ?? '').trim();
-  if (!modelId) return { ok: true, warning: null, message: 'empty model — will use provider default' };
-
-  const lower = modelId.toLowerCase();
-  const ownPrefixes = MODEL_PREFIXES[check.entry.provider] || [];
-  const ownKeywords = PROVIDER_MODEL_KEYWORDS[check.entry.provider] || [];
-  const matchesOwn =
-    ownPrefixes.some((p) => lower.startsWith(p.toLowerCase())) ||
-    ownKeywords.some((k) => lower.includes(k.toLowerCase()));
-  if (matchesOwn) return { ok: true, warning: null, message: 'model matches provider' };
-
-  for (const [other, keywords] of Object.entries(PROVIDER_MODEL_KEYWORDS)) {
-    if (other === check.entry.provider) continue;
-    const hit = keywords.find((k) => lower.includes(k.toLowerCase()));
-    if (hit) {
-      return {
-        ok: false,
-        reason: 'mismatch',
-        message:
-          `Model "${modelId}" looks like a ${other} model (keyword "${hit}"), but the chosen provider ` +
-          `is ${check.entry.provider}. This would write a config that fails at runtime. ` +
-          `Pass --provider ${other}, or pick a ${check.entry.provider} model (e.g. ${check.entry.defaultModel}).`,
-      };
-    }
+  if (freeDiskBytes == null) {
+    verdict = 'skip';
+    reasons.push('free disk could not be measured — no guarantee of room for the ~1.2 GB download');
+  } else if (freeDiskBytes < L3_RECOMMEND_THRESHOLDS.minFreeDiskBytes) {
+    verdict = 'skip';
+    reasons.push(`free disk is ${disk} (< 2 GB) — not enough room for the ~1.2 GB download plus headroom`);
   }
 
-  return {
-    ok: true,
-    warning: `Model "${modelId}" does not match a known ${check.entry.provider} model; proceeding — make sure it is valid for this provider.`,
-    message: 'unknown model (advisory)',
-  };
+  if (totalMemoryBytes == null) {
+    verdict = 'skip';
+    reasons.push('total memory could not be measured');
+  } else if (totalMemoryBytes < L3_RECOMMEND_THRESHOLDS.minTotalMemoryBytes) {
+    verdict = 'skip';
+    reasons.push(`total memory is ${memory} (< 8 GB) — the 1.2 GB local model would strain this machine`);
+  }
+
+  if (verdict === 'install') {
+    reasons.push(`disk ${disk} ≥ 2 GB and memory ${memory} ≥ 8 GB — the local model fits`);
+  }
+  return { verdict, reasons };
 }
 
 /**
- * Merge provider/model into an existing config object.
- * Preserves every other key the user already has; fills in repo defaults for
- * anything missing; refuses to carry an API key.
+ * Whether the L3 local model file is actually present in the checkout's models dir.
+ * Matches the app's resolution (src/l3/registry.ts:63: <installRoot>/models/<file>).
+ * The exact final path must exist as a regular file — a half-downloaded `.part` or a
+ * locked download does not count.
+ */
+export function detectL3ModelPresent(installDir) {
+  if (!installDir) return false;
+  const target = path.join(installDir, 'models', L3_MODEL_FILENAME);
+  try {
+    return fs.existsSync(target) && fs.statSync(target).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Merge baseUrl/model/apiKey into an existing config object (ADR-0053 D2).
+ * - Writes exactly the three required fields + anything the user already had +
+ *   fallbackModel (passthrough). Optional fields are NOT filled in — the app applies
+ *   its own defaults.
+ * - Deletes a legacy `provider` field: with it present, the app silently ignores the
+ *   whole subagent block (src/config.ts:142-147) — the written config would never work.
+ * - Strips legacy key aliases (api_key/key/token/secret); apiKey is canonical.
+ * - Throws when the merge cannot satisfy the three-required contract.
  */
 export function mergeSubagentConfig(existing, patch) {
-  const check = validateProvider(patch?.provider);
-  if (!check.ok) throw new Error(check.message);
-
-  const modelId = String(patch.model ?? check.entry.defaultModel);
-  const modelCheck = validateModelForProvider(check.entry.provider, modelId);
-  if (!modelCheck.ok) throw new Error(`Model/provider mismatch: ${modelCheck.message}`);
-
   const source = existing && typeof existing === 'object' ? existing : {};
   const cloned = structuredClone(source);
-  const currentSubagent = cloned.subagent && typeof cloned.subagent === 'object' ? cloned.subagent : {};
-  const preserved = stripSecrets(currentSubagent);
+  const current = cloned.subagent && typeof cloned.subagent === 'object' ? cloned.subagent : {};
+  const preserved = { ...current };
+
+  // Legacy `provider` field: the app silently ignores the whole block (config.ts:142-147).
+  delete preserved.provider;
+  for (const secret of LEGACY_SECRET_KEYS) delete preserved[secret];
+
+  const clean = (v) => (typeof v === 'string' ? v.trim() : '');
+  const model = clean(patch?.model) || clean(preserved.model) || undefined;
+  const baseUrl = clean(patch?.baseUrl) || clean(preserved.baseUrl) || undefined;
+  const apiKey = clean(patch?.apiKey) || clean(preserved.apiKey) || undefined;
+
+  const missing = [];
+  if (!model) missing.push('model');
+  if (!baseUrl) missing.push('baseUrl');
+  if (!apiKey) missing.push('apiKey');
+  if (missing.length) {
+    throw new Error(
+      `Cannot write subagent settings: missing required ${missing.join(', ')}. ` +
+      'The app rejects a subagent block without all of model/baseUrl/apiKey ' +
+      '(src/config.ts validateSettings, ADR-0045 three-required contract). ' +
+      'Pass --base-url <url> --model <m> and, if the config does not have a key yet, --key -.',
+    );
+  }
 
   const subagent = {
     ...preserved,
-    enabled: preserved.enabled ?? SUBAGENT_DEFAULTS.enabled,
-    provider: check.entry.provider,
-    model: modelId,
-    maxTurns: preserved.maxTurns ?? SUBAGENT_DEFAULTS.maxTurns,
-    timeoutSec: preserved.timeoutSec ?? SUBAGENT_DEFAULTS.timeoutSec,
-    maxParallel: preserved.maxParallel ?? SUBAGENT_DEFAULTS.maxParallel,
+    model,
+    baseUrl,
+    apiKey,
   };
-  // fallbackModel (types.ts:194, ADR-0007 决策 21) — optional overload-degradation model.
-  // Pass-through verbatim; the repo does not validate it, so we mirror that to avoid false kills.
-  // Only set the key when it has a real value; empty string / undefined both mean "unset" and are
-  // omitted so the JSON stays clean (and existing LOCK-43-5 deepEqual on the base shape holds).
-  const fallbackModel = (patch.fallbackModel ?? preserved.fallbackModel) || undefined;
+  // fallbackModel (types.ts:222) — optional overload-degradation model, passed through
+  // verbatim. Empty string / undefined both mean "unset" and stay omitted.
+  const fallbackModel = (clean(patch?.fallbackModel) || clean(preserved.fallbackModel)) || undefined;
   if (fallbackModel) subagent.fallbackModel = fallbackModel;
 
   return { ...cloned, subagent };
-}
-
-/**
- * Append (or update in place) our marked block in a shell profile.
- * Running this twice with the same lines is a no-op — that is the whole point.
- */
-export function appendProfileBlock(content, lines) {
-  const body = Array.isArray(lines) ? lines : [lines];
-  const block = `${PROFILE_MARKER_BEGIN}\n${body.join('\n')}\n${PROFILE_MARKER_END}\n`;
-  const current = typeof content === 'string' ? content : '';
-
-  const startIdx = current.indexOf(PROFILE_MARKER_BEGIN);
-  const endMarkerIdx = startIdx === -1 ? -1 : current.indexOf(PROFILE_MARKER_END, startIdx);
-
-  if (startIdx !== -1 && endMarkerIdx !== -1) {
-    let endIdx = endMarkerIdx + PROFILE_MARKER_END.length;
-    if (current[endIdx] === '\n') endIdx += 1;
-
-    const existingBlock = current.slice(startIdx, endIdx);
-    if (existingBlock === block) return { content: current, changed: false };
-
-    return { content: current.slice(0, startIdx) + block + current.slice(endIdx), changed: true };
-  }
-
-  const base = current && !current.endsWith('\n') ? `${current}\n` : current;
-  return { content: base + block, changed: true };
 }
 
 /** Pull "1.3.2" out of whatever `bun --version` printed. Returns null if there is no version. */
@@ -351,7 +232,7 @@ export function parseBunVersion(stdout) {
 }
 
 /**
- * Fields that `validateSettings` (src/config.ts:113) requires. A config missing any of
+ * Fields that `validateSettings` (src/config.ts:122) requires. A config missing any of
  * them makes MyTerminal throw on startup.
  */
 export const REQUIRED_CONFIG_FIELDS = [
@@ -369,8 +250,7 @@ export const REQUIRED_CONFIG_FIELDS = [
  * The eight fields MyTerminal's first-run setup screen mints / asks for.
  * Mirrors REQUIRED_CONFIG_FIELDS (src/config.ts validateSettings). Surfaced verbatim
  * in FIRST_RUN_GUIDANCE so a first-time user knows what the blank screen expects and
- * what "done" looks like — the old flow just said "run bun run dev" and left them
- * staring at an empty prompt (review gap P0-2).
+ * what "done" looks like.
  */
 export const FIRST_RUN_FIELDS = [
   { field: 'workspaceDir', what: 'working directory MyTerminal stores projects & state in' },
@@ -397,7 +277,7 @@ const FIRST_RUN_GUIDANCE =
   'Do this:\n' +
   '  1. cd <your MyTerminal checkout>\n' +
   '  2. bun run dev            # complete the first-run setup screen once\n' +
-  '  3. re-run: node scripts/onboard.mjs --write-config --provider <p> [--model <m>]';
+  '  3. re-run: node scripts/onboard.mjs --write-config --base-url <url> --model <m> --key -';
 
 /**
  * Decide whether it is safe to write the subagent section into an existing config.
@@ -443,7 +323,7 @@ export function assessConfigWritability(config) {
  * Back up and remove a broken config so the first-run setup screen can re-mint one.
  * Pure decision + side effect gated by --repair (never runs by default). A healthy config
  * is left untouched. Destructive only on the specific broken states assessConfigWritability
- * already flags (review gap P2-6): unparsable / unsupported-schema / incomplete.
+ * already flags: unparsable / unsupported-schema / incomplete.
  */
 export function repairConfig(configPath, { dryRun = false } = {}) {
   if (!fs.existsSync(configPath)) {
@@ -472,6 +352,7 @@ export function repairConfig(configPath, { dryRun = false } = {}) {
     };
   }
   fs.copyFileSync(configPath, backup);
+  fs.chmodSync(backup, 0o600); // the repair backup may hold credentials too (R4)
   fs.unlinkSync(configPath);
   return {
     ok: true,
@@ -499,60 +380,79 @@ export function satisfiesMinVersion(version, minimum) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Provider key verification (P0-1)
+// Keyless connectivity probe (ADR-0053 D4)
 //
-// A real, minimal round-trip against the provider. Base URLs mirror
-// src/subagent/llm-adapter.ts:298/869/882/1140. A 1-token chat completion is the
-// strongest proof that the key is valid, reachable, and the model actually
-// responds — exactly what the old flow lacked (it only echoed $ENV_VAR, so a
-// revoked key sailed through to a runtime crash). `fetchImpl` is injectable so the
-// lock suite can assert request construction without touching the network.
+// Replaces the old `--verify` (which sent the user's API key to a provider to
+// "prove" it — a security red line). The probe sends NO credentials: a minimal
+// Anthropic-shape request to <baseUrl>/v1/messages (the exact URL the app uses,
+// llm-adapter.ts:364), expecting 401/403 — proof the endpoint is reachable and
+// speaks the protocol. It validates connectivity only, never key/model correctness,
+// and it is honest about that. `fetchImpl` is injectable for the lock suite.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const VERIFY_ENDPOINTS = {
-  openai: { baseUrl: 'https://api.openai.com/v1', kind: 'openai-compatible', defaultModel: 'gpt-4o' },
-  anthropic: { baseUrl: 'https://api.anthropic.com/v1', kind: 'anthropic', defaultModel: 'claude-3-5-sonnet-20241022' },
-  deepseek: { baseUrl: 'https://api.deepseek.com/v1', kind: 'openai-compatible', defaultModel: 'deepseek-chat' },
-  glm: { baseUrl: 'https://open.bigmodel.cn/api/paas/v4', kind: 'openai-compatible', defaultModel: 'glm-4' },
-  qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', kind: 'openai-compatible', defaultModel: 'qwen-max' },
-};
-
 /**
- * Prove a provider key works by making a real, minimal API call.
- * Returns { ok, status, message } — never throws. `fetchImpl` must match the
- * global fetch signature: (url, opts) => Promise<{ ok, status, text() }>.
+ * Keyless probe of an Anthropic-compatible endpoint.
+ * Returns { ok, reachable, status, kind, message } — never throws.
+ *   ok:true   → endpoint reachable (401/403 = auth required as expected, or 2xx = open endpoint)
+ *   ok:false  → network failure (status 0) or an unexpected HTTP answer
+ * The request carries NO Authorization / x-api-key header and never includes the API key.
  */
-export async function verifyProviderKey(provider, key, { model, baseUrl, fetchImpl = fetch } = {}) {
-  const check = validateProvider(provider);
-  if (!check.ok) return { ok: false, status: 0, message: check.message };
-  if (!key) return { ok: false, status: 0, message: `No API key supplied for ${check.entry.provider}. Set ${check.entry.envVar} or pass --key.` };
-
-  const endpoint = VERIFY_ENDPOINTS[check.entry.provider];
-  const resolvedBase = baseUrl || endpoint.baseUrl;
-  const modelId = model || endpoint.defaultModel;
-
-  let url;
-  let headers;
-  let bodyObj;
-  if (endpoint.kind === 'anthropic') {
-    url = `${resolvedBase}/messages`;
-    headers = { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' };
-    bodyObj = { model: modelId, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] };
-  } else {
-    url = `${resolvedBase}/chat/completions`;
-    headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json' };
-    bodyObj = { model: modelId, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 };
+export async function probeEndpoint(baseUrl, { fetchImpl = fetch, timeoutMs = 5000 } = {}) {
+  const normalized = normalizeBaseUrl(baseUrl);
+  if (!normalized) {
+    return { ok: false, reachable: false, status: 0, kind: 'no-base-url', message: 'No base URL given. Pass --base-url <url>.' };
   }
-
+  const url = `${normalized}/v1/messages`;
+  let res;
   try {
-    const res = await fetchImpl(url, { method: 'POST', headers, body: JSON.stringify(bodyObj) });
-    if (res.ok) return { ok: true, status: res.status, message: `${check.entry.provider} key valid; model ${modelId} responded.` };
-    let detail = '';
-    try { detail = (await res.text()).slice(0, 200); } catch { /* ignore */ }
-    return { ok: false, status: res.status, message: `${check.entry.provider} rejected the key (HTTP ${res.status}). ${detail}` };
+    res = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01' },
+      // No authorization header, no key, anywhere.
+      body: JSON.stringify({ model: '', max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
   } catch (err) {
-    return { ok: false, status: 0, message: `Network error reaching ${check.entry.provider}: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      ok: false,
+      reachable: false,
+      status: 0,
+      kind: 'network',
+      message: `Network error reaching ${url}: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
+
+  if (res.status === 401 || res.status === 403) {
+    return {
+      ok: true,
+      reachable: true,
+      status: res.status,
+      kind: 'auth-required',
+      message:
+        `Endpoint reachable and speaking the Anthropic protocol (HTTP ${res.status} — authentication required, exactly as expected for a keyless probe). ` +
+        'Connectivity only: this does NOT validate the API key or the model.',
+    };
+  }
+  if (res.status >= 200 && res.status < 300) {
+    return {
+      ok: true,
+      reachable: true,
+      status: res.status,
+      kind: 'open',
+      message:
+        `Endpoint reachable and accepted the request without authentication (HTTP ${res.status}) — typical for a local server. ` +
+        'Connectivity only: this does NOT validate the API key or the model.',
+    };
+  }
+  return {
+    ok: false,
+    reachable: true,
+    status: res.status,
+    kind: 'unexpected',
+    message:
+      `Endpoint reachable but answered HTTP ${res.status} to the keyless probe. ` +
+      "Check the base URL: it must be the vendor's Anthropic-compatible base (e.g. https://api.anthropic.com — no /v1, no /messages).",
+  };
 }
 
 /**
@@ -625,8 +525,8 @@ function isMyTerminalCheckout(dir) {
 
 /**
  * Standard places a MyTerminal checkout is likely to live. Purely heuristic — the goal is to
- * avoid wrongly concluding "not installed" and cloning a fresh copy next to an existing one
- * (review gap P1-4). Explicit --install-dir always wins.
+ * avoid wrongly concluding "not installed" and cloning a fresh copy next to an existing one.
+ * Explicit --install-dir always wins.
  */
 export const INSTALL_CANDIDATE_DIRS = [
   'myterminal',
@@ -650,9 +550,79 @@ export function lookupInstallDir(homedir, installDir) {
   return candidates.find((dir) => isMyTerminalCheckout(dir)) ?? null;
 }
 
-function detect({ env = process.env, installDir, homedir = os.homedir() } = {}) {
-  const platform = process.platform;
-  const profile = detectShellProfile({ platform, env, homedir });
+/**
+ * Nearest existing ancestor of `dir` (itself included). A statfs probe target
+ * must exist, otherwise ENOENT degrades the disk fact to null — and on a fresh
+ * machine neither the checkout nor `~/myterminal` exists yet, so the very first
+ * `--json` would report "could not be measured" for a fact that is perfectly
+ * measurable (the volume of $HOME). Falls back upward until a path exists; the
+ * filesystem root always terminates the loop.
+ */
+export function nearestExistingAncestor(dir) {
+  let cur = dir;
+  for (;;) {
+    try {
+      fs.accessSync(cur);
+      return cur;
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return cur; // filesystem root reached (e.g. "/" or "C:\")
+      cur = parent;
+    }
+  }
+}
+
+/**
+ * Free bytes on the volume containing `dir`, or null when unmeasurable.
+ * R2 (three-platform requirement): fs.statfsSync is POSIX-only — on Windows it
+ * throws ENOENT/ENOTSUP, which would silently degrade the disk fact to null and
+ * make l3.recommend skip on every Windows machine. Windows instead asks
+ * PowerShell for the PSDrive's free space (`platform` is injectable so the test
+ * lock can prove the branch is live on a POSIX runner too).
+ */
+function readFreeDiskBytes(dir, platform = process.platform) {
+  if (platform === 'win32') return readFreeDiskBytesWindows(dir);
+  try {
+    const stats = fs.statfsSync(dir);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return null;
+  }
+}
+
+/** Windows: PowerShell `Get-PSDrive -Name <letter>` free-space probe. */
+function readFreeDiskBytesWindows(dir) {
+  try {
+    // 'C:\foo' → 'C:\' (drive); '\\server\share\...' → UNC root without a local
+    // drive letter. PSDrive letters are the only reliably present volumes, so
+    // UNC / drive-less paths fall back to null instead of guessing.
+    const m = /^([A-Za-z]):\\/.exec(path.parse(dir).root);
+    if (!m) return null;
+    // PowerShell writes UTF-16LE to a pipe; decode that (with a utf8 fallback
+    // for environments that re-encode), strip BOM, then parse the long.
+    // The drive letter is interpolated into the -Command string — safe because
+    // it comes from the whitelist regex above (a single [A-Za-z] character, no
+    // quoting or metacharacters) and execFileSync never goes through a shell.
+    // (PowerShell 5.1's -Command does NOT inject $args — pwsh 7+ only — so an
+    // argv-passed letter would be appended as a bare token and fail to parse.)
+    const buf = execFileSync(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', `(Get-PSDrive -Name ${m[1]} | Select-Object -ExpandProperty Free)`],
+      { encoding: 'buffer', timeout: 10_000 },
+    );
+    for (const enc of ['utf16le', 'utf8']) {
+      const text = buf.toString(enc).replace(/^\uFEFF/, '').trim();
+      const bytes = Number(text);
+      if (Number.isFinite(bytes) && bytes >= 0) return bytes;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function detect({ env = process.env, installDir, homedir = os.homedir(), platform = process.platform } = {}) {
+  const activePlatform = platform;
 
   const bunProbe = tryExec('bun', ['--version']);
   const bunVersion = parseBunVersion(bunProbe.stdout);
@@ -661,12 +631,28 @@ function detect({ env = process.env, installDir, homedir = os.homedir() } = {}) 
 
   const configPath = resolveConfigPath(env, homedir);
   const config = readJsonIfExists(configPath);
+  const subagent = config && !config.__parseError && config.subagent && typeof config.subagent === 'object'
+    ? config.subagent
+    : null;
+
+  // Read-only machine facts (ADR-0053 D6/D7). The agent must declare "read-only
+  // scan, nothing modified or deleted" before triggering these.
+  // R1: probe the nearest existing ancestor — on a fresh machine the checkout
+  // (and ~/myterminal) doesn't exist yet, but the volume of $HOME is measurable.
+  const diskProbeDir = nearestExistingAncestor(foundDir ?? path.join(homedir, DEFAULT_INSTALL_DIRNAME));
+  // Honest degradation: a null freeDiskBytes means "not measurable on this
+  // platform" (never a fabricated number) — recommendL3's null semantics then
+  // conservatively skip with the reason spelled out in its `reasons` array.
+  const machine = {
+    platform: activePlatform,
+    freeDiskBytes: readFreeDiskBytes(diskProbeDir, activePlatform),
+    totalMemoryBytes: os.totalmem(),
+  };
 
   return {
-    platform,
+    platform: activePlatform,
     homedir,
-    wsl: profile.wsl,
-    shell: { kind: profile.kind, profilePath: profile.path, manual: profile.manual, manualHint: profile.manualHint },
+    machine,
     bun: {
       installed: Boolean(bunVersion),
       version: bunVersion,
@@ -685,15 +671,17 @@ function detect({ env = process.env, installDir, homedir = os.homedir() } = {}) 
       path: configPath,
       exists: fs.existsSync(configPath),
       parseError: config?.__parseError ?? null,
-      subagent: config && !config.__parseError ? (config.subagent ?? null) : null,
+      // Projection only — the key value is never read, logged or echoed (ADR-0053 D3/D6).
+      subagent: subagent
+        ? { baseUrl: subagent.baseUrl ?? null, model: subagent.model ?? null, apiKeySet: Boolean(subagent.apiKey) }
+        : null,
       // Whether it is safe to write the subagent section right now, and if not, why.
       writability: assessConfigWritability(config),
     },
-    // Booleans only. The values themselves are never read, logged or echoed.
-    apiKeysPresent: Object.fromEntries(
-      SUPPORTED_PROVIDERS.map((p) => [p.provider, Boolean(optionalEnv(env[p.envVar]))]),
-    ),
-    providers: SUPPORTED_PROVIDERS,
+    l3: {
+      recommend: recommendL3({ freeDiskBytes: machine.freeDiskBytes, totalMemoryBytes: machine.totalMemoryBytes }),
+      modelPresent: detectL3ModelPresent(foundDir),
+    },
   };
 }
 
@@ -702,9 +690,8 @@ function printReport(report) {
   const out = [];
   out.push('MyTerminal onboarding — environment report');
   out.push('');
-  out.push(`  OS               ${report.platform}${report.wsl ? ' (WSL)' : ''}`);
-  out.push(`  Shell            ${report.shell.kind}`);
-  out.push(`  Shell profile    ${report.shell.profilePath ?? '(manual — native Windows)'}`);
+  out.push(`  OS               ${report.platform}`);
+  out.push(`  Machine          free disk ${fmtBytes(report.machine.freeDiskBytes)}, total memory ${fmtBytes(report.machine.totalMemoryBytes)}`);
   out.push(`  bun              ${report.bun.installed ? report.bun.version : 'not found'}` +
     `${report.bun.installed && !report.bun.satisfiesMinimum ? `  (needs >= ${report.bun.minimum})` : ''}`);
   out.push(`  MyTerminal       ${report.myterminal.installed ? report.myterminal.installDir : 'not found'}`);
@@ -712,13 +699,10 @@ function printReport(report) {
   out.push(`  Config file      ${report.config.path} (exists: ${yn(report.config.exists)})`);
   if (report.config.parseError) out.push(`  Config parse     FAILED: ${report.config.parseError}`);
   if (report.config.subagent) {
-    out.push(`  Current subagent provider=${report.config.subagent.provider} model=${report.config.subagent.model}`);
+    out.push(`  Current subagent baseUrl=${report.config.subagent.baseUrl} model=${report.config.subagent.model} apiKeySet=${yn(report.config.subagent.apiKeySet)}`);
   }
-  out.push('');
-  out.push('  API keys present in this shell:');
-  for (const p of SUPPORTED_PROVIDERS) {
-    out.push(`    ${p.provider.padEnd(10)} ${p.envVar.padEnd(20)} ${yn(report.apiKeysPresent[p.provider])}`);
-  }
+  out.push(`  L3 local model   ${report.l3.modelPresent ? 'present' : 'not present'}`);
+  out.push(`  L3 recommend     ${report.l3.recommend.verdict}: ${report.l3.recommend.reasons.join('; ')}`);
   out.push('');
 
   const blockers = [];
@@ -734,10 +718,6 @@ function printReport(report) {
     for (const b of blockers) out.push(`    - ${b}`);
     out.push('');
   }
-  if (report.shell.manual) {
-    out.push(report.shell.manualHint.split('\n').map((l) => `  ${l}`).join('\n'));
-    out.push('');
-  }
   process.stdout.write(`${out.join('\n')}\n`);
 }
 
@@ -745,7 +725,7 @@ function printReport(report) {
  * Decide whether `bun run build` must run. Pure (reads the target dir only).
  * A present dist/cli.js is not enough — a half-broken build (cli.js there but
  * node_modules gone, or the artifact older than the manifest/src) would otherwise
- * let the app crash later. `--force` overrides everything (review gap P2-5).
+ * let the app crash later. `--force` overrides everything.
  */
 export function shouldRebuild(target, { force = false } = {}) {
   if (force) return true;
@@ -798,115 +778,77 @@ function doInstall(report, { installDir, dryRun, force } = {}) {
   return target;
 }
 
-function doWriteConfig(report, { provider, model, fallbackModel, dryRun }) {
-  const check = validateProvider(provider);
-  if (!check.ok) throw new Error(check.message);
+const OPTIONAL_FIELDS_NOTE =
+  '\nOptional subagent fields are NOT written by this script — the app applies its own defaults\n' +
+  '(src/config.ts applySubagentDefaults; out-of-range values are clamped). To override one,\n' +
+  'edit the subagent block in config.json directly:\n' +
+  SUBAGENT_OPTIONAL_FIELDS.map((f) =>
+    `  ${f.field.padEnd(16)} default ${String(f.default).padStart(7)}  range [${f.min}-${f.max}]`,
+  ).join('\n') + '\n';
 
-  const modelId = model ?? check.entry.defaultModel;
-  const modelCheck = validateModelForProvider(check.entry.provider, modelId);
-  if (!modelCheck.ok) throw new Error(`Model/provider mismatch: ${modelCheck.message}`);
+/** JSON draft with the apiKey value redacted — the key must never appear in any output (ADR-0053 D3). */
+function redactDraft(obj, indent) {
+  const clone = structuredClone(obj);
+  if (clone.subagent && typeof clone.subagent === 'object' && clone.subagent.apiKey) {
+    clone.subagent.apiKey = '<redacted>';
+  }
+  return JSON.stringify(clone, null, indent);
+}
 
+function doWriteConfig(report, { baseUrl, model, key, fallbackModel, dryRun }) {
   const configPath = report.config.path;
   const existing = report.config.exists ? readJsonIfExists(configPath) : null;
 
-  // Never fabricate a config. See LOCK-43-8 / ADR-0043 D9.
+  // Never fabricate a config. See assessConfigWritability / the missing-config guidance.
   const writability = assessConfigWritability(existing);
   if (!writability.ok) {
     throw new Error(`Cannot write ${configPath} (${writability.reason}).\n\n${writability.guidance}`);
   }
 
-  const merged = mergeSubagentConfig(existing, { provider: check.entry.provider, model: modelId, fallbackModel });
-  const serialized = `${JSON.stringify(merged, null, 2)}\n`;
+  const merged = mergeSubagentConfig(existing, { baseUrl, model, apiKey: key, fallbackModel });
 
   if (dryRun) {
-    process.stdout.write(`[dry-run] would write ${configPath}:\n${serialized}`);
-    if (modelCheck.warning) process.stdout.write(`Warning: ${modelCheck.warning}\n`);
+    process.stdout.write(`[dry-run] would write ${configPath}:\n${redactDraft(merged, 2)}\n`);
+    process.stdout.write(OPTIONAL_FIELDS_NOTE);
     return merged;
   }
 
   // Match the permissions the app itself uses (src/config.ts saveMyTerminalSettings).
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
   fs.copyFileSync(configPath, `${configPath}.myterminal-backup`);
-  fs.writeFileSync(configPath, serialized, { encoding: 'utf8', mode: 0o600 });
+  // The backup carries connectorKey/actionsToken — copyFileSync inherits the umask
+  // (typically 0644), so force it to the same 0600 as the main file (R4).
+  fs.chmodSync(`${configPath}.myterminal-backup`, 0o600);
+  fs.writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   fs.chmodSync(configPath, 0o600);
-  process.stdout.write(`Wrote ${configPath} (backup: ${configPath}.myterminal-backup)\n  subagent.provider     = ${merged.subagent.provider}\n  subagent.model        = ${merged.subagent.model}\n  subagent.fallbackModel = ${merged.subagent.fallbackModel ?? '(unset)'}\n`);
-  process.stdout.write('The API key is deliberately NOT stored here — it is read from the environment.\n');
-  if (modelCheck.warning) process.stdout.write(`Warning: ${modelCheck.warning}\n`);
+
+  // The key value is never echoed — booleans only (ADR-0053 D3).
+  process.stdout.write(`Wrote ${configPath} (backup: ${configPath}.myterminal-backup)\n`);
+  process.stdout.write(
+    `  subagent.baseUrl  = ${merged.subagent.baseUrl}\n` +
+    `  subagent.model    = ${merged.subagent.model}\n` +
+    `  subagent.apiKey   = ${merged.subagent.apiKey ? 'set (value never echoed)' : 'MISSING'}\n`,
+  );
+  process.stdout.write(OPTIONAL_FIELDS_NOTE);
   return merged;
 }
 
-export function doKey(report, { provider, key, baseUrl, writeProfile, dryRun }) {
-  const check = validateProvider(provider);
-  if (!check.ok) throw new Error(check.message);
-
-  const keyLine = buildExportLine(check.entry.provider, key, report.shell.kind);
-  const baseLine = buildBaseUrlLine(check.entry.provider, baseUrl, report.shell.kind);
-  const lines = [keyLine, baseLine].filter(Boolean);
-
-  if (baseUrl && !baseLine) {
-    process.stdout.write(`Note: a base URL is only honored for qwen; ignored for ${check.entry.provider}.\n`);
+async function doProbe(report, { baseUrl, fetchImpl, dryRun } = {}) {
+  const resolvedBase = baseUrl || report.config.subagent?.baseUrl;
+  if (!resolvedBase) {
+    throw new Error('No base URL. Pass --base-url <url>, or run after --write-config has recorded one.');
   }
-
-  if (report.shell.manual) {
+  const target = `${normalizeBaseUrl(resolvedBase)}/v1/messages`;
+  if (dryRun) {
     process.stdout.write(
-      `${report.shell.manualHint}\n\nFor ${check.entry.provider}, the variable is ${check.entry.envVar}:\n` +
-      `  setx ${check.entry.envVar} "<your-api-key>"\n`,
+      `[dry-run] would send a KEYLESS probe POST to ${target}\n` +
+      '  (no Authorization header, no API key; expect 401/403 from a real Anthropic-compatible endpoint).\n',
     );
-    return;
+    return { ok: null, reachable: null, status: 0, kind: 'dry-run', message: 'dry-run' };
   }
-
-  if (!writeProfile) {
-    process.stdout.write(`Add this${baseLine ? ' (and the base URL line)' : ''} to ${report.shell.profilePath}, then restart your terminal:\n\n  ${lines.join('\n  ')}\n\n`);
-    process.stdout.write(`Verify with: echo $${check.entry.envVar}\n`);
-    return;
-  }
-
-  const profilePath = report.shell.profilePath;
-  const current = fs.existsSync(profilePath) ? fs.readFileSync(profilePath, 'utf8') : '';
-  const result = appendProfileBlock(current, lines);
-
-  if (dryRun) {
-    process.stdout.write(`[dry-run] would ${result.changed ? 'update' : 'leave unchanged'} ${profilePath}\n`);
-    return;
-  }
-
-  if (!result.changed) {
-    process.stdout.write(`${profilePath} already up to date, nothing to do.\n`);
-  } else {
-    if (current) fs.copyFileSync(profilePath, `${profilePath}.myterminal-backup`);
-    fs.writeFileSync(profilePath, result.content, 'utf8');
-    process.stdout.write(`Updated ${profilePath}${current ? ' (backup: ' + profilePath + '.myterminal-backup)' : ''}\n`);
-  }
-  process.stdout.write(
-    `\nRestart your terminal (or run: source ${profilePath}), then verify:\n` +
-    `  echo $${check.entry.envVar}\n`,
-  );
-}
-
-async function doVerify(report, { provider, model, key, dryRun } = {}) {
-  const resolvedProvider = provider || report.config.subagent?.provider;
-  if (!resolvedProvider) {
-    throw new Error('No provider specified and no current subagent provider found. Pass --provider <p>.');
-  }
-  const check = validateProvider(resolvedProvider);
-  if (!check.ok) throw new Error(check.message);
-
-  const resolvedKey = key || optionalEnv(process.env[check.entry.envVar]);
-  const resolvedBase = check.entry.provider === 'qwen' ? optionalEnv(process.env.DASHSCOPE_BASE_URL) : undefined;
-
-  if (!resolvedKey) {
-    throw new Error(`No API key for ${check.entry.provider}. Set ${check.entry.envVar} in your environment, or pass --key.`);
-  }
-
-  if (dryRun) {
-    const target = resolvedBase || VERIFY_ENDPOINTS[check.entry.provider].baseUrl;
-    process.stdout.write(`[dry-run] would verify ${check.entry.provider} key (model ${model || check.entry.defaultModel}) against ${target}\n`);
-    return { ok: null, status: 0, message: 'dry-run' };
-  }
-
-  process.stdout.write(`Verifying ${check.entry.provider} key against the live API (model ${model || check.entry.defaultModel})...\n`);
-  const result = await verifyProviderKey(check.entry.provider, resolvedKey, { model, baseUrl: resolvedBase });
-  process.stdout.write(`${result.ok ? '✓ PASS' : '✗ FAIL'} ${result.message} (HTTP ${result.status})\n`);
+  process.stdout.write(`Probing ${target} (keyless — no API key is sent)...\n`);
+  const result = await probeEndpoint(resolvedBase, { fetchImpl });
+  process.stdout.write(`${result.ok ? '✓ REACHABLE' : '✗ UNREACHABLE'} ${result.message}\n`);
   return result;
 }
 
@@ -929,29 +871,27 @@ USAGE
   node scripts/onboard.mjs                    Detect and report. Read-only, writes nothing.
   node scripts/onboard.mjs --json             Same report as JSON (for AI agents to parse).
   node scripts/onboard.mjs --install          Clone + bun install + bun run build.
-  node scripts/onboard.mjs --write-config --provider <p> [--model <m>] [--fallback-model <f>]
-                                              Write subagent settings to config.json.
-  node scripts/onboard.mjs --key <API_KEY> --provider <p> [--write-profile]
-                                              Print (or append) the export line for the key.
-  node scripts/onboard.mjs --verify [--provider <p>] [--model <m>] [--key <k>]
-                                              Prove the key works: real 1-token API call to the provider.
-  node scripts/onboard.mjs --test-call        Alias for --verify.
+  node scripts/onboard.mjs --write-config --base-url <url> --model <m> [--fallback-model <f>] [--key -]
+                                              Write subagent settings (model/baseUrl/apiKey) to config.json.
+  node scripts/onboard.mjs --probe [--base-url <url>]
+                                              Keyless connectivity probe: POST <baseUrl>/v1/messages with NO
+                                              credentials; expect 401/403 (endpoint reachable + Anthropic shape).
   node scripts/onboard.mjs --healthcheck [--host <h>] [--port <p>]
                                               Confirm the running service answers GET /health
                                               (HTTP 200 + product:'myterminal'). Use after 'bun start'.
 
 OPTIONS
   --install-dir <path>   Where to clone MyTerminal. Default: ~/myterminal
-  --provider <name>      One of: ${SUPPORTED_PROVIDERS.map((p) => p.provider).join(', ')}
-  --model <name>         Model id. Defaults to the provider's recommended model.
-  --fallback-model <m>   Optional overload-degradation model (subagent.fallbackModel, types.ts:194).
-                        Same provider family recommended. Omit to leave it unset.
-  --key <value>          API key. Use "--key -" to read it from stdin instead
-                         (avoids leaving the key in your shell history).
-  --write-profile        Append the export line to your shell profile (idempotent, backed up).
-  --verify               Prove the key works: make a real 1-token API call to the provider.
-                         Reads the key from the provider env var (or --key). Network call; opt-in.
-  --test-call            Alias for --verify.
+  --base-url <url>       Anthropic-compatible base URL for --write-config / --probe. The app appends
+                         /v1/messages itself — give the vendor base (e.g. https://api.anthropic.com),
+                         no /v1, no /messages.
+  --model <name>         Model id (required for --write-config unless already set in the config).
+  --fallback-model <m>   Optional overload-degradation model (subagent.fallbackModel, types.ts:222).
+                         Omit to leave it unset.
+  --key -                API key from stdin (required for --write-config unless the config already
+                         has one). The key IS stored in config.json (app contract), written at 0600
+                         with a backup, and never echoed in any output.
+  --probe                Keyless connectivity check (see USAGE). Never sends the API key.
   --healthcheck          Probe the local service: GET http://<host>:<port>/health and expect
                          200 + product:'myterminal'. Defaults host=127.0.0.1 port=3210.
   --host <host>          Health-check host (with --healthcheck). Default 127.0.0.1.
@@ -961,18 +901,22 @@ OPTIONS
   --repair               Back up and remove a broken config.json so the first-run setup
                          screen can re-mint one (use when the file is corrupt or credentials
                          were lost). Safe: a healthy config is left untouched.
-  --base-url <url>       Optional base URL. Only honored for qwen (DASHSCOPE_BASE_URL);
-                         written as an extra export line alongside the key.
   --self-test            Self-diagnostic for a deployed copy: verify every expected export/flag is
                          present (no repo, no network). Run after install to catch a stale copy.
   --dry-run              Show what would change; write nothing.
   --help                 This text.
 
 NOTES
-  - Only ${SUPPORTED_PROVIDERS.length} providers are supported. Anything else needs a code change
-    in createAdapter (src/subagent/llm-adapter.ts). See docs/adr/0043.
-  - The API key is never written to config.json. Environment variables only.
+  - The subagent block is written as the app's three-required contract (ADR-0045):
+    model + baseUrl + apiKey. A legacy 'provider' field is deleted on write — the app silently
+    ignores the whole block when it is present (src/config.ts:142-147).
+  - Optional subagent fields (maxTurns/timeoutSec/maxParallel/contextWindow/maxOutput/
+    compactThreshold) are NOT written here — the app applies its own defaults.
+  - The API key is provided via '--key -' (stdin), written at 0600 with a backup, and never
+    echoed. No outbound call ever carries it — the probe is keyless.
+  - The shell-profile export mechanism was retired (ADR-0053 D5): no profile is ever edited.
   - bun >= ${MIN_BUN_VERSION} is a hard prerequisite for building MyTerminal.
+  - Design contract: docs/adr/0053-onboarding-skill-adr0045-migration-l3-install.md.
 `;
 
 function parseArgs(argv) {
@@ -984,7 +928,7 @@ function parseArgs(argv) {
       continue;
     }
     const name = token.slice(2);
-    const valueFlags = ['install-dir', 'provider', 'model', 'key', 'base-url', 'host', 'port', 'fallback-model'];
+    const valueFlags = ['install-dir', 'base-url', 'model', 'key', 'host', 'port', 'fallback-model'];
     if (valueFlags.includes(name)) {
       args[name] = argv[i + 1];
       i += 1;
@@ -1003,7 +947,6 @@ function readStdin() {
   }
 }
 
-
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
 
@@ -1014,6 +957,12 @@ async function main(argv = process.argv.slice(2)) {
 
   if (args['self-test']) {
     return doSelfTest();
+  }
+
+  if (args.key !== undefined && !args['write-config']) {
+    // --key without --write-config is a silent no-op path; warn instead of
+    // swallowing it (and the key may already sit in shell history).
+    process.stderr.write('Warning: --key has no effect without --write-config. Use "onboard.mjs --write-config --base-url <url> --model <m> --key -".\n');
   }
 
   const installDir = args['install-dir'] ? path.resolve(args['install-dir']) : undefined;
@@ -1041,17 +990,13 @@ async function main(argv = process.argv.slice(2)) {
     return result.ok === false ? 1 : 0;
   }
 
-  if (args.verify || args['test-call']) {
-    const keyArg = args.key === '-' ? readStdin() : (args.key ? String(args.key) : undefined);
-    if (args.key && args.key !== '-') {
-      process.stderr.write('Warning: the key was passed on the command line and may be stored in your shell history. Use "--key -" to pipe it via stdin instead.\n');
-    }
-    const result = await doVerify(report, { provider: args.provider, model: args.model, key: keyArg, dryRun });
+  if (args.probe) {
+    const result = await doProbe(report, { baseUrl: args['base-url'], dryRun });
     if (dryRun) return 0;
     return result.ok === false ? 1 : 0;
   }
 
-  const wantsWork = args.install || args['write-config'] || args.key;
+  const wantsWork = args.install || args['write-config'];
   if (!wantsWork) {
     printReport(report);
     process.stdout.write('Nothing was written. Pass --help to see the write commands.\n');
@@ -1064,16 +1009,11 @@ async function main(argv = process.argv.slice(2)) {
   }
 
   if (args['write-config']) {
-    doWriteConfig(report, { provider: args.provider, model: args.model, fallbackModel: args['fallback-model'], dryRun });
-  }
-
-  if (args.key) {
-    const key = args.key === '-' ? readStdin() : String(args.key);
-    if (!key) throw new Error('Empty API key.');
-    if (args.key !== '-') {
+    let key = args.key === '-' ? readStdin() : (args.key ? String(args.key) : undefined);
+    if (args.key && args.key !== '-') {
       process.stderr.write('Warning: the key was passed on the command line and may be stored in your shell history. Use "--key -" to pipe it via stdin instead.\n');
     }
-    doKey(report, { provider: args.provider, key, baseUrl: args['base-url'], writeProfile: Boolean(args['write-profile']), dryRun });
+    doWriteConfig(report, { baseUrl: args['base-url'], model: args.model, key, fallbackModel: args['fallback-model'], dryRun });
   }
 
   return 0;
@@ -1086,7 +1026,7 @@ async function main(argv = process.argv.slice(2)) {
  * Node resolves `import.meta.url` to the link target while leaving `process.argv[1]` as
  * the link itself. A naive string compare therefore never matches and the command silently
  * does nothing. (Bun happens to behave differently, which is exactly how this stayed hidden.)
- * Locked by test/adr43-onboarding-skill.test.mjs [LOCK-43-9].
+ * Locked by test/adr43-onboarding-skill.test.mjs.
  */
 function isInvokedDirectly() {
   const entry = process.argv[1];
@@ -1113,4 +1053,4 @@ if (isInvokedDirectly()) {
   })();
 }
 
-export { detect, main, doHealthCheck, doWriteConfig };
+export { detect, main, doHealthCheck, doWriteConfig, doProbe };

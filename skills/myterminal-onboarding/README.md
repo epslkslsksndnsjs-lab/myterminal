@@ -1,66 +1,80 @@
 # myterminal-onboarding
 
-一个**自包含的安装 / 验证工具**（agent 技能）：把 MyTerminal 装到机器上，并一步步配置它的 subagent 大模型——endpoint（base URL）、model、API key。
+A **self-contained install / verification tool** (agent skill): installs MyTerminal on a machine
+and steps through configuring its subagent LLM — endpoint (base URL), model, and API key.
 
-它本身是一套**测试 / 验证工具**，独立于 MyTerminal 系统代码（`src/` 等），可以单独删除而不影响 MyTerminal 本体。删除整个技能目录不会逼你改动 `src/` 任何文件。
+It is a standalone **test / verification tool**, independent of the MyTerminal system code
+(`src/` etc.), and can be deleted on its own without affecting MyTerminal itself. Removing the
+whole skill directory never forces changes to any `src/` file.
 
-## 用法
+## Usage
 
-**1. 安装技能**（就是个文件夹，拷进 agent 的 skills 目录即可，或用一条命令安装器）：
+**1. Install the skill** (it's just a folder — copy it into the agent's skills directory, or use
+the one-command installer):
 
 ```bash
 node skills/myterminal-onboarding/scripts/install.mjs
-# 或手动：
+# or manually:
 cp -R skills/myterminal-onboarding ~/.workbuddy/skills/myterminal-onboarding
 ```
 
-**2. 跑 onboarding，或直接自检这份技能副本是否完整：**
+**2. Run onboarding, or self-check that this skill copy is complete:**
 
 ```bash
-node scripts/onboard.mjs --json          # 只读检测报告，什么都不写
-node scripts/onboard.mjs --self-test     # 自检：确认这份技能副本的所有导出/flag 都在
+node scripts/onboard.mjs --json          # read-only detection report, writes nothing
+node scripts/onboard.mjs --self-test     # self-check: every expected export/flag is present
 ```
 
-其它用法（写配置 / 装 key / 健康检查 / 修损坏 config 等）见 `SKILL.md`。
+Other commands (write config / keyless probe / health check / repair broken config) — see
+`SKILL.md`.
 
-## 它能自动做的 vs 你要做的
+## What the script does automatically vs what you do
 
-| 步骤 | 谁做 |
+| Step | Who |
 | --- | --- |
-| 检测 OS / shell / bun / 已有安装 / 已有配置 | 脚本 |
-| 安装 bun | **你**（一行命令，脚本会打印给你） |
-| clone + `bun install` + `bun run build` | 脚本（`--install`） |
-| 首次运行设置屏 | **你**（交互式，且它生成 connector 凭证） |
-| 把 subagent endpoint/model/key 写入 `config.json` | 脚本（`--write-config`） |
-| 从模型服务商控制台取 API key | **你** |
-| 把 key 写进 shell profile | 脚本（`--key - --write-profile`） |
-| 重启终端 | **你** |
+| Detect OS / bun / existing install / existing config / machine disk & memory | script |
+| Install bun | **you** (one command, printed by the script) |
+| clone + `bun install` + `bun run build` | script (`--install`) |
+| First-run setup screen | **you** (interactive; it mints the connector credentials) |
+| Write subagent baseUrl/model/apiKey into `config.json` | script (`--write-config`, key via stdin) |
+| Fetch the API key from the model provider's console | **you** |
+| Keyless connectivity probe of the endpoint | script (`--probe`) |
+| Start the service and verify it answers | you start, script verifies (`--healthcheck`) |
 
-## 诚实的边界
+## Honest boundaries
 
-- **单一 Anthropic 兼容协议，无 provider 选择**：填 endpoint（base URL）+ model + key 三项即可（`createAdapter` 的 provider 闭列表已由 ADR-0045 删除，非 any-model）。
-- **bun >= 1.3.0 是硬前置**，无 npm 兜底。
-- **脚本绝不伪造 `config.json`**：基础 config 含随机生成的 connector 凭证，写残缺文件会让 MyTerminal 启动即崩，所以脚本拒绝并让你先跑一次 `bun run dev`。
-- **API key 永不进 `config.json`**，只用环境变量。类 key 字段在 merge 时被剥离。
-- **原生 Windows 走手动步骤**（脚本打印 `setx`，WSL 更顺）。
+- **Single Anthropic-compatible protocol, no provider picker**: fill endpoint (base URL) + model
+  + key — the app requires all three (three-required contract, ADR-0045). The `provider` concept
+  is gone; a leftover `provider` field makes the app silently ignore the whole subagent block.
+- **bun >= 1.3.0 is a hard prerequisite**, no npm fallback.
+- **The script never fabricates `config.json`**: the base config carries randomly generated
+  connector credentials; a partial file makes MyTerminal crash on startup, so the script refuses
+  and asks you to run `bun run dev` once first.
+- **The API key lives in `config.json`** (`subagent.apiKey`, the app's contract), provided via
+  stdin, written at `0600` with a backup. Its value never appears in any output.
+- **No outbound call ever carries the key**: the connectivity probe is keyless and says so
+  honestly (it validates connectivity only, not key/model correctness).
 
-## 安全
+## Security
 
-- 不加任何 flag = 只读。`--dry-run` 在任何写命令上只显示结果不落盘。
-- config / profile 写入前先备份为 `<file>.myterminal-backup`。
-- profile 编辑在标记块内、幂等——同 key 重跑是 no-op，新 key 原地替换不堆叠。
-- `config.json` 保持 `0600` 权限。
-- 优先 `--key -`（stdin）而非 `--key <value>`，避免 key 进 shell 历史。
+- No flags = read-only. `--dry-run` shows results on any write command without touching disk.
+- Writes back up first as `<file>.myterminal-backup`.
+- `config.json` stays `0600`.
+- Prefer `--key -` (stdin) over putting the key on a command line — never in shell history.
+- The shell-profile export mechanism was retired (ADR-0053 D5): no profile is ever edited, and
+  the skill no longer has any platform-specific branches.
 
-## 结构
+## Structure
 
 ```
 myterminal-onboarding/
-  SKILL.md                                  agent 面向的说明
-  scripts/onboard.mjs                       生产脚本（跑安装/配置逻辑，不含测试代码）
-  scripts/self-test.mjs                     ⚠ 唯一的测试代码：--self-test 自检，独立文件
-  scripts/install.mjs                       一条命令安装器
-  templates/subagent-config.template.json   subagent 块形状（片段，非完整 config）
+  SKILL.md                                  instructions for the agent
+  scripts/onboard.mjs                       production script (install/configure logic, no test code)
+  scripts/self-test.mjs                     ⚠ the only test code: --self-test, in its own file
+  scripts/install.mjs                       one-command installer
+  templates/subagent-config.template.json   subagent block shape (fragment, not a full config)
 ```
 
-> 技能不依赖任何 `src/` 代码（`onboard.mjs` 与 `self-test.mjs` 均不读主仓源码）。原比对 provider 列表的 CI 护栏 `check-provider-sync.mjs` 已随 ADR-0045 删除 provider 概念而移除。
+> The skill depends on no `src/` code (`onboard.mjs` and `self-test.mjs` never read the main
+> repo's source). The old provider-list parity guard (`check-provider-sync.mjs`) was removed with
+> ADR-0045 along with the provider concept itself.
