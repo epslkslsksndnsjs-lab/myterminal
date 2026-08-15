@@ -303,11 +303,14 @@ test('[NEGATIVE-3] 派生器抛错信息带上出错路径，便于定位', asyn
 // 隐形。本锁逐工具 diff inputSchema，除下方【显式 allowlist】外任何差异立即红灯。
 //
 // allowlist 条目均已逐项审阅并实证（scripts/probe-mcp-schema-drift.mjs），
-// 当前 42 处（= INPUT_SCHEMA_ALLOWLIST.size，新增条目须同步本注释）：
-//   A 类（11 处）default 仅进展示层——派生器用 .meta({default}) 而非 .default()，
-//     实测 parse({}) => {}，服务端行为零变化，仅客户端可见契约新增广告；
+// 当前 6 处（T2 #133 清空后仅余 A48-W1 低危B-4 删 note/patch 的 6 条放行；LOCK-6 内有 assert.equal(INPUT_SCHEMA_ALLOWLIST.size, 6) 钉死，
+// 新增/删除条目须同步本注释与 LOCK-6 断言两处）：
+//   A 类（34 处）展示层差异——13 处 default 仅进展示层（派生器用 .meta({default}) 而非
+//     .default()，实测 parse({}) => {}，服务端行为零变化）+ 4 处派生器 safe-int 边界
+//     + 17 处新增可选分页入参（T07 5 / W1-03 5 / T08 3 / W1-04 4）；仅客户端可见契约新增广告；
 //   B 类（8 处）约束收紧——与运行期单源一致，invokeTool 的 validateJsonSchema
-//     本就会拒，判定结果不变，仅错误通道由 INVALID_INPUT 变为协议层校验错误。
+//     本就会拒，判定结果不变，仅错误通道由 INVALID_INPUT 变为协议层校验错误；
+//   A48-W1 低危B-4（6 处）删 note/patch 死字段（register.defaults / call.input / call.arguments 三路同源）。
 // 两类均记为 #41 的显式契约变更（方向=协议层向运行期单源靠拢，即 #41 设计目标）。
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -333,6 +336,9 @@ function flattenSchema(node, path, out) {
 
 test('[LOCK-6] 全部 32 工具 inputSchema 对 main 基线快照零静默漂移（allowlist 外必红）', async () => {
   const actual = await collectMcpTools();
+  // A48-W1 低危B-5（#149 R1）：allowlist 条目数钉死——防注释/清单再漂移（此前注释 42 处失实，
+  // 实际 42+6=48 键）。新增/删除条目须同步此断言与顶部注释。
+  assert.equal(INPUT_SCHEMA_ALLOWLIST.size, 6, `allowlist 条目数漂移（当前 ${INPUT_SCHEMA_ALLOWLIST.size}，基线 6）`);
   const names = Object.keys(MCP_BASELINE);
   const seen = new Set();
   const violations = [];
