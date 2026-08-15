@@ -46,6 +46,9 @@ const MAX_GREP_MATCHES = 200;
 
 // D8 第 1 条：超时上限 600s（Claude BashTool 同款：默认 120s 不变、上限 600s）
 const EXECUTE_CLI_MAX_TIMEOUT_SEC = 600;
+// 审查 O1：转后台竞态 drain 的有界等待上限——孙进程持管道 fd 时 'end'/'close' 永不触发，
+// 超时强制放行避免工具调用永久挂起（快照尽力而为）
+const BACKGROUND_DRAIN_TIMEOUT_MS = 2000;
 
 // D8 第 4 条：落盘盘帽——抄 Claude 5GB 盘帽口径（diskOutput.ts MAX_TASK_OUTPUT_BYTES），
 // 数值按本项目实际定 256MB：子 agent 后台输出再大也是异常态，256MB 已远超正常输出。
@@ -440,14 +443,22 @@ const executeCliTool = buildTool({
         const waits: Array<Promise<void>> = [];
         for (const s of [child.stdout, child.stderr]) {
           if (!s) continue;
-          const stream = s as NodeJS.ReadableStream & { readableEnded?: boolean };
-          if (stream.readableEnded) continue;
+          // 审查 O1 勘误：readableEnded 快速路径不可靠——Bun 在 exit 事件时可能已标
+          // EOF 但 'data' 尚未分发（AC9b 实测快照空）。无条件等 'end'/'close'；
+          // 两者均已错过（极端）时由下方 2s 兜底放行。
           waits.push(new Promise((r) => {
+            const stream = s as NodeJS.ReadableStream;
             stream.once('end', r);
             stream.once('close', r);
           }));
         }
-        return Promise.all(waits).then(() => {});
+        if (waits.length === 0) return Promise.resolve();
+        // 审查 O1：有界等待——孙进程持管道 fd（如 nohup x &）时 'end'/'close' 永不触发，
+        // 超时强制放行，避免工具调用永久挂起（快照尽力而为，落盘文件仍持续收写）
+        return Promise.race([
+          Promise.all(waits).then(() => {}),
+          new Promise<void>((r) => setTimeout(r, BACKGROUND_DRAIN_TIMEOUT_MS)),
+        ]);
       }
 
       // error/exit 监听器必须注册在显式分支 return 之前——
@@ -468,9 +479,11 @@ const executeCliTool = buildTool({
 
       child.on('exit', (exitCode: number | null) => {
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        // 竞态：显式后台快命令先于建文件完成——不按前台语义 resolve，
-        // 交给 createOutputFile.then 走后台语义（backgroundId+outputPath+已产输出）
-        if (explicitBackground && !settled && fileHandle === null) {
+        // 审查 O2：进入后台模式（显式或超时转）后命令完成统一 deferred——交给
+        // createOutputFile.then 按后台语义 resolve（backgroundId+outputPath+完整快照）。
+        // 原先仅 fileHandle===null 走 deferred，「文件已建、.then 未 resolve」窄窗口
+        // 会按前台 exitCode 返回丢身份（命令已完成但调用方拿不到 backgroundId）。
+        if ((explicitBackground || backgrounded) && !settled) {
           childExited = true;
           return;
         }

@@ -231,6 +231,43 @@ test('AC1e 显式后台快命令：仍按后台语义返回，输出最终落盘
   assert.ok(content.includes('instant'), `文件应含输出: ${content}`);
 });
 
+test('AC9a O1 防御：快命令 + 孙进程存活（sleep 60 &）——调用有界返回不挂起，输出落盘完整', async () => {
+  const ctx = makeCtx();
+  const tool = getTool('execute_cli');
+  // 审查 O1：孙进程持管道 fd 时 'end'/'close' 可能永不触发。修复 = drain 有界 2s 放行
+  //（Promise.race 5s 兜底把无界挂起转成可断言的红）。
+  // 注：Bun 实测建文件（~0.5ms）恒先于 shell 退出（~1-2ms），「exit 先于建文件」路径
+  // 黑盒不可达；快照空属 Claude 同款语义（resolve 先于数据）——完整性契约在落盘文件。
+  const result = await Promise.race([
+    tool.call({ command: 'sleep 60 & echo spawned', run_in_background: true }, ctx),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('drain 无界等待：调用挂起')), 5000)),
+  ]);
+  assert.ok(result.backgroundId, '应返回 backgroundId');
+  assert.strictEqual(result.exitCode, null, '后台语义：exitCode null');
+  // 数据最终落盘（read_file 随时可读）
+  await sleep(300);
+  const content = fs.readFileSync(result.outputPath, 'utf-8');
+  assert.ok(content.includes('spawned'), `文件应含输出: ${content}`);
+  // 收尸：杀 shell 进程组（sleep 60 孤儿同组），避免残留
+  cleanupAgentShellTasks(ctx.agentId);
+  await sleep(300);
+  assert.strictEqual(getBackgroundTask(result.backgroundId), undefined, '收尸后索引清空');
+});
+
+test('AC9b O2 契约守护：命令已完成后台调用恒返回后台语义', async () => {
+  const ctx = makeCtx();
+  const tool = getTool('execute_cli');
+  // 审查 O2：进入后台模式后命令完成统一 deferred 走后台语义（backgroundId+outputPath），
+  // 不按前台 exitCode 返回丢身份。注：Bun 微任务清空先于事件回调，「文件已建、.then
+  // 未 resolve」窗口理论不可达（open 完成 → .then 微任务必然先于 exit 回调），此用例为
+  // 契约守护；快照完整性时序不保证（快命令 resolve 先于数据属 Claude 同款语义），不断言。
+  const result = await tool.call({ command: 'echo hello; sleep 2 &', run_in_background: true }, ctx);
+  assert.ok(result.backgroundId, '后台语义：backgroundId');
+  assert.strictEqual(result.exitCode, null, '后台语义：exitCode null');
+  // 等 sleep 2 自然结束（管道关闭），避免残留
+  await sleep(2400);
+});
+
 test('AC1d 建文件失败兜底：不可写 outputDir → is_error + 杀进程（failBackground）', async () => {
   const ctx = makeCtx();
   // 只读目录：open(O_CREAT|O_EXCL) 必失败（非 root 用户）
