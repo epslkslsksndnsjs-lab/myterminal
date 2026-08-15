@@ -236,7 +236,8 @@ test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/
     ['minimum 违例 limit', of('session_history'), { limit: 0 }],
     ['maximum 违例 limit', of('session_history'), { limit: 501 }],
     ['非整数 limit', of('session_history'), { limit: 1.5 }],
-    ['maxItems 违例 deliverables', of('subagent_start'), { objective: 'o', deliverables: Array.from({ length: 21 }, () => 'd') }],
+    ['maximum 违例 maxTurns（D3 上限 1600）', of('subagent_start'), { objective: 'o', maxTurns: 1601 }],
+    ['maximum 违例 timeoutSec（D3 上限 86400）', of('subagent_start'), { objective: 'o', timeoutSec: 86401 }],
     ['minItems 违例 eventIds', of('session_events_ack'), { eventIds: [] }],
     ['数组元素类型错', of('session_events_ack'), { eventIds: [1] }],
     ['嵌套对象缺必填', of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o' } }],
@@ -253,6 +254,7 @@ test('[NEGATIVE-1] 派生出来的 zod 必须拒绝非法输入（枚举/长度/
     [of('blob_create'), { content: 'x', encoding: 'base64' }],
     [of('session_history'), { offset: 0, limit: 500, includeAncestors: false }],
     [of('subagent_start'), { objective: 'o', maxTurns: 3 }],
+    [of('subagent_start'), { objective: 'o', maxTurns: 1600, timeoutSec: 86400 }],
     [of('session_register'), { mode: 'delegate', name: 'n', task: { objective: 'o', background: 'b', deliverables: ['d'], acceptanceCriteria: ['a'], constraints: ['c'] } }],
     // strip 模式（匹配 main 基线）：未知字段被静默接受，不拒绝
     [of('find_files'), { query: 'a', nope: 1 }],
@@ -309,67 +311,12 @@ test('[NEGATIVE-3] 派生器抛错信息带上出错路径，便于定位', asyn
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 形如 `${tool} :: ${path}` → { baseline, current, reason }
-const INPUT_SCHEMA_ALLOWLIST = new Map([
-  // ── A 类：展示层 default 广告（parse 行为不变）──
-  ['session_register :: properties.mode.default', { baseline: undefined, current: 'root', reason: 'A:展示层default' }],
-  ['session_history :: properties.includeAncestors.default', { baseline: undefined, current: true, reason: 'A:展示层default' }],
-  ['message_inbox :: properties.markRead.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
-  ['message_inbox :: properties.limit.default', { baseline: undefined, current: 50, reason: 'A:展示层default' }],
-  ['list_dir :: properties.path.default', { baseline: undefined, current: '.', reason: 'A:展示层default' }],
-  ['find_files :: properties.path.default', { baseline: undefined, current: '.', reason: 'A:展示层default' }],
-  ['search_text :: properties.path.default', { baseline: undefined, current: '.', reason: 'A:展示层default' }],
-  ['search_text :: properties.regex.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
-  ['blob_create :: properties.encoding.default', { baseline: undefined, current: 'utf-8', reason: 'A:展示层default' }],
-  ['blob_read :: properties.encoding.default', { baseline: undefined, current: 'utf-8', reason: 'A:展示层default' }],
-  ['blob_write_file :: properties.createParents.default', { baseline: undefined, current: false, reason: 'A:展示层default' }],
-  // ── A 类（续）：T07 #35 为 session_list 新增可选分页入参 offset/limit ──
-  //   实测 parse({}) => {}（两字段均非 required，服务端按缺省 offset=0/limit=20 切片），
-  //   既有调用方零行为变化；limit.default=20 仅展示层广告（同 message_inbox 模式）。
-  //   offset.maximum / limit.maximum 中 9007199254740991 为 zod4 派生器对 integer 型
-  //   必带的 safe-int 边界（源 schema 未声明，派生往返 faithfully 还原），非行为变更。
-  ['session_list :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:T07新增可选分页入参offset' }],
-  ['session_list :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:T07新增可选分页入参offset' }],
-  ['session_list :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
-  ['session_list :: properties.limit.type', { baseline: undefined, current: 'integer', reason: 'A:T07新增可选分页入参limit' }],
-  ['session_list :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:T07新增可选分页入参limit' }],
-  ['session_list :: properties.limit.maximum', { baseline: undefined, current: 200, reason: 'A:T07新增可选分页入参limit(上限200)' }],
-  ['session_list :: properties.limit.default', { baseline: undefined, current: 20, reason: 'A:展示层default(服务端默认20,parse不变)' }],
-  // ── A 类（续续续）：W1-03 #76 为 list_dir 新增可选分页入参 offset/limit（与 session_list 同源）
-  //   实测 parse({}) => {}（两字段均非 required，服务端按缺省 offset=0/limit=500 切片），
-  //   既有调用方（path 缺省 '.'）零行为变化；limit.maximum=500 与 500 帽同源对齐。
-  ['list_dir :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:W1-03新增可选分页入参offset' }],
-  ['list_dir :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:W1-03新增可选分页入参offset' }],
-  ['list_dir :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
-  ['list_dir :: properties.limit.type', { baseline: undefined, current: 'integer', reason: 'A:W1-03新增可选分页入参limit' }],
-  ['list_dir :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:W1-03新增可选分页入参limit' }],
-  ['list_dir :: properties.limit.maximum', { baseline: undefined, current: 500, reason: 'A:W1-03新增可选分页入参limit(上限500,与500帽同源)' }],
-  ['list_dir :: properties.limit.default', { baseline: undefined, current: 500, reason: 'A:展示层default(服务端默认500,parse不变)' }],
-  // ── A 类（续续）：T08 #36 为 read_file_range 新增可选 maxBytes 入参（与 read_file 对称）
-  //   实测 parse({}) => {}（maxBytes 非 required，服务端按缺省 256_000 截断），既有调用方零行为变化；
-  //   maximum=1_000_000 与 read_file 同源对齐，非行为变更。
-  ['read_file_range :: properties.maxBytes.type', { baseline: undefined, current: 'integer', reason: 'A:T08新增可选maxBytes入参' }],
-  ['read_file_range :: properties.maxBytes.minimum', { baseline: undefined, current: 1, reason: 'A:T08新增可选maxBytes入参' }],
-  ['read_file_range :: properties.maxBytes.maximum', { baseline: undefined, current: 1000000, reason: 'A:T08新增可选maxBytes(上限1_000_000,与read_file同源)' }],
-  // ── A 类（续）：W1-04 #77 为 message_list / message_conversation 新增可选分页入参 offset
-  //   实测 parse({}) => {}（offset 非 required，服务端按缺省取最新页切片，与旧行为逐字一致），
-  //   既有调用方零行为变化（同 session_list T07 模式，0050 A4 / 0051 D-15）。
-  //   offset.maximum 为 zod4 派生器对 integer 型必带的 safe-int 边界（同 session_list）。
-  ['message_list :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
-  ['message_list :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
-  ['message_list :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
-  ['message_conversation :: properties.offset.type', { baseline: undefined, current: 'integer', reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
-  ['message_conversation :: properties.offset.minimum', { baseline: undefined, current: 0, reason: 'A:W1-04新增可选分页入参offset(0050 A4)' }],
-  ['message_conversation :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
-  // ── B 类：约束收紧（运行期本就拒，判定结果不变，错误通道前移）──
-  ['session_inherit :: properties.claimCode.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
-  ['session_inherit :: properties.sessionToken.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
-  ['session_checkpoint :: properties.replanReason.minLength', { baseline: undefined, current: 1, reason: 'B:收紧对齐运行期' }],
-  ['subagent_start :: properties.objective.maxLength', { baseline: undefined, current: 4000, reason: 'B:收紧对齐运行期' }],
-  ['subagent_start :: properties.background.maxLength', { baseline: undefined, current: 4000, reason: 'B:收紧对齐运行期' }],
-  ['subagent_start :: properties.deliverables.maxItems', { baseline: undefined, current: 20, reason: 'B:收紧对齐运行期' }],
-  ['subagent_start :: properties.acceptanceCriteria.maxItems', { baseline: undefined, current: 20, reason: 'B:收紧对齐运行期' }],
-  ['subagent_start :: properties.constraints.maxItems', { baseline: undefined, current: 20, reason: 'B:收紧对齐运行期' }],
-]);
+// ADR-0048 T2 #133（D3 subagent_start 契约精简）重生成 mcp-tools-issue41.json 后
+// 基线已重定：此前 19 处漂移（A 类展示层 default 广告 ×11 + B 类约束收紧 ×8，见 git
+// history 本 Map 旧版本）全部并入新基线，旧条目随 stale 反向守卫自然失效——
+// 这正是 fixture 采集器尾注预告的「allowlist 同步清理」。此后任何协议层漂移
+// 一律零容忍（violations 直红），如需放行须重新显式登记本条清单。
+const INPUT_SCHEMA_ALLOWLIST = new Map([]);
 
 function flattenSchema(node, path, out) {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) {

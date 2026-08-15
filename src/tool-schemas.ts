@@ -89,7 +89,7 @@ export const BUILTIN_INPUT_SCHEMAS = {
 
   // ── Skill / Subagent ──
   skill: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },
-  subagent_start: { type: 'object', properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 }, background: { type: 'string', maxLength: 4000 }, deliverables: { type: 'array', items: { type: 'string' }, maxItems: 20 }, acceptanceCriteria: { type: 'array', items: { type: 'string' }, maxItems: 20 }, constraints: { type: 'array', items: { type: 'string' }, maxItems: 20 }, maxTurns: { type: 'integer', minimum: 1, maximum: 200 }, timeoutSec: { type: 'integer', minimum: 30, maximum: 3600 }, readOnly: { type: 'boolean' } }, required: ['objective'], additionalProperties: false },
+  subagent_start: { type: 'object', properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 }, maxTurns: { type: 'integer', minimum: 1, maximum: 1600 }, timeoutSec: { type: 'integer', minimum: 30, maximum: 86400 }, readOnly: { type: 'boolean' } }, required: ['objective'], additionalProperties: false },
   subagent_status: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false },
   subagent_abort: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false },
 

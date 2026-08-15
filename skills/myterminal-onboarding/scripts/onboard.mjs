@@ -74,8 +74,8 @@ export const L3_RECOMMEND_THRESHOLDS = {
  * (ADR-0053 D2 — no second default source, no drift).
  */
 export const SUBAGENT_OPTIONAL_FIELDS = [
-  { field: 'maxTurns', default: 50, min: 1, max: 200 },
-  { field: 'timeoutSec', default: 300, min: 30, max: 3600 },
+  { field: 'maxTurns', default: 700, min: 1, max: 1600 },
+  { field: 'timeoutSec', default: 7200, min: 30, max: 86400 },
   { field: 'maxParallel', default: 2, min: 1, max: 4 },
   { field: 'contextWindow', default: 120_000, min: 1_000, max: 1_000_000 },
   { field: 'maxOutput', default: 32_000, min: 1_000, max: 200_000 },

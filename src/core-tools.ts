@@ -687,12 +687,9 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       }
       const session = actor(context);
       const runner = getSubagentRunner();
+      // D3：外部契约只留 objective + 三覆盖；内部四字段由 skills fork 等内部路径直供（SubagentStartInput 保留可选）
       return runner.start(session.id, {
         objective: asString(input.objective, 'objective'),
-        background: asOptionalString(input.background),
-        deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
-        acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
-        constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
         readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,

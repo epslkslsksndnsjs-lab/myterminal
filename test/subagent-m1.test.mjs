@@ -49,9 +49,9 @@ test('validateSettings accepts legal subagent config (new contract)', () => {
   assert.equal(sub.model, 'claude-sonnet-4-20250514');
   assert.equal(sub.baseUrl, 'https://api.anthropic.com/v1');
   assert.equal(sub.apiKey, 'sk-ant-test-1234567890');
-  // 三可选默认值
-  assert.equal(sub.maxTurns, 50);
-  assert.equal(sub.timeoutSec, 300);
+  // 三可选默认值（D3 数值定案：700/7200）
+  assert.equal(sub.maxTurns, 700);
+  assert.equal(sub.timeoutSec, 7200);
   assert.equal(sub.maxParallel, 2);
   assert.equal(sub.contextWindow, 120_000);
   assert.equal(sub.maxOutput, 32_000);
@@ -86,10 +86,10 @@ test('validateSettings clamps out-of-range numeric values', () => {
 
 // ── 用例 4b：大值被钳制到上限 ──
 test('validateSettings clamps large values to upper bound', () => {
-  const settings = baseSettings(newShapeSubagent({ maxTurns: 9999, timeoutSec: 3600, maxParallel: 2 }));
+  const settings = baseSettings(newShapeSubagent({ maxTurns: 9999, timeoutSec: 999999, maxParallel: 2 }));
   validateSettings(settings);
-  assert.equal(settings.subagent.maxTurns, 200, 'maxTurns 9999 → 200');
-  assert.equal(settings.subagent.timeoutSec, 3600, 'timeoutSec 3600 at upper bound');
+  assert.equal(settings.subagent.maxTurns, 1600, 'maxTurns 9999 → 1600');
+  assert.equal(settings.subagent.timeoutSec, 86400, 'timeoutSec 999999 → 86400');
 });
 
 // ── 用例 5：缺失 subagent 段（向后兼容）─
@@ -145,8 +145,8 @@ test('integration: missing optional subagent fields get defaults', () => {
 
   const errors = validateSettings(settings);
   assert.equal(errors.length, 0);
-  assert.equal(settings.subagent.maxTurns, 50);
-  assert.equal(settings.subagent.timeoutSec, 300);
+  assert.equal(settings.subagent.maxTurns, 700);
+  assert.equal(settings.subagent.timeoutSec, 7200);
   assert.equal(settings.subagent.maxParallel, 2);
   assert.equal(settings.subagent.contextWindow, 120_000);
   assert.equal(settings.subagent.maxOutput, 32_000);
@@ -172,8 +172,8 @@ test('applySubagentDefaults fills defaults for minimal config (S#5 regression)',
   assert.equal(normalized.apiKey, 'sk-ant-test-1234567890');
 
   // 可选字段不得为 undefined（这正是 S#5 崩溃根因）
-  assert.equal(normalized.maxTurns, 50, 'maxTurns 必须非空，否则 executor while(turns<undefined) 死循环');
-  assert.equal(normalized.timeoutSec, 300, 'timeoutSec 必须非空，否则 AbortSignal.timeout(NaN) 抛 RangeError');
+  assert.equal(normalized.maxTurns, 700, 'maxTurns 必须非空，否则 executor while(turns<undefined) 死循环');
+  assert.equal(normalized.timeoutSec, 7200, 'timeoutSec 必须非空，否则 AbortSignal.timeout(NaN) 抛 RangeError');
   assert.equal(normalized.maxParallel, 2);
   assert.equal(normalized.contextWindow, 120_000);
   assert.equal(normalized.maxOutput, 32_000);

@@ -314,7 +314,7 @@ Load this skill when any MyTerminal call returns an error, when OpenAI ends a tu
 
 - Symptom: conversation exceeds ~15 turns, or tool results are too large to process.
 - Step 1: Break the remaining work into 2-3 independent sub-objectives.
-- Step 2: Use subagent_start for each sub-objective with a focused objective and acceptanceCriteria.
+- Step 2: Use subagent_start for each sub-objective with a focused, complete objective.
 - Step 3: Poll subagent_status(taskId) until each subagent completes.
 - Step 4: Aggregate results and continue.
 

@@ -75,15 +75,14 @@ function assembleTask(input: SubagentStartInput): string {
   return parts.join('\n\n');
 }
 
-/** 组装 TaskPackage（用于 registerDelegate）。background 不能为空，缺失时用 objective 前 100 字充填 */
+/** 组装 TaskPackage（用于 registerDelegate）。D3/重拷 Q2：四字段兜底统一 objective 派生（background 用完整 objective，三数组兜底同源），机器代填路径无硬编码文案 */
 function toTaskPackage(input: SubagentStartInput): TaskPackage {
-  const bg = input.background?.trim() || input.objective.slice(0, 100);
   return {
     objective: input.objective,
-    background: bg,
-    deliverables: input.deliverables?.length ? input.deliverables : ['Complete the assigned task'],
-    acceptanceCriteria: input.acceptanceCriteria?.length ? input.acceptanceCriteria : ['Task is complete'],
-    constraints: input.constraints?.length ? input.constraints : ['Stay within scope'],
+    background: input.background?.trim() || input.objective,
+    deliverables: input.deliverables?.length ? input.deliverables : [input.objective],
+    acceptanceCriteria: input.acceptanceCriteria?.length ? input.acceptanceCriteria : [input.objective],
+    constraints: input.constraints?.length ? input.constraints : [input.objective],
   };
 }
 
