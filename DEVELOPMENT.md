@@ -604,7 +604,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 `createSubagentRunner(deps)` 返回 `{start, status, abort, listSubagents}`。
 
 - **start**：并发检查 → `assembleTask`/`toTaskPackage` → `registerAndClaimChild` → `createSubagent` → IIFE 后台执行 `runSubagentImpl` → 立即返回 `{sessionId, taskId, status:'running'}` → `finalize`（checkpoint + notify + store 更新）。
-- **status**：`getSubagent` → 幂等返回 `{status, sessionId, tasks, usage, error, result?（仅 completed 回填）, origin, auditLogs}`。
+- **status**：`getSubagent` → 幂等返回 `{status, sessionId, tasks, usage, error, result?（仅 completed 回填）, origin}`（ADR-0048 D11：auditLogs 已从 status 返回体移除，流水账走 store 层直查）。
 - **abort**：已终态幂等返回；否则 `abortController.abort()` → `{status:'aborting'}`。
 
 ##### 执行核心 — [executor.ts](./src/subagent/executor.ts)

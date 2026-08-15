@@ -7,7 +7,7 @@ import type { runSubagent as RunSubagentFn } from './executor.js';
 import type { SubagentRunResult } from './executor.js';
 import {
   createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost, markResultFetched,
-  countRunning, getRecentAuditLogs, listAllSubagents,
+  countRunning, listAllSubagents,
 } from './store.js';
 import { MyTerminalError } from '../store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
@@ -55,7 +55,6 @@ export type SubagentStatusResult = {
   result?: string;
   /** ADR-0042 #78 选项 A：来源（skill fork 时标注 skillName；direct start 为 undefined） */
   origin?: SubagentOrigin;
-  auditLogs: unknown[];
 };
 
 export type SubagentStartResult = {
@@ -223,7 +222,6 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         error: record.error,
         result: record.status === 'completed' ? record.result : undefined,
         origin: record.origin,
-        auditLogs: getRecentAuditLogs(taskId),
       };
     },
 

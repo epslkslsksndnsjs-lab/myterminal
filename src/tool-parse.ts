@@ -1051,8 +1051,9 @@ export function seedOperationCache(taskId: string | undefined, op: ToolResponse)
 //
 // subagent_status 是控制工具、不在 TOOL_SHAPES → resolveShape 判 passthrough。此例外
 // 只对 data.result.result 子字段做 L3-if-small 路由（仅 status==='completed' + 自由文本
-// string + ≤24K tokens），其余内部上下文（status/sessionId/tasks/usage/error/origin/
-// auditLogs）一律不整形（避免双重整形，D2）。预算门只量 result 子字段（非整对象），超门
+// string + ≤24K tokens），其余内部上下文（status/sessionId/tasks/usage/error/origin，
+// auditLogs 已随 D11 砍出 status 返回体）一律不整形（避免双重整形，D2）。预算门只量 result
+// 子字段（非整对象），超门
 // fail-open reason=over-budget；非 completed / result 非 string → 保持 passthrough。
 // W2-07（#90）：D-13 旁挂式——L3 抽取结果挂 data.result.extracted，result 字段原文原样
 // 不动（0048 D11「result 必留」+「轮询取全量结果再验收」两条铁律）。
@@ -1300,7 +1301,7 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
       const outcome = await runL3({ result: text, lines }, SUBAGENT_STATUS_RESULT_SCHEMA, ctx.transport, ctx.sessionId);
       if (outcome.shaped) {
         // 旁挂式：extracted 挂上，result 原文原样不动（0048 D11）；其余内部上下文
-        // （status/sessionId/tasks/usage/origin/auditLogs）原样保全
+        // （status/sessionId/tasks/usage/origin）原样保全
         base = { ...response, data: { ...(response.data ?? {}), result: { ...(rawResult as JsonObject), extracted: outcome.shaped } } };
         shaping = { applied: true };
       } else {
