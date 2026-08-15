@@ -12,36 +12,81 @@
  *
  * Returns 0 if every expected export/flag is present, 1 otherwise. CI also calls
  * it (see .github/workflows/ci.yaml) so a stale copy committed to the repo is
- * caught. Provider-list parity with the main repo is enforced separately by
- * scripts/check-provider-sync.mjs — this copy has no repo to compare against.
+ * caught. After ADR-0053 the provider concept and the shell-profile mechanism are
+ * GONE — their absence is checked just as hard as the presence of the new API, so
+ * an old pre-ADR-0053 copy fails loudly instead of silently misbehaving.
  */
 
 export async function doSelfTest() {
   const onboard = await import('./onboard.mjs');
-  const { HELP, SUPPORTED_PROVIDERS } = onboard;
 
   const results = [];
   const ok = (label, cond) => results.push({ label, pass: !!cond });
 
-  ok('export: verifyProviderKey', typeof onboard.verifyProviderKey === 'function');
-  ok('export: checkHealth', typeof onboard.checkHealth === 'function');
-  ok('export: doKey', typeof onboard.doKey === 'function');
-  ok('export: doHealthCheck', typeof onboard.doHealthCheck === 'function');
+  // ── New ADR-0053 API must be present ──────────────────────────────────────
+  ok('export: probeEndpoint', typeof onboard.probeEndpoint === 'function');
+  ok('export: recommendL3', typeof onboard.recommendL3 === 'function');
+  ok('export: detectL3ModelPresent', typeof onboard.detectL3ModelPresent === 'function');
+  ok('export: normalizeBaseUrl', typeof onboard.normalizeBaseUrl === 'function');
+  ok('export: nearestExistingAncestor', typeof onboard.nearestExistingAncestor === 'function');
+  ok('export: mergeSubagentConfig', typeof onboard.mergeSubagentConfig === 'function');
   ok('export: doWriteConfig', typeof onboard.doWriteConfig === 'function');
+  ok('export: checkHealth', typeof onboard.checkHealth === 'function');
+  ok('export: doHealthCheck', typeof onboard.doHealthCheck === 'function');
+  ok('export: doProbe', typeof onboard.doProbe === 'function');
   ok('export: repairConfig', typeof onboard.repairConfig === 'function');
-  ok('export: buildBaseUrlLine', typeof onboard.buildBaseUrlLine === 'function');
-  ok('export: validateModelForProvider', typeof onboard.validateModelForProvider === 'function');
   ok('export: lookupInstallDir', typeof onboard.lookupInstallDir === 'function');
   ok('export: shouldRebuild', typeof onboard.shouldRebuild === 'function');
   ok('export: detect', typeof onboard.detect === 'function');
-  ok('export: SUPPORTED_PROVIDERS', Array.isArray(SUPPORTED_PROVIDERS) && SUPPORTED_PROVIDERS.length >= 5);
-  ok('flag: --verify in HELP', HELP.includes('--verify'));
+  ok('export: SUBAGENT_OPTIONAL_FIELDS',
+    Array.isArray(onboard.SUBAGENT_OPTIONAL_FIELDS) && onboard.SUBAGENT_OPTIONAL_FIELDS.length === 6);
+  ok('optional fields match app defaults (applySubagentDefaults)',
+    ['maxTurns=50', 'timeoutSec=300', 'maxParallel=2', 'contextWindow=120000', 'maxOutput=32000', 'compactThreshold=80000']
+      .every((spec) => {
+        const [field, value] = spec.split('=');
+        const entry = onboard.SUBAGENT_OPTIONAL_FIELDS.find((f) => f.field === field);
+        return entry && entry.default === Number(value);
+      }));
+  ok('L3 thresholds fixed (2GB / 8GB)', onboard.L3_RECOMMEND_THRESHOLDS &&
+    onboard.L3_RECOMMEND_THRESHOLDS.minFreeDiskBytes === 2 * 1024 ** 3 &&
+    onboard.L3_RECOMMEND_THRESHOLDS.minTotalMemoryBytes === 8 * 1024 ** 3);
+
+  // ── Pre-ADR-0053 API must be GONE (provider family + shell-profile machinery) ──
+  const gone = [
+    'SUPPORTED_PROVIDERS',
+    'validateProvider',
+    'MODEL_PREFIXES',
+    'PROVIDER_MODEL_KEYWORDS',
+    'VERIFY_ENDPOINTS',
+    'verifyProviderKey',
+    'detectShellProfile',
+    'buildExportLine',
+    'buildBaseUrlLine',
+    'BASE_URL_ENV',
+    'appendProfileBlock',
+    'doKey',
+  ];
+  for (const name of gone) {
+    ok(`export: ${name} gone (ADR-0053 removed it)`, onboard[name] === undefined);
+  }
+
+  const HELP = onboard.HELP || '';
+  // ── Flags the new CLI must offer ──────────────────────────────────────────
+  ok('flag: --write-config in HELP', HELP.includes('--write-config'));
   ok('flag: --base-url in HELP', HELP.includes('--base-url'));
-  ok('flag: --healthcheck in HELP', HELP.includes('--healthcheck'));
+  ok('flag: --model in HELP', HELP.includes('--model'));
   ok('flag: --fallback-model in HELP', HELP.includes('--fallback-model'));
-  ok('providers: openai/anthropic/deepseek/glm/qwen all present',
-    ['openai', 'anthropic', 'deepseek', 'glm', 'qwen'].every((p) =>
-      SUPPORTED_PROVIDERS.some((x) => x.provider === p)));
+  ok('flag: --probe in HELP', HELP.includes('--probe'));
+  ok('flag: --healthcheck in HELP', HELP.includes('--healthcheck'));
+  ok('flag: --repair in HELP', HELP.includes('--repair'));
+  ok('flag: --self-test in HELP', HELP.includes('--self-test'));
+  ok('flag: --key - (stdin) in HELP', HELP.includes('--key -'));
+  // ── Legacy flags must be GONE ─────────────────────────────────────────────
+  ok('flag: --provider gone from HELP', !HELP.includes('--provider'));
+  ok('flag: --verify gone from HELP', !HELP.includes('--verify'));
+  ok('flag: --test-call gone from HELP', !HELP.includes('--test-call'));
+  ok('flag: --write-profile gone from HELP', !HELP.includes('--write-profile'));
+  ok('flag: --base-url-as-provider-override gone', !HELP.includes('DASHSCOPE_BASE_URL'));
 
   const failed = results.filter((r) => !r.pass);
   for (const r of results) process.stdout.write(`${r.pass ? '✓' : '✗'} ${r.label}\n`);

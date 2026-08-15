@@ -1,14 +1,18 @@
 {
-  "enabled": true,
   "model": "",
   "baseUrl": "",
   "apiKey": "",
-  "maxTurns": 50,
-  "timeoutSec": 300,
-  "maxParallel": 2,
-  "contextWindow": 120000,
-  "maxOutput": 32000,
-  "compactThreshold": 80000,
   "fallbackModel": "",
-  "_note": "baseUrl 是厂商的 Anthropic 兼容 base URL，不含 /v1 与 /messages，代码统一补 /v1/messages。例如 Anthropic 原生填 https://api.anthropic.com；中国网关填各自文档的 ANTHROPIC_BASE_URL（如 https://api.moonshot.cn/anthropic、https://dashscope.aliyuncs.com/apps/anthropic）。不要自己加 /v1 或 /messages。"
+  "_required": "model / baseUrl / apiKey are the app's three required fields (ADR-0045). A subagent block missing any of them is rejected on startup (src/config.ts validateSettings). The key is provided via stdin and written at 0600 with a backup; its value is never echoed.",
+  "_baseUrl": "Vendor Anthropic-compatible base URL, WITHOUT /v1 and WITHOUT /messages — the app appends /v1/messages itself (src/subagent/llm-adapter.ts). Anthropic native: https://api.anthropic.com. Chinese gateways: use the gateway's ANTHROPIC_BASE_URL (e.g. https://api.moonshot.cn/anthropic, https://dashscope.aliyuncs.com/apps/anthropic).",
+  "_fallbackModel": "Optional overload-degradation model (subagent.fallbackModel, types.ts:222). Empty string = unset.",
+  "_optionalFields": {
+    "maxTurns": { "default": 50, "range": [1, 200] },
+    "timeoutSec": { "default": 300, "range": [30, 3600] },
+    "maxParallel": { "default": 2, "range": [1, 4] },
+    "contextWindow": { "default": 120000, "range": [1000, 1000000] },
+    "maxOutput": { "default": 32000, "range": [1000, 200000] },
+    "compactThreshold": { "default": 80000, "range": [1000, 500000] }
+  },
+  "_optionalNote": "Optional fields are NOT written by onboard.mjs — the app applies these defaults and clamps out-of-range values itself (src/config.ts applySubagentDefaults). To override one, edit the subagent block in config.json directly. Keeping a single default source prevents drift."
 }

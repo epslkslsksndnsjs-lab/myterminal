@@ -1,80 +1,89 @@
-// ADR-0043 —— MyTerminal Onboarding 技能：onboard.mjs 纯逻辑锁
+// ADR-0053 —— MyTerminal Onboarding 技能：onboard.mjs 纯逻辑锁
 //
-// 背景（ADR-0043 CP3）：
+// 背景（ADR-0053，取代 ADR-0043）：
 //   技能 skills/myterminal-onboarding/ 的「一条命令」是 scripts/onboard.mjs。
 //   它做两类事：① 有副作用的（clone/build/写文件） ② 纯逻辑的（探测、校验、渲染、合并）。
 //   本文件只锁 ②——纯函数，不 clone、不 build、不碰真实 HOME。
 //
 // 立锁纪律：
 //   onboard.mjs 的纯逻辑必须与主仓事实逐字一致，主仓改了这里就该红。
-//   四条事实源（本测试的真值来源，改主仓必须同步改这里）：
-//     S1  src/types.ts:185           SUBAGENT_PROVIDERS = 5 个闭列表
-//     S2  src/subagent/llm-adapter.ts:1099-1147  各 provider 的环境变量名
-//     S3  src/config.ts:24-30        settingsPath 的三级回退 + optionalEnv 空串视为未设
-//     S4  src/config.ts:101-108      subagent 默认值（enabled/maxTurns/timeoutSec/maxParallel）
+//   五条事实源（本测试的真值来源，改主仓必须同步改这里）：
+//     S1  src/config.ts:24-30            settingsPath 的三级回退 + optionalEnv 空串视为未设
+//     S2  src/config.ts:110-120          applySubagentDefaults：六个可选字段默认值 + 范围
+//     S3  src/config.ts:142-157          含遗留 provider 的 subagent 块整段静默忽略；
+//                                         model/baseUrl/apiKey 三必填，缺一即拒
+//     S4  src/subagent/llm-adapter.ts:294-295,364
+//                                         baseUrl 归一化（剥末尾 / 与 /v1）；请求 URL=<baseUrl>/v1/messages
+//     S5  src/l3/registry.ts:27,63       DEFAULT_L3_MODEL_PATH + <安装根>/models/ 落点
 //
 // 分区：
-//   [LOCK-43-1] provider 闭列表 + 环境变量名与主仓一致（ADR-0043 D6/D8 诚实边界的地基）
-//   [LOCK-43-2] 配置路径解析复刻 settingsPath 三级回退
-//   [LOCK-43-3] shell profile 探测（含原生 Windows 走手动、fish 语法分叉）
-//   [LOCK-43-4] export 行渲染（引号包裹 + fish 分叉）
-//   [LOCK-43-5] config 合并：不落 key、不吞用户已有字段、补默认值
-//   [LOCK-43-6] profile 幂等追加：重复跑不产生第二份
-//   [LOCK-43-7] bun 版本解析与比较（数字比较，非字典序）
-//   [LOCK-43-8] config 可写性判定——绝不凭空造 config.json（否则把首次启动搞砖）
+//   [LOCK-53-1] provider 全族 + profile 机制已连根删除（D1/D5，出口与 HELP 双面验证）
+//   [LOCK-53-2] 配置路径解析复刻 settingsPath 三级回退
+//   [LOCK-53-3] config 合并：三必填（model/baseUrl/apiKey）+ 删遗留 provider + 保留已有 + fallbackModel
+//   [LOCK-53-4] 一切输出无明文 key：dry-run 草稿打码、写后回显只报布尔、探针只报 apiKeySet
+//   [LOCK-53-5] keyless 连通性探测：401/403/2xx/异常/网络错，请求绝不携带 key
+//   [LOCK-53-6] l3.recommend 阈值边界（磁盘 2GB / 内存 8GB，注入测试，永远带理由）
+//   [LOCK-53-7] 可选字段不写入（默认值口径抄 applySubagentDefaults，防第二份默认值源）
+//   [LOCK-53-8] config 可写性判定——绝不凭空造 config.json（否则把首次启动搞砖）
+//   [LOCK-53-9] 入口守卫必须穿透符号链接
+//   [LOCK-53-10] 首次运行设置界面引导：8 字段与必填清单逐字一致
+//   [LOCK-53-11] 安装目录扫描扩展：候选目录 + 显式 --install-dir 优先
+//   [LOCK-53-12] 构建完整性检查 + --force
+//   [LOCK-53-13] 损坏 config 的 --repair 重置路径
+//   [LOCK-53-14] 健康检查 --healthcheck
+//   [LOCK-53-15] bun 版本解析与比较（数字比较，非字典序）
+//   [LOCK-53-16] 探测报告形状：无 shell/apiKeysPresent/providers；config.subagent 只报
+//                baseUrl/model/apiKeySet；机器只读事实 + l3.modelPresent
+//   [LOCK-53-17] doWriteConfig 端到端：真实落盘 + 0600 + 备份 + app validateSettings 可接受
+//   [LOCK-53-18] 磁盘事实探针目标退让：fresh 机器首次 --json 也必须报出字节数（R1）
 //
 // 变异体清单：
-//   N1  给闭列表偷加 provider（假装支持 any-model）      → LOCK-43-1 杀
-//   N2  qwen 的环境变量写成 QWEN_API_KEY                  → LOCK-43-1 杀
-//   N3  XDG_CONFIG_HOME="" 被当成有效值                   → LOCK-43-2 杀
-//   N4  原生 Windows 也去写 ~/.bashrc                     → LOCK-43-3 杀
-//   N5  把 API key 写进 config.json                       → LOCK-43-5 杀
-//   N6  合并时整段覆盖，用户的 maxTurns 被吞              → LOCK-43-5 杀
-//   N7  profile 追加不幂等，跑两次两份 export             → LOCK-43-6 杀
-//   N8  版本比较用字符串，1.10.0 < 1.3.0                  → LOCK-43-7 杀
-//   N9  config 不存在时凭空写一份只有 subagent 段的       → LOCK-43-8 杀（会砖首次启动）
-//   N10 config 有但 schemaVersion≠1 仍照写                → LOCK-43-8 杀
-//   N11 入口守卫用 argv[1] 直接比 import.meta.url，
-//       经符号链接调用时静默不执行（命令哑火）            → LOCK-43-9 杀
+//   N1  provider 概念复活（SUPPORTED_PROVIDERS 回来）              → LOCK-53-1 杀
+//   N2  merge 时把遗留 provider 字段留在输出里（app 整段静默忽略）  → LOCK-53-3 杀
+//   N3  dry-run 草稿里带明文 key                                    → LOCK-53-4 杀
+//   N4  探测请求带上 Authorization/x-api-key                        → LOCK-53-5 杀
+//   N5  l3.recommend 阈值漂移（<2GB 却 install / =2GB 却 skip）      → LOCK-53-6 杀
+//   N6  技能端自己写可选字段默认值（第二份默认值源，漂移病复发）      → LOCK-53-7 杀
+//   N7  config 不存在时凭空写一份只有 subagent 段的                  → LOCK-53-8 杀（会砖首次启动）
+//   N8  入口守卫用 argv[1] 直接比 import.meta.url，
+//       经符号链接调用时静默不执行（命令哑火）                      → LOCK-53-9 杀
+//   N9  版本比较用字符串，1.10.0 < 1.3.0                            → LOCK-53-15 杀
+//   N10 --json 报告里 config.subagent 带出 apiKey 明文              → LOCK-53-4/53-16 杀
+//   N11 --write-config 产出含 provider 的块（validateSettings 拒/忽略） → LOCK-53-17 杀
 
 import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync, utimesSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, mkdirSync, writeFileSync, utimesSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { validateSettings } from '../dist/config.js';
+
 import {
-  SUPPORTED_PROVIDERS,
-  validateProvider,
-  resolveConfigPath,
-  detectShellProfile,
-  buildExportLine,
-  buildBaseUrlLine,
-  BASE_URL_ENV,
-  doKey,
+  normalizeBaseUrl,
+  nearestExistingAncestor,
   mergeSubagentConfig,
-  doWriteConfig,
-  appendProfileBlock,
+  probeEndpoint,
+  recommendL3,
+  L3_RECOMMEND_THRESHOLDS,
+  detectL3ModelPresent,
+  L3_MODEL_FILENAME,
+  SUBAGENT_OPTIONAL_FIELDS,
+  resolveConfigPath,
   parseBunVersion,
   satisfiesMinVersion,
   assessConfigWritability,
-  verifyProviderKey,
-  VERIFY_ENDPOINTS,
-  FIRST_RUN_FIELDS,
-  validateModelForProvider,
-  MODEL_PREFIXES,
+  repairConfig,
+  checkHealth,
+  doWriteConfig,
   lookupInstallDir,
   INSTALL_CANDIDATE_DIRS,
   shouldRebuild,
-  repairConfig,
   detect,
-  checkHealth,
-  doHealthCheck,
+  FIRST_RUN_FIELDS,
   REQUIRED_CONFIG_FIELDS,
-  PROFILE_MARKER_BEGIN,
-  PROFILE_MARKER_END,
 } from '../skills/myterminal-onboarding/scripts/onboard.mjs';
 
 /** 一份「真实合法」的 config 骨架，字段照抄 validateSettings 的必填清单。 */
@@ -91,72 +100,73 @@ function validBaseConfig(extra = {}) {
     commandTimeoutSec: 120,
     uiLanguage: 'zh-CN',
     uiTheme: 'dark',
+    passiveLockEnabled: false,
+    actionsContinuationMode: 'off',
+    nonBlockingTasksEnabled: false,
     ...extra,
   };
 }
 
+/** 捕获 process.stdout.write 的辅助。 */
+function captureStdout(fn) {
+  const chunks = [];
+  const orig = process.stdout.write;
+  process.stdout.write = (s) => { chunks.push(s); return true; };
+  try {
+    fn();
+  } finally {
+    process.stdout.write = orig;
+  }
+  return chunks.join('');
+}
+
 // ═══════════════════════════════════════════════
-// [LOCK-43-1] provider 闭列表 + 环境变量名
-//   真值：src/types.ts:185 与 llm-adapter.ts createAdapter
+// [LOCK-53-1] provider 全族 + profile 机制已删除（D1/D5）
+//   真值：ADR-0053 D1（SUPPORTED_PROVIDERS/validateProvider/MODEL_PREFIXES/
+//   PROVIDER_MODEL_KEYWORDS/VERIFY_ENDPOINTS 全删）与 D5（detectShellProfile/
+//   buildExportLine/buildBaseUrlLine/BASE_URL_ENV/appendProfileBlock/PROFILE_MARKER_*
+//   全退役）。旧机制在就是技能没迁移干净——输出出口也必须不带旧 flag。
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-1] provider 闭列表与主仓一致', () => {
-  // 逐字锁——主仓 createAdapter 是什么，这里就必须是什么
-  const TRUTH = {
-    openai: { envVar: 'OPENAI_API_KEY', defaultModel: 'gpt-4o' },
-    anthropic: { envVar: 'ANTHROPIC_API_KEY', defaultModel: 'claude-3-5-sonnet-20241022' },
-    deepseek: { envVar: 'DEEPSEEK_API_KEY', defaultModel: 'deepseek-chat' },
-    glm: { envVar: 'GLM_API_KEY', defaultModel: 'glm-4' },
-    qwen: { envVar: 'DASHSCOPE_API_KEY', defaultModel: 'qwen-max' },
-  };
+describe('[LOCK-53-1] provider 族 + profile 机制连根删除', () => {
+  const DELETED = [
+    'SUPPORTED_PROVIDERS', 'validateProvider', 'MODEL_PREFIXES',
+    'PROVIDER_MODEL_KEYWORDS', 'VERIFY_ENDPOINTS', 'verifyProviderKey',
+    'detectShellProfile', 'buildExportLine', 'buildBaseUrlLine', 'BASE_URL_ENV',
+    'appendProfileBlock', 'PROFILE_MARKER_BEGIN', 'PROFILE_MARKER_END', 'doKey',
+  ];
 
-  test('恰好 5 个 provider，一个不多一个不少', () => {
-    const names = SUPPORTED_PROVIDERS.map((p) => p.provider);
-    assert.deepEqual(names, ['openai', 'anthropic', 'deepseek', 'glm', 'qwen']);
-  });
-
-  test('每个 provider 的环境变量名逐字正确（qwen 是 DASHSCOPE_API_KEY，不是 QWEN_API_KEY）', () => {
-    for (const entry of SUPPORTED_PROVIDERS) {
-      const truth = TRUTH[entry.provider];
-      assert.ok(truth, `未登记的 provider: ${entry.provider}`);
-      assert.equal(entry.envVar, truth.envVar, `${entry.provider} 环境变量名漂移`);
-      assert.equal(entry.defaultModel, truth.defaultModel, `${entry.provider} 默认模型漂移`);
+  test('14 个旧出口全部不存在（N1 杀手锁）', async () => {
+    const onboard = await import('../skills/myterminal-onboarding/scripts/onboard.mjs');
+    for (const name of DELETED) {
+      assert.equal(onboard[name], undefined, `${name} 应已随 ADR-0053 删除`);
     }
   });
 
-  test('每个 provider 都带控制台链接（AI 要指引用户去哪拿 key）', () => {
-    for (const entry of SUPPORTED_PROVIDERS) {
-      assert.match(entry.consoleUrl, /^https:\/\//, `${entry.provider} 缺 consoleUrl`);
-    }
+  test('HELP 不再出现旧 flag（--provider/--verify/--write-profile/DASHSCOPE_BASE_URL）', async () => {
+    const onboard = await import('../skills/myterminal-onboarding/scripts/onboard.mjs');
+    const help = onboard.HELP || '';
+    assert.ok(!help.includes('--provider'), 'HELP 不应再有 --provider');
+    assert.ok(!help.includes('--verify'), 'HELP 不应再有 --verify');
+    assert.ok(!help.includes('--write-profile'), 'HELP 不应再有 --write-profile');
+    assert.ok(!help.includes('DASHSCOPE_BASE_URL'), 'HELP 不应再有 base-url 覆盖导出');
   });
 
-  test('validateProvider 接受 5 个之内的', () => {
-    const r = validateProvider('deepseek');
-    assert.equal(r.ok, true);
-    assert.equal(r.entry.envVar, 'DEEPSEEK_API_KEY');
-  });
-
-  test('validateProvider 大小写与空白不敏感', () => {
-    const r = validateProvider('  OpenAI  ');
-    assert.equal(r.ok, true);
-    assert.equal(r.entry.provider, 'openai');
-  });
-
-  test('validateProvider 拒绝闭列表外的，并如实给出 5 个选项（ADR-0043 D8）', () => {
-    const r = validateProvider('gemini');
-    assert.equal(r.ok, false);
-    assert.deepEqual(r.supported, ['openai', 'anthropic', 'deepseek', 'glm', 'qwen']);
-    // 诚实边界：必须说明需要改代码，不能给错误希望
-    assert.match(r.message, /createAdapter/);
-    assert.match(r.message, /gemini/);
+  test('HELP 提供新命令（--write-config --base-url/--model/--key -、--probe）', async () => {
+    const onboard = await import('../skills/myterminal-onboarding/scripts/onboard.mjs');
+    const help = onboard.HELP || '';
+    assert.ok(help.includes('--write-config'));
+    assert.ok(help.includes('--base-url'));
+    assert.ok(help.includes('--key -'));
+    assert.ok(help.includes('--probe'));
   });
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-2] 配置路径解析（复刻 src/config.ts settingsPath）
+// [LOCK-53-2] 配置路径解析（复刻 src/config.ts settingsPath）
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-2] resolveConfigPath 复刻 settingsPath 三级回退', () => {
+describe('[LOCK-53-2] resolveConfigPath 复刻 settingsPath 三级回退', () => {
   const HOME = '/home/tester';
 
   test('默认：$HOME/.config/myterminal/config.json', () => {
@@ -194,134 +204,60 @@ describe('[LOCK-43-2] resolveConfigPath 复刻 settingsPath 三级回退', () =>
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-3] shell profile 探测（ADR-0043 D6：posix 为主，原生 Windows 手动）
+// [LOCK-53-3] config 合并（ADR-0053 D2：三必填 + 删遗留 provider + 不写可选字段）
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-3] detectShellProfile', () => {
-  const HOME = '/home/tester';
-
-  test('macOS + zsh → ~/.zshrc', () => {
-    const r = detectShellProfile({ platform: 'darwin', env: { SHELL: '/bin/zsh' }, homedir: HOME });
-    assert.equal(r.kind, 'zsh');
-    assert.equal(r.path, path.join(HOME, '.zshrc'));
-    assert.equal(r.manual, false);
-  });
-
-  test('Linux + bash → ~/.bashrc', () => {
-    const r = detectShellProfile({ platform: 'linux', env: { SHELL: '/usr/bin/bash' }, homedir: HOME });
-    assert.equal(r.kind, 'bash');
-    assert.equal(r.path, path.join(HOME, '.bashrc'));
-  });
-
-  test('macOS + bash → ~/.bash_profile（macOS 登录 shell 惯例）', () => {
-    const r = detectShellProfile({ platform: 'darwin', env: { SHELL: '/bin/bash' }, homedir: HOME });
-    assert.equal(r.kind, 'bash');
-    assert.equal(r.path, path.join(HOME, '.bash_profile'));
-  });
-
-  test('fish → ~/.config/fish/config.fish', () => {
-    const r = detectShellProfile({ platform: 'linux', env: { SHELL: '/usr/bin/fish' }, homedir: HOME });
-    assert.equal(r.kind, 'fish');
-    assert.equal(r.path, path.join(HOME, '.config', 'fish', 'config.fish'));
-  });
-
-  test('SHELL 缺失：macOS 回退 zsh，Linux 回退 bash', () => {
-    assert.equal(detectShellProfile({ platform: 'darwin', env: {}, homedir: HOME }).kind, 'zsh');
-    assert.equal(detectShellProfile({ platform: 'linux', env: {}, homedir: HOME }).kind, 'bash');
-  });
-
-  test('WSL 仍按 posix 处理，但打上 wsl 标记', () => {
-    const r = detectShellProfile({
-      platform: 'linux',
-      env: { SHELL: '/bin/bash', WSL_DISTRO_NAME: 'Ubuntu' },
-      homedir: HOME,
-    });
-    assert.equal(r.manual, false);
-    assert.equal(r.wsl, true);
-    assert.equal(r.path, path.join(HOME, '.bashrc'));
-  });
-
-  test('原生 Windows → 不写任何 profile，标记为手动（D6）', () => {
-    const r = detectShellProfile({ platform: 'win32', env: {}, homedir: 'C:\\Users\\tester' });
-    assert.equal(r.kind, 'windows-native');
-    assert.equal(r.manual, true);
-    assert.equal(r.path, null);
-    // 必须给出可照抄的手动指令
-    assert.match(r.manualHint, /setx/i);
-  });
-});
-
-// ═══════════════════════════════════════════════
-// [LOCK-43-4] export 行渲染
-// ═══════════════════════════════════════════════
-
-describe('[LOCK-43-4] buildExportLine', () => {
-  test('posix：export NAME="value"，值加引号防特殊字符', () => {
-    assert.equal(buildExportLine('openai', 'sk-abc123', 'zsh'), 'export OPENAI_API_KEY="sk-abc123"');
-    assert.equal(buildExportLine('qwen', 'sk-xyz', 'bash'), 'export DASHSCOPE_API_KEY="sk-xyz"');
-  });
-
-  test('fish 用 set -gx，不是 export', () => {
-    assert.equal(buildExportLine('glm', 'k1', 'fish'), 'set -gx GLM_API_KEY "k1"');
-  });
-
-  test('值里的双引号被转义，不破坏行', () => {
-    const line = buildExportLine('openai', 'a"b', 'zsh');
-    assert.equal(line, 'export OPENAI_API_KEY="a\\"b"');
-  });
-
-  test('闭列表外的 provider 直接抛错，不静默生成垃圾行', () => {
-    assert.throws(() => buildExportLine('gemini', 'k', 'zsh'), /gemini/);
-  });
-});
-
-// ═══════════════════════════════════════════════
-// [LOCK-43-5] config 合并（ADR-0043 D2：不含 key）
-// ═══════════════════════════════════════════════
-
-describe('[LOCK-43-5] mergeSubagentConfig', () => {
-  test('空配置 → 补齐主仓默认值（对齐 src/config.ts:101-108）', () => {
-    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o' });
+describe('[LOCK-53-3] mergeSubagentConfig 三必填契约', () => {
+  test('空配置 + 三必填 → 恰好 {model, baseUrl, apiKey}，一个不多一个不少（N6 杀手锁）', () => {
+    const out = mergeSubagentConfig({}, { baseUrl: 'https://api.anthropic.com', model: 'claude-3-5-sonnet-20241022', apiKey: 'sk-x' });
     assert.deepEqual(out.subagent, {
-      enabled: true,
-      provider: 'openai',
-      model: 'gpt-4o',
-      maxTurns: 50,
-      timeoutSec: 300,
-      maxParallel: 2,
+      baseUrl: 'https://api.anthropic.com',
+      model: 'claude-3-5-sonnet-20241022',
+      apiKey: 'sk-x',
     });
   });
 
-  test('绝不把 API key 写进 config（D2 铁律）', () => {
-    const out = mergeSubagentConfig(
-      { subagent: { apiKey: 'sk-leak', api_key: 'sk-leak2', key: 'sk-leak3' } },
-      { provider: 'openai', model: 'gpt-4o', apiKey: 'sk-should-be-ignored' },
-    );
-    const serialized = JSON.stringify(out);
-    assert.equal(serialized.includes('sk-leak'), false);
-    assert.equal(serialized.includes('sk-should-be-ignored'), false);
-    assert.equal('apiKey' in out.subagent, false);
-    assert.equal('api_key' in out.subagent, false);
-    assert.equal('key' in out.subagent, false);
+  test('遗留 provider 字段被删除（N2 杀手锁——app 会整段静默忽略，config.ts:142-147）', () => {
+    const existing = { subagent: { provider: 'openai', model: 'gpt-4o', apiKey: 'sk-old', baseUrl: 'https://api.openai.com/v1' } };
+    const out = mergeSubagentConfig(existing, { model: 'gpt-4o' });
+    assert.equal('provider' in out.subagent, false, 'provider 字段必须绝迹——否则写出的 config 永不生效');
+    assert.equal(out.subagent.model, 'gpt-4o');
   });
 
-  test('用户已有的 subagent 字段不被吞（只改 provider/model）', () => {
+  test('用户已有字段不被吞（enabled/maxTurns 等原样保留，不再补默认）', () => {
     const existing = {
-      subagent: { enabled: false, provider: 'glm', model: 'glm-4', maxTurns: 12, timeoutSec: 60, maxParallel: 5, fallbackModel: 'glm-4-flash' },
+      subagent: { enabled: false, model: 'glm-4', baseUrl: 'https://x', apiKey: 'k', maxTurns: 12, timeoutSec: 60, fallbackModel: 'glm-4-flash' },
     };
-    const out = mergeSubagentConfig(existing, { provider: 'deepseek', model: 'deepseek-chat' });
-    assert.equal(out.subagent.provider, 'deepseek');
+    const out = mergeSubagentConfig(existing, { model: 'deepseek-chat' });
     assert.equal(out.subagent.model, 'deepseek-chat');
+    assert.equal(out.subagent.baseUrl, 'https://x');
+    assert.equal(out.subagent.apiKey, 'k');
     assert.equal(out.subagent.maxTurns, 12);
     assert.equal(out.subagent.timeoutSec, 60);
-    assert.equal(out.subagent.maxParallel, 5);
     assert.equal(out.subagent.fallbackModel, 'glm-4-flash');
     assert.equal(out.subagent.enabled, false, 'enabled 是用户显式选择，不许被默认值改写');
   });
 
+  test('遗留 key 别名（api_key/key/token/secret）被剥离，apiKey 是唯一正规字段', () => {
+    const existing = { subagent: { apiKey: 'sk-real', api_key: 'sk-a', key: 'sk-b', token: 'sk-c', secret: 'sk-d' } };
+    const out = mergeSubagentConfig(existing, { model: 'm', baseUrl: 'https://x' });
+    assert.equal(out.subagent.apiKey, 'sk-real');
+    assert.equal('api_key' in out.subagent, false);
+    assert.equal('key' in out.subagent, false);
+    assert.equal('token' in out.subagent, false);
+    assert.equal('secret' in out.subagent, false);
+  });
+
+  test('新 key 覆盖旧 key；空 key 视为未给（保留已有）', () => {
+    const withOld = mergeSubagentConfig({ subagent: { apiKey: 'sk-old' } }, { model: 'm', baseUrl: 'https://x', apiKey: 'sk-new' });
+    assert.equal(withOld.subagent.apiKey, 'sk-new');
+    const kept = mergeSubagentConfig({ subagent: { apiKey: 'sk-old' } }, { model: 'm', baseUrl: 'https://x', apiKey: '' });
+    assert.equal(kept.subagent.apiKey, 'sk-old');
+  });
+
   test('config 里 subagent 之外的段落原样保留', () => {
     const existing = { schemaVersion: 1, workspaces: [{ name: 'w1' }], theme: 'dark' };
-    const out = mergeSubagentConfig(existing, { provider: 'openai', model: 'gpt-4o' });
+    const out = mergeSubagentConfig(existing, { baseUrl: 'https://x', model: 'm', apiKey: 'k' });
     assert.equal(out.schemaVersion, 1);
     assert.deepEqual(out.workspaces, [{ name: 'w1' }]);
     assert.equal(out.theme, 'dark');
@@ -330,115 +266,283 @@ describe('[LOCK-43-5] mergeSubagentConfig', () => {
   test('纯函数：不改原对象', () => {
     const existing = { subagent: { provider: 'glm', model: 'glm-4' } };
     const snapshot = JSON.stringify(existing);
-    mergeSubagentConfig(existing, { provider: 'openai', model: 'gpt-4o' });
+    mergeSubagentConfig(existing, { baseUrl: 'https://x', model: 'm', apiKey: 'k' });
     assert.equal(JSON.stringify(existing), snapshot);
   });
 
-  test('闭列表外的 provider 拒绝合并', () => {
-    assert.throws(() => mergeSubagentConfig({}, { provider: 'gemini', model: 'x' }), /gemini/);
+  test('三必填缺任一 → 抛错并点名（validateSettings 缺配即拒的同款纪律）', () => {
+    assert.throws(() => mergeSubagentConfig({}, { baseUrl: 'https://x', model: 'm' }), /apiKey/);
+    assert.throws(() => mergeSubagentConfig({}, { baseUrl: 'https://x', apiKey: 'k' }), /model/);
+    assert.throws(() => mergeSubagentConfig({}, { model: 'm', apiKey: 'k' }), /baseUrl/);
+    assert.throws(
+      () => mergeSubagentConfig({}, {}),
+      (err) => err instanceof Error && /model/.test(err.message) && /baseUrl/.test(err.message) && /apiKey/.test(err.message),
+      '缺多个要一起点名，不能只报第一个',
+    );
+  });
+
+  test('fallbackModel 透传：给则写、空串省略、已有保留', () => {
+    const given = mergeSubagentConfig({}, { baseUrl: 'https://x', model: 'm', apiKey: 'k', fallbackModel: 'm-mini' });
+    assert.equal(given.subagent.fallbackModel, 'm-mini');
+    const omitted = mergeSubagentConfig({}, { baseUrl: 'https://x', model: 'm', apiKey: 'k', fallbackModel: '' });
+    assert.equal('fallbackModel' in omitted.subagent, false);
+    const kept = mergeSubagentConfig({ subagent: { fallbackModel: 'old-mini' } }, { baseUrl: 'https://x', model: 'm', apiKey: 'k' });
+    assert.equal(kept.subagent.fallbackModel, 'old-mini');
   });
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-6] profile 幂等追加（ADR-0043 D2）
+// [LOCK-53-4] 一切输出无明文 key（ADR-0053 D3）
+//   覆盖三个输出面：--dry-run 草稿、写后回显、--json 报告。
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-6] appendProfileBlock 幂等', () => {
-  const LINE = 'export OPENAI_API_KEY="sk-1"';
+describe('[LOCK-53-4] 任何输出都不出现明文 key', () => {
+  const SECRET = 'sk-this-value-must-never-echo';
 
-  test('首次追加：带 begin/end 标记', () => {
-    const r = appendProfileBlock('# my rc\n', [LINE]);
-    assert.equal(r.changed, true);
-    assert.ok(r.content.includes(PROFILE_MARKER_BEGIN));
-    assert.ok(r.content.includes(PROFILE_MARKER_END));
-    assert.ok(r.content.includes(LINE));
-    assert.ok(r.content.startsWith('# my rc\n'), '原有内容必须保留在前');
+  function writeReport(cfgPath) {
+    return { config: { path: cfgPath, exists: true } };
+  }
+
+  test('--dry-run 草稿打码：输出含 <redacted>，不含明文 key，且不落盘不备份（N3 杀手锁）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-redact-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      const before = JSON.stringify(validBaseConfig());
+      writeFileSync(cfgPath, before, 'utf8');
+      const out = captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://api.anthropic.com', model: 'claude-3-5-sonnet-20241022', key: SECRET, dryRun: true,
+        });
+      });
+      assert.ok(out.includes('<redacted>'), '草稿应显式打码');
+      assert.equal(out.includes(SECRET), false, '草稿不得带明文 key');
+      assert.equal(readFileSync(cfgPath, 'utf8'), before, 'dry-run 不得写盘');
+      assert.equal(existsSync(`${cfgPath}.myterminal-backup`), false, 'dry-run 不得生成备份');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  test('重复跑同样内容：不变、changed=false（N7 杀手锁）', () => {
-    const first = appendProfileBlock('# my rc\n', [LINE]);
-    const second = appendProfileBlock(first.content, [LINE]);
-    assert.equal(second.changed, false);
-    assert.equal(second.content, first.content);
-    // 只能有一份标记
-    assert.equal(second.content.split(PROFILE_MARKER_BEGIN).length - 1, 1);
+  test('写后回显只报布尔：输出不含明文 key，含 "set (value never echoed)"（N3 杀手锁）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-echo-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      writeFileSync(cfgPath, JSON.stringify(validBaseConfig()), 'utf8');
+      const out = captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://api.anthropic.com', model: 'claude-3-5-sonnet-20241022', key: SECRET, dryRun: false,
+        });
+      });
+      assert.equal(out.includes(SECRET), false, '回显不得带明文 key');
+      assert.match(out, /set \(value never echoed\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  test('换 key 重跑：就地替换块内容，不产生第二份块', () => {
-    const first = appendProfileBlock('# my rc\n', [LINE]);
-    const second = appendProfileBlock(first.content, ['export OPENAI_API_KEY="sk-2"']);
-    assert.equal(second.changed, true);
-    assert.equal(second.content.split(PROFILE_MARKER_BEGIN).length - 1, 1);
-    assert.equal(second.content.includes('sk-1'), false, '旧 key 必须被替换掉');
-    assert.ok(second.content.includes('sk-2'));
-  });
+  test('--json 报告：config.subagent 只报 apiKeySet 布尔，序列化全文无 key（N10 杀手锁）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-json-'));
+    try {
+      // 造一个含真实 key 的 config，确认 detect 的报告把它降级成布尔
+      const checkout = path.join(dir, 'code', 'myterminal');
+      mkdirSync(path.join(checkout, 'dist'), { recursive: true });
+      writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'myterminal' }));
+      writeFileSync(path.join(checkout, 'dist', 'cli.js'), '// built');
+      const cfgDir = path.join(dir, '.config', 'myterminal');
+      mkdirSync(cfgDir, { recursive: true });
+      const cfgPath = path.join(cfgDir, 'config.json');
+      writeFileSync(cfgPath, JSON.stringify(validBaseConfig({ subagent: { model: 'm', baseUrl: 'https://x', apiKey: SECRET } })), 'utf8');
 
-  test('块后面的用户内容不被吃掉', () => {
-    const first = appendProfileBlock('# head\n', [LINE]);
-    const withTail = `${first.content}\n# tail line\n`;
-    const second = appendProfileBlock(withTail, ['export OPENAI_API_KEY="sk-2"']);
-    assert.ok(second.content.includes('# head'));
-    assert.ok(second.content.includes('# tail line'));
-  });
-
-  test('空 profile（新文件）也能安全追加', () => {
-    const r = appendProfileBlock('', [LINE]);
-    assert.equal(r.changed, true);
-    assert.ok(r.content.includes(LINE));
-  });
-
-  test('原文件无结尾换行时，追加前自动补换行（不粘连上一行）', () => {
-    const r = appendProfileBlock('# no trailing newline', [LINE]);
-    assert.equal(r.content.includes('# no trailing newline' + PROFILE_MARKER_BEGIN), false);
-    assert.ok(r.content.includes('# no trailing newline\n'));
+      const report = detect({ homedir: dir, env: {} });
+      const serialized = JSON.stringify(report);
+      assert.equal(serialized.includes(SECRET), false, 'JSON 报告不得带明文 key');
+      assert.equal(report.config.subagent.apiKeySet, true);
+      assert.equal('apiKey' in report.config.subagent, false, '报告不得携带 apiKey 属性');
+      assert.equal(report.config.subagent.model, 'm');
+      assert.equal(report.config.subagent.baseUrl, 'https://x');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-7] bun 版本（package.json engines: bun>=1.3.0）
+// [LOCK-53-5] keyless 连通性探测（ADR-0053 D4）
+//   真值：src/subagent/llm-adapter.ts:294-295,364 —— baseUrl 归一化 + <base>/v1/messages。
+//   请求绝不携带 key：无 Authorization、无 x-api-key、body 无 key。fetchImpl 注入锁。
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-7] bun 版本解析与比较', () => {
-  test('parseBunVersion 吃得下裸版本号与带前缀输出', () => {
-    assert.equal(parseBunVersion('1.3.2\n'), '1.3.2');
-    assert.equal(parseBunVersion('bun 1.3.2'), '1.3.2');
-    assert.equal(parseBunVersion('1.3.2+abcdef\n'), '1.3.2');
+describe('[LOCK-53-5] probeEndpoint keyless 连通性探测', () => {
+  function fakeFetch(status, { throws = false } = {}) {
+    const calls = [];
+    const impl = async (url, opts) => {
+      calls.push({ url, opts });
+      if (throws) throw new Error('ECONNREFUSED');
+      return { status, ok: status >= 200 && status < 300 };
+    };
+    return { calls, impl };
+  }
+
+  test('401 → ok（端点可达、要求鉴权——正是 keyless 探测的期望答案）', async () => {
+    const { calls, impl } = fakeFetch(401);
+    const r = await probeEndpoint('https://api.anthropic.com', { fetchImpl: impl });
+    assert.equal(r.ok, true);
+    assert.equal(r.kind, 'auth-required');
+    assert.equal(r.status, 401);
+    assert.match(r.message, /401/);
+    assert.equal(calls.length, 1);
   });
 
-  test('parseBunVersion 对垃圾输入返回 null，不瞎猜', () => {
-    assert.equal(parseBunVersion(''), null);
-    assert.equal(parseBunVersion('command not found'), null);
-    assert.equal(parseBunVersion(undefined), null);
+  test('403 → ok（同一语义）', async () => {
+    const { impl } = fakeFetch(403);
+    const r = await probeEndpoint('https://x', { fetchImpl: impl });
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 403);
   });
 
-  test('satisfiesMinVersion 用数字比较，不是字典序（N8 杀手锁）', () => {
-    assert.equal(satisfiesMinVersion('1.10.0', '1.3.0'), true);
-    assert.equal(satisfiesMinVersion('1.3.0', '1.3.0'), true);
-    assert.equal(satisfiesMinVersion('1.2.9', '1.3.0'), false);
-    assert.equal(satisfiesMinVersion('2.0.0', '1.3.0'), true);
-    assert.equal(satisfiesMinVersion('0.9.9', '1.3.0'), false);
+  test('2xx → ok（无鉴权端点，本地服务器常见）', async () => {
+    const { impl } = fakeFetch(200);
+    const r = await probeEndpoint('https://localhost:11434', { fetchImpl: impl });
+    assert.equal(r.ok, true);
+    assert.equal(r.kind, 'open');
+    assert.equal(r.status, 200);
   });
 
-  test('版本段数不齐时按 0 补齐', () => {
-    assert.equal(satisfiesMinVersion('2', '1.3.0'), true);
-    assert.equal(satisfiesMinVersion('1.3', '1.3.0'), true);
-    assert.equal(satisfiesMinVersion('1', '1.3.0'), false);
+  test('其它 HTTP 状态 → ok=false 但 reachable=true（端点可达、应答异常）', async () => {
+    const { impl } = fakeFetch(500);
+    const r = await probeEndpoint('https://x', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.equal(r.reachable, true);
+    assert.equal(r.status, 500);
   });
 
-  test('null 版本（bun 不存在）判为不满足', () => {
-    assert.equal(satisfiesMinVersion(null, '1.3.0'), false);
+  test('网络错误 → ok=false status=0，不抛（N4 语义：无 key 也就不该有 key 相关错误）', async () => {
+    const { impl } = fakeFetch(0, { throws: true });
+    const r = await probeEndpoint('https://x', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.equal(r.reachable, false);
+    assert.equal(r.status, 0);
+    assert.match(r.message, /Network error/);
+  });
+
+  test('请求构造：<baseUrl>/v1/messages，无任何鉴权头，body 无 key（N4 杀手锁）', async () => {
+    const { calls, impl } = fakeFetch(401);
+    await probeEndpoint('https://api.anthropic.com', { fetchImpl: impl });
+    const { url, opts } = calls[0];
+    assert.equal(url, 'https://api.anthropic.com/v1/messages');
+    assert.equal(opts.headers.authorization, undefined, '绝不允许 Authorization 头');
+    assert.equal(opts.headers['x-api-key'], undefined, '绝不允许 x-api-key 头');
+    const body = JSON.parse(opts.body);
+    const serialized = JSON.stringify(body);
+    assert.equal(serialized.includes('sk-'), false, 'body 不得含任何 key');
+  });
+
+  test('baseUrl 归一化与 app 一致：剥末尾 / 与 /v1（真值 llm-adapter.ts:294-295）', async () => {
+    assert.equal(normalizeBaseUrl('https://api.anthropic.com'), 'https://api.anthropic.com');
+    assert.equal(normalizeBaseUrl('https://api.anthropic.com/'), 'https://api.anthropic.com');
+    assert.equal(normalizeBaseUrl('https://api.anthropic.com/v1'), 'https://api.anthropic.com');
+    assert.equal(normalizeBaseUrl('https://api.anthropic.com/v1/'), 'https://api.anthropic.com');
+    const { calls, impl } = fakeFetch(401);
+    await probeEndpoint('https://gateway.example/v1/', { fetchImpl: impl });
+    assert.equal(calls[0].url, 'https://gateway.example/v1/messages');
+  });
+
+  test('空 baseUrl → ok=false kind=no-base-url，不打请求', async () => {
+    const impl = async () => assert.fail('不应发起请求');
+    const r = await probeEndpoint('', { fetchImpl: impl });
+    assert.equal(r.ok, false);
+    assert.equal(r.kind, 'no-base-url');
   });
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-8] config 可写性判定
+// [LOCK-53-6] l3.recommend 阈值边界（ADR-0053 D7）
+//   可用磁盘 < 2GB → skip；总内存 < 8GB → skip；否则 install。永远带理由。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-53-6] recommendL3 阈值边界（注入测试）', () => {
+  const GB = 1024 ** 3;
+
+  test('阈值常量固定为 2GB / 8GB（N5 杀手锁：改阈值必须改这里）', () => {
+    assert.deepEqual(L3_RECOMMEND_THRESHOLDS, { minFreeDiskBytes: 2 * GB, minTotalMemoryBytes: 8 * GB });
+  });
+
+  test('磁盘边界：正好 2GB → install；2GB-1 → skip', () => {
+    assert.equal(recommendL3({ freeDiskBytes: 2 * GB, totalMemoryBytes: 8 * GB }).verdict, 'install');
+    assert.equal(recommendL3({ freeDiskBytes: 2 * GB - 1, totalMemoryBytes: 8 * GB }).verdict, 'skip');
+  });
+
+  test('内存边界：正好 8GB → install；8GB-1 → skip', () => {
+    assert.equal(recommendL3({ freeDiskBytes: 2 * GB, totalMemoryBytes: 8 * GB }).verdict, 'install');
+    assert.equal(recommendL3({ freeDiskBytes: 2 * GB, totalMemoryBytes: 8 * GB - 1 }).verdict, 'skip');
+  });
+
+  test('两个维度都满足才 install：任一不满足 → skip', () => {
+    assert.equal(recommendL3({ freeDiskBytes: 2 * GB - 1, totalMemoryBytes: 8 * GB - 1 }).verdict, 'skip');
+    assert.equal(recommendL3({ freeDiskBytes: 50 * GB, totalMemoryBytes: 7 * GB }).verdict, 'skip');
+    assert.equal(recommendL3({ freeDiskBytes: 1 * GB, totalMemoryBytes: 64 * GB }).verdict, 'skip');
+  });
+
+  test('推荐永远带理由（ADR-0053 D7：是事实不是观点）', () => {
+    const install = recommendL3({ freeDiskBytes: 50 * GB, totalMemoryBytes: 64 * GB });
+    assert.equal(install.verdict, 'install');
+    assert.ok(install.reasons.length >= 1);
+    assert.match(install.reasons[0], /50\.0 GB/);
+    const skip = recommendL3({ freeDiskBytes: 1 * GB, totalMemoryBytes: 64 * GB });
+    assert.ok(skip.reasons.length >= 1);
+    assert.match(skip.reasons[0], /1\.0 GB/);
+  });
+
+  test('测量缺失（磁盘不可测/内存不可测）→ 保守 skip 并说明原因', () => {
+    assert.equal(recommendL3({ freeDiskBytes: null, totalMemoryBytes: 64 * GB }).verdict, 'skip');
+    assert.equal(recommendL3({ freeDiskBytes: 50 * GB, totalMemoryBytes: null }).verdict, 'skip');
+    assert.equal(recommendL3({}).verdict, 'skip');
+    const r = recommendL3({ freeDiskBytes: null, totalMemoryBytes: 64 * GB });
+    assert.ok(r.reasons.some((x) => x.includes('could not be measured')));
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-53-7] 可选字段不写入（ADR-0053 D2/F7）
+//   真值：src/config.ts:110-120 applySubagentDefaults —— 技能端不留第二份默认值源。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-53-7] 可选字段默认值口径抄 applySubagentDefaults', () => {
+  const TRUTH = [
+    { field: 'maxTurns', default: 50, min: 1, max: 200 },
+    { field: 'timeoutSec', default: 300, min: 30, max: 3600 },
+    { field: 'maxParallel', default: 2, min: 1, max: 4 },
+    { field: 'contextWindow', default: 120_000, min: 1_000, max: 1_000_000 },
+    { field: 'maxOutput', default: 32_000, min: 1_000, max: 200_000 },
+    { field: 'compactThreshold', default: 80_000, min: 1_000, max: 500_000 },
+  ];
+
+  test('SUBAGENT_OPTIONAL_FIELDS 与 applySubagentDefaults 逐字一致（N6 杀手锁）', () => {
+    assert.deepEqual(SUBAGENT_OPTIONAL_FIELDS, TRUTH);
+  });
+
+  test('merge 不写可选字段（空配置 → 输出无 maxTurns 等任何默认值注入）', () => {
+    const out = mergeSubagentConfig({}, { baseUrl: 'https://x', model: 'm', apiKey: 'k' });
+    assert.deepEqual(Object.keys(out.subagent).sort(), ['apiKey', 'baseUrl', 'model']);
+  });
+
+  test('merge 对用户已配置的可选字段原样保留', () => {
+    const existing = { subagent: { maxTurns: 12, contextWindow: 999_000, model: 'm', baseUrl: 'https://x', apiKey: 'k' } };
+    const out = mergeSubagentConfig(existing, {});
+    assert.equal(out.subagent.maxTurns, 12);
+    assert.equal(out.subagent.contextWindow, 999_000);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-53-8] config 可写性判定
 //
 // 为什么这把锁必须存在（主仓事实）：
-//   src/config.ts:200  parseMyTerminalSettings —— schemaVersion !== 1 直接 throw
-//   src/config.ts:113  validateSettings       —— workspaceDir/host/port/publicBaseUrl/
+//   src/config.ts:parseMyTerminalSettings —— schemaVersion !== 1 直接 throw
+//   src/config.ts:validateSettings       —— workspaceDir/host/port/publicBaseUrl/
 //                                                connectorKey(>=24)/actionsToken(>=24)/
 //                                                maxOutputChars/commandTimeoutSec 全部必填
-//   src/cli.ts:48-54   ensureSettings         —— 注释写死「配置无效时绝不回退到首次运行默认值，
+//   src/cli.ts:ensureSettings            —— 注释写死「配置无效时绝不回退到首次运行默认值，
 //                                                因为那会悄悄替换稳定凭据」→ 直接抛错
 //
 // 推论：onboard 若在 config.json 不存在时凭空写一份只有 subagent 段的文件，
@@ -447,8 +551,8 @@ describe('[LOCK-43-7] bun 版本解析与比较', () => {
 //       正确做法：让用户先跑一次 MyTerminal 完成 setup TUI，再回来写 subagent。
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-8] assessConfigWritability 绝不凭空造 config', () => {
-  test('config 不存在 → 拒写，并指引先跑一次 setup（N9 杀手锁）', () => {
+describe('[LOCK-53-8] assessConfigWritability 绝不凭空造 config', () => {
+  test('config 不存在 → 拒写，并指引先跑一次 setup（N7 杀手锁）', () => {
     const r = assessConfigWritability(null);
     assert.equal(r.ok, false);
     assert.equal(r.reason, 'missing');
@@ -456,6 +560,10 @@ describe('[LOCK-43-8] assessConfigWritability 绝不凭空造 config', () => {
     assert.match(r.guidance, /bun run dev/);
     // 必须解释为什么脚本不能自己造
     assert.match(r.guidance, /credential/i);
+    // 指引里的重跑命令必须是新契约（--base-url/--key -，不再是 --provider）
+    assert.match(r.guidance, /--base-url/);
+    assert.match(r.guidance, /--key -/);
+    assert.ok(!r.guidance.includes('--provider'));
   });
 
   test('config 是坏 JSON → 拒写，不覆盖用户文件', () => {
@@ -464,7 +572,7 @@ describe('[LOCK-43-8] assessConfigWritability 绝不凭空造 config', () => {
     assert.equal(r.reason, 'unparsable');
   });
 
-  test('schemaVersion 不是 1 → 拒写（主仓会 throw）（N10 杀手锁）', () => {
+  test('schemaVersion 不是 1 → 拒写（主仓会 throw）', () => {
     assert.equal(assessConfigWritability(validBaseConfig({ schemaVersion: 2 })).reason, 'unsupported-schema');
     const noVersion = validBaseConfig();
     delete noVersion.schemaVersion;
@@ -486,22 +594,12 @@ describe('[LOCK-43-8] assessConfigWritability 绝不凭空造 config', () => {
     const r = assessConfigWritability(validBaseConfig());
     assert.equal(r.ok, true);
   });
-
-  test('放行后合并，主仓必填字段一个不少地活下来', () => {
-    const base = validBaseConfig({ subagent: { enabled: true, provider: 'glm', model: 'glm-4', maxTurns: 7, timeoutSec: 30, maxParallel: 1 } });
-    const out = mergeSubagentConfig(base, { provider: 'openai', model: 'gpt-4o' });
-    for (const field of ['schemaVersion', 'workspaceDir', 'host', 'port', 'publicBaseUrl', 'connectorKey', 'actionsToken', 'maxOutputChars', 'commandTimeoutSec']) {
-      assert.deepEqual(out[field], base[field], `必填字段 ${field} 在合并中丢失/被改`);
-    }
-    assert.equal(out.subagent.provider, 'openai');
-    assert.equal(out.subagent.maxTurns, 7);
-  });
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-9] 入口守卫必须穿透符号链接
+// [LOCK-53-9] 入口守卫必须穿透符号链接
 //
-// 为什么这把锁必须存在（ADR-0043）：
+// 为什么这把锁必须存在：
 //   脚本可能被一条符号链接调用（例如用户把它软链到 PATH 上命名为 `myterminal-onboard`）。
 //   而 import.meta.url 给的是**解析后的真实路径**，process.argv[1] 给的是**符号链接路径**，
 //   两者直接字符串比较必然不等 → main() 不执行 → 命令静默无输出。
@@ -533,11 +631,11 @@ function availableRuntimes() {
 
 const RUNTIMES = availableRuntimes();
 
-describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
+describe('[LOCK-53-9] 经符号链接调用仍会执行', () => {
   test('node 必须可用——脚本与 shebang 都依赖它', () => {
     assert.ok(
       RUNTIMES.some((r) => r.name === 'node'),
-      'node 不在 PATH 上，N11 这条锁形同虚设（本机应装 node）',
+      'node 不在 PATH 上，这条锁形同虚设（本机应装 node）',
     );
   });
 
@@ -547,7 +645,7 @@ describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
       assert.match(out, /USAGE/);
     });
 
-    test(`[${runtime.name}] 经符号链接调用同样有输出（N11 杀手锁）`, () => {
+    test(`[${runtime.name}] 经符号链接调用同样有输出（N8 杀手锁）`, () => {
       const dir = mkdtempSync(path.join(os.tmpdir(), 'mt-onboard-link-'));
       try {
         const link = path.join(dir, 'myterminal-onboard');
@@ -560,7 +658,7 @@ describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
       }
     });
 
-    test(`[${runtime.name}] 被 import 时绝不自动执行（修 N11 不能变成一 import 就跑）`, () => {
+    test(`[${runtime.name}] 被 import 时绝不自动执行（修 N8 不能变成一 import 就跑）`, () => {
       // 必须走 file URL：Windows 上 SCRIPT_PATH 含反斜杠，直接插进模板字符串会被 JS
       // 当转义序列吃掉（\a\m\s → amsss），运行时报 Cannot find package 'D:amyterminal...'。
       // pathToFileURL 产出正斜杠 + 百分号编码，JSON.stringify 再兜一层引号安全。
@@ -572,100 +670,7 @@ describe('[LOCK-43-9] 经符号链接调用仍会执行', () => {
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-10] provider key 真实验证（P0-1）
-//
-// 为什么这把锁必须存在（ADR-0043 D11，用户评审 P0）：
-//   旧流程结束只 echo $ENV_VAR 看 key 在不在，从不验证 key 有效、也从不
-//   通一次 provider。拿个吊销的 key 走完全程，只有 runtime 调 subagent 崩了
-//   才发现。verifyProviderKey 必须：① 为每个 provider 构造正确的请求
-//   （URL/header/body）② 200→ok ③ 非200→fail 带 HTTP 状态 ④ 网络错→graceful。
-//   网络调用通过注入 fetchImpl 锁，不真打外网。
-// ═══════════════════════════════════════════════
-
-describe('[LOCK-43-10] provider key 真实验证（P0-1）', () => {
-  function fakeFetch(expectStatus = 200, bodyText = '{}') {
-    const calls = [];
-    const impl = async (url, opts) => {
-      calls.push({ url, opts });
-      return {
-        ok: expectStatus >= 200 && expectStatus < 300,
-        status: expectStatus,
-        text: async () => bodyText,
-      };
-    };
-    return { calls, impl };
-  }
-
-  test('VERIFY_ENDPOINTS 五种 provider 的 base URL 与仓库 llm-adapter.ts 一致', () => {
-    assert.equal(VERIFY_ENDPOINTS.openai.baseUrl, 'https://api.openai.com/v1');
-    assert.equal(VERIFY_ENDPOINTS.anthropic.baseUrl, 'https://api.anthropic.com/v1');
-    assert.equal(VERIFY_ENDPOINTS.deepseek.baseUrl, 'https://api.deepseek.com/v1');
-    assert.equal(VERIFY_ENDPOINTS.glm.baseUrl, 'https://open.bigmodel.cn/api/paas/v4');
-    assert.equal(VERIFY_ENDPOINTS.qwen.baseUrl, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
-  });
-
-  test('openai 系构造 /chat/completions + Bearer + max_tokens=1', async () => {
-    const { calls, impl } = fakeFetch(200);
-    const r = await verifyProviderKey('openai', 'sk-test', { fetchImpl: impl });
-    assert.ok(r.ok, '200 应判定 ok');
-    assert.equal(r.status, 200);
-    assert.equal(calls.length, 1);
-    assert.match(calls[0].url, /\/chat\/completions$/);
-    assert.equal(calls[0].opts.headers.authorization, 'Bearer sk-test');
-    const body = JSON.parse(calls[0].opts.body);
-    assert.equal(body.model, 'gpt-4o');
-    assert.equal(body.max_tokens, 1);
-  });
-
-  test('anthropic 构造 /messages + x-api-key header', async () => {
-    const { calls, impl } = fakeFetch(200);
-    await verifyProviderKey('anthropic', 'sk-ant', { fetchImpl: impl });
-    assert.match(calls[0].url, /\/messages$/);
-    assert.equal(calls[0].opts.headers['x-api-key'], 'sk-ant');
-    assert.equal(calls[0].opts.headers['anthropic-version'], '2023-06-01');
-    const body = JSON.parse(calls[0].opts.body);
-    assert.equal(body.max_tokens, 1);
-  });
-
-  test('非 200 → ok=false 且带 HTTP 状态（吊销 key 必被抓住）', async () => {
-    const { impl } = fakeFetch(401, '{"error":"invalid_key"}');
-    const r = await verifyProviderKey('deepseek', 'bad', { fetchImpl: impl });
-    assert.equal(r.ok, false);
-    assert.equal(r.status, 401);
-    assert.match(r.message, /HTTP 401/);
-  });
-
-  test('网络异常 → ok=false status=0 不抛', async () => {
-    const impl = async () => { throw new Error('ECONNREFUSED'); };
-    const r = await verifyProviderKey('glm', 'k', { fetchImpl: impl });
-    assert.equal(r.ok, false);
-    assert.equal(r.status, 0);
-    assert.match(r.message, /Network error/);
-  });
-
-  test('无 key → ok=false（不偷偷用空串打请求）', async () => {
-    const impl = async () => assert.fail('不应发起请求');
-    const r = await verifyProviderKey('qwen', '', { fetchImpl: impl });
-    assert.equal(r.ok, false);
-    assert.equal(r.status, 0);
-  });
-
-  test('闭列表外 provider → ok=false（诚实边界不变）', async () => {
-    const impl = async () => assert.fail('不应发起请求');
-    const r = await verifyProviderKey('gemini', 'k', { fetchImpl: impl });
-    assert.equal(r.ok, false);
-    assert.match(r.message, /not supported/);
-  });
-
-  test('qwen 接受 baseUrl 覆盖（DASHSCOPE_BASE_URL 场景）', async () => {
-    const { calls, impl } = fakeFetch(200);
-    await verifyProviderKey('qwen', 'k', { baseUrl: 'https://private/v1', fetchImpl: impl });
-    assert.match(calls[0].url, /^https:\/\/private\/v1\/chat\/completions$/);
-  });
-});
-
-// ═══════════════════════════════════════════════
-// [LOCK-43-11] 首次运行设置界面引导（P0-2）
+// [LOCK-53-10] 首次运行设置界面引导
 //
 // 为什么这把锁必须存在（用户评审 P0）：
 //   旧 FIRST_RUN_GUIDANCE 只说"run bun run dev"，首次使用者面对空屏不知填啥。
@@ -673,7 +678,7 @@ describe('[LOCK-43-10] provider key 真实验证（P0-1）', () => {
 //   REQUIRED_CONFIG_FIELDS 逐字一致——少一个、错一个名字，引导就骗人。
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-11] 首次运行设置界面引导（P0-2）', () => {
+describe('[LOCK-53-10] 首次运行设置界面引导', () => {
   test('FIRST_RUN_FIELDS 正好是 8 个，与 REQUIRED_CONFIG_FIELDS 逐字一致', () => {
     assert.equal(FIRST_RUN_FIELDS.length, 8);
     const names = FIRST_RUN_FIELDS.map((f) => f.field).sort();
@@ -690,74 +695,10 @@ describe('[LOCK-43-11] 首次运行设置界面引导（P0-2）', () => {
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-12] model↔provider 一致性强制（P1-3）
-//
-// 为什么这把锁必须存在（用户评审 P1）：
-//   SKILL.md 说"model 明显属于别的 provider 会 warn"，但 doWriteConfig 里没有任何
-//   代码检查——agent 一忘就把 qwen3.7-plus 写进 provider: openai，config 写成功了，
-//   runtime 调 subagent 才崩。现在 mergeSubagentConfig 直接抛错，静默写错不再发生。
+// [LOCK-53-11] 安装目录扫描扩展
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-12] model↔provider 一致性强制（P1-3）', () => {
-  test('匹配的 model → ok', () => {
-    assert.equal(validateModelForProvider('openai', 'gpt-4o').ok, true);
-    assert.equal(validateModelForProvider('anthropic', 'claude-3-5-sonnet-20241022').ok, true);
-    assert.equal(validateModelForProvider('deepseek', 'deepseek-chat').ok, true);
-    assert.equal(validateModelForProvider('glm', 'glm-4').ok, true);
-    assert.equal(validateModelForProvider('qwen', 'qwen-max').ok, true);
-  });
-
-  test('空 model → ok（用 provider 默认）', () => {
-    assert.equal(validateModelForProvider('openai', '').ok, true);
-    assert.equal(validateModelForProvider('openai', undefined).ok, true);
-  });
-
-  test('明显错配 → ok=false，点名该用哪个 provider（杜绝 qwen3.7-plus 写进 openai）', () => {
-    const r = validateModelForProvider('openai', 'qwen3.7-plus');
-    assert.equal(r.ok, false);
-    assert.equal(r.reason, 'mismatch');
-    assert.match(r.message, /qwen/);
-    assert.match(r.message, /openai/);
-  });
-
-  test('未知前缀 → ok=true 但带 advisory warning（不误杀自定义模型）', () => {
-    const r = validateModelForProvider('openai', 'my-fine-tuned-42');
-    assert.equal(r.ok, true);
-    assert.ok(r.warning, '未知前缀应给出警告而非静默通过');
-  });
-
-  test('mergeSubagentConfig 遇错配直接抛错（不再静默写坏 config）', () => {
-    const base = { schemaVersion: 1, workspaceDir: '/w', host: '127.0.0.1', port: 1, publicBaseUrl: 'x', connectorKey: 'a'.repeat(24), actionsToken: 'b'.repeat(24), maxOutputChars: 1, commandTimeoutSec: 1 };
-    assert.throws(
-      () => mergeSubagentConfig(base, { provider: 'openai', model: 'qwen3.7-plus' }),
-      /mismatch/i,
-    );
-  });
-
-  test('mergeSubagentConfig 正常 model 不抛，且 model 字段正确写入', () => {
-    const base = { schemaVersion: 1, workspaceDir: '/w', host: '127.0.0.1', port: 1, publicBaseUrl: 'x', connectorKey: 'a'.repeat(24), actionsToken: 'b'.repeat(24), maxOutputChars: 1, commandTimeoutSec: 1 };
-    const merged = mergeSubagentConfig(base, { provider: 'openai', model: 'gpt-4o' });
-    assert.equal(merged.subagent.provider, 'openai');
-    assert.equal(merged.subagent.model, 'gpt-4o');
-  });
-
-  test('MODEL_PREFIXES 覆盖全部 5 个 provider', () => {
-    for (const p of SUPPORTED_PROVIDERS) {
-      assert.ok(Array.isArray(MODEL_PREFIXES[p.provider]) && MODEL_PREFIXES[p.provider].length > 0, `${p.provider} 缺前缀定义`);
-    }
-  });
-});
-
-// ═══════════════════════════════════════════════
-// [LOCK-43-13] 安装目录扫描扩展（P1-4）
-//
-// 为什么这把锁必须存在（用户评审 P1）：
-//   原 detect 只扫 3 条固定路径；装到 ~/projects/myterminal 这类地方 → installed 误判 false
-//   → doInstall 往 ~/myterminal 重新 clone，跟现有 checkout 脱节。现在扫一组标准候选目录，
-//   且 suggestedInstallDir 优先用找到的真实目录。
-// ═══════════════════════════════════════════════
-
-describe('[LOCK-43-13] 安装目录扫描扩展（P1-4）', () => {
+describe('[LOCK-53-11] 安装目录扫描扩展', () => {
   function fakeCheckout(root, rel) {
     const dir = path.join(root, rel);
     mkdirSync(dir, { recursive: true });
@@ -777,7 +718,7 @@ describe('[LOCK-43-13] 安装目录扫描扩展（P1-4）', () => {
     }
   });
 
-  test('在 ~/projects/myterminal 找到 checkout，不误判未安装（修 P1-4）', () => {
+  test('在 ~/projects/myterminal 找到 checkout，不误判未安装', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'mt-homedir-'));
     try {
       decoy(root, 'myterminal'); // ~/myterminal 是别的仓库，不应被误认
@@ -824,15 +765,10 @@ describe('[LOCK-43-13] 安装目录扫描扩展（P1-4）', () => {
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-14] 构建完整性检查 + --force（P2-5）
-//
-// 为什么这把锁必须存在（用户评审 P2）：
-//   原 doInstall 只看 dist/cli.js 是否存在就跳过 build；若上次构建半成品损坏
-//   （cli.js 在但 node_modules 废了，或产物比源码旧），它不重建，app 后面崩得莫名其妙。
-//   shouldRebuild 必须：force→重建、cli 缺失→重建、node_modules 缺失→重建、产物过期→重建。
+// [LOCK-53-12] 构建完整性检查 + --force
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-14] 构建完整性检查 + --force（P2-5）', () => {
+describe('[LOCK-53-12] 构建完整性检查 + --force', () => {
   function setMtime(file, ms) {
     utimesSync(file, new Date(ms), new Date(ms));
   }
@@ -908,15 +844,10 @@ describe('[LOCK-43-14] 构建完整性检查 + --force（P2-5）', () => {
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）
-//
-// 为什么这把锁必须存在（用户评审 P2）：
-//   原 assessConfigWritability 遇 __parseError 只说"fix or move the file"，无 --repair；
-//   connectorKey/actionsToken 丢了只能手动删文件重跑设置。现在提供明确的重置路径：
-//   备份破损文件并移除，让首跑界面重新 mint。健康 config 绝不碰。
+// [LOCK-53-13] 损坏 config 的 --repair 重置路径
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () => {
+describe('[LOCK-53-13] 损坏 config 的 --repair 重置路径', () => {
   function writeConfig(root, name, content) {
     const file = path.join(root, name);
     writeFileSync(file, content);
@@ -944,7 +875,7 @@ describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () =>
     }
   });
 
-  test('坏 JSON → 备份并移除原文件（修 P2-6）', () => {
+  test('坏 JSON → 备份并移除原文件', () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'mt-repair-'));
     try {
       const file = writeConfig(root, 'config.json', '{ this is not json');
@@ -952,6 +883,9 @@ describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () =>
       assert.equal(r.ok, true);
       assert.ok(/repair-backup-/.test(r.backup), '应生成带时间戳的备份');
       assert.ok(existsSync(r.backup), '备份应存在');
+      if (process.platform !== 'win32') {
+        assert.equal(fs_statMode(r.backup), 0o600, 'repair 备份含凭据，必须 0600（R4）');
+      }
       assert.equal(existsSync(file), false, '破损原文件应被移除');
       assert.match(r.message, /Re-run 'bun run dev'/);
     } finally {
@@ -1000,68 +934,9 @@ describe('[LOCK-43-15] 损坏 config 的 --repair 重置路径（P2-6）', () =>
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-16] qwen 可选 base URL（P2-7）
-//
-// 为什么这把锁必须存在（用户评审 P2）：
-//   qwen 的 DASHSCOPE_BASE_URL 在 provider note 里写了，但 doKey 只写 API key 那一个 env
-//   var，自定义端点设不了。现在 buildBaseUrlLine 多输出一行。
-//   注意：glm/openai/deepseek 在 src/subagent/llm-adapter.ts 里硬编码 base URL 且不读 env，
-//   所以 BASE_URL_ENV 不含它们——否则会打出永不起作用的死 export 行（ADR-0043 D6）。
-// ═══════════════════════════════════════════════
-
-describe('[LOCK-43-16] qwen 可选 base URL（P2-7）', () => {
-  test('BASE_URL_ENV 只为 qwen 定义', () => {
-    assert.equal(BASE_URL_ENV.qwen, 'DASHSCOPE_BASE_URL');
-    assert.equal(BASE_URL_ENV.glm, undefined);
-    assert.equal(BASE_URL_ENV.openai, undefined);
-  });
-
-  test('qwen + base-url → 输出 DASHSCOPE_BASE_URL 行', () => {
-    const line = buildBaseUrlLine('qwen', 'https://my-endpoint/v1', 'bash');
-    assert.equal(line, 'export DASHSCOPE_BASE_URL="https://my-endpoint/v1"');
-  });
-
-  test('glm + base-url → 返回 null（glm 不读 env，不伪造死行）', () => {
-    assert.equal(buildBaseUrlLine('glm', 'https://open.bigmodel.cn/api/paas/v4', 'bash'), null);
-  });
-
-  test('fish shell → base URL 行也用 set -gx', () => {
-    const line = buildBaseUrlLine('qwen', 'https://x/v1', 'fish');
-    assert.equal(line, 'set -gx DASHSCOPE_BASE_URL "https://x/v1"');
-  });
-
-  test('openai 传 base-url → 忽略（返回 null，不伪造未支持的环境变量）', () => {
-    assert.equal(buildBaseUrlLine('openai', 'https://x', 'bash'), null);
-  });
-
-  test('不传 base-url → 返回 null（默认行为不变）', () => {
-    assert.equal(buildBaseUrlLine('qwen', '', 'bash'), null);
-    assert.equal(buildBaseUrlLine('qwen', undefined, 'bash'), null);
-  });
-
-  test('doKey 非写 profile 路径同时打印 key 行与 base URL 行（qwen）', () => {
-    const report = {
-      shell: { kind: 'zsh', profilePath: '/tmp/profile', manual: false, manualHint: null },
-      config: { subagent: null },
-    };
-    const chunks = [];
-    const orig = process.stdout.write;
-    process.stdout.write = (s) => { chunks.push(s); return true; };
-    try {
-      doKey(report, { provider: 'qwen', key: 'sk-test', baseUrl: 'https://my/v1', writeProfile: false, dryRun: false });
-    } finally {
-      process.stdout.write = orig;
-    }
-    const out = chunks.join('');
-    assert.match(out, /DASHSCOPE_API_KEY/);
-    assert.match(out, /DASHSCOPE_BASE_URL/);
-  });
-});
-
-// ═══════════════════════════════════════════════
-// [LOCK-43-17] 健康检查 --healthcheck（P2-8）
-//   真值：src/server.ts:549 健康端点返回 200 + {product:'myterminal'}；
-//        src/config.ts:170 握手同样认 product==='myterminal'；默认 host=127.0.0.1 port=3210。
+// [LOCK-53-14] 健康检查 --healthcheck
+//   真值：src/server.ts 健康端点返回 200 + {product:'myterminal'}；
+//        src/config.ts 握手同样认 product==='myterminal'；默认 host=127.0.0.1 port=3210。
 //   纯函数 checkHealth 不碰网络/文件系统，fetchImpl 注入 mock。
 // ═══════════════════════════════════════════════
 
@@ -1076,7 +951,7 @@ function mockHealthFetch(body, { status = 200, throwErr = null } = {}) {
   };
 }
 
-describe('[LOCK-43-17] 健康检查 --healthcheck（P2-8）', () => {
+describe('[LOCK-53-14] 健康检查 --healthcheck', () => {
   test('200 + product=myterminal → ok:true / reachable:true', async () => {
     const r = await checkHealth({ fetchImpl: mockHealthFetch({ product: 'myterminal', ok: true }) });
     assert.equal(r.ok, true);
@@ -1142,56 +1017,403 @@ describe('[LOCK-43-17] 健康检查 --healthcheck（P2-8）', () => {
 });
 
 // ═══════════════════════════════════════════════
-// [LOCK-43-18] fallbackModel 可配置（用户比对挖出的真缺口 #1）
-//   真值：src/types.ts:194 SubagentSettings.fallbackModel?: string（529 过载降级模型，可选）。
-//   技能此前既无 --fallback-model 参数、mergeSubagentConfig 也不能新增该字段。
+// [LOCK-53-15] bun 版本（package.json engines: bun>=1.3.0）
 // ═══════════════════════════════════════════════
 
-describe('[LOCK-43-18] fallbackModel 可配置（比对缺口 #1）', () => {
-  test('patch.fallbackModel 设值 → subagent.fallbackModel 写入', () => {
-    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini' });
-    assert.equal(out.subagent.fallbackModel, 'gpt-4o-mini');
+describe('[LOCK-53-15] bun 版本解析与比较', () => {
+  test('parseBunVersion 吃得下裸版本号与带前缀输出', () => {
+    assert.equal(parseBunVersion('1.3.2\n'), '1.3.2');
+    assert.equal(parseBunVersion('bun 1.3.2'), '1.3.2');
+    assert.equal(parseBunVersion('1.3.2+abcdef\n'), '1.3.2');
   });
 
-  test('patch.fallbackModel 覆盖已有的 fallbackModel', () => {
-    const existing = { subagent: { provider: 'glm', model: 'glm-4', fallbackModel: 'glm-4-flash' } };
-    const out = mergeSubagentConfig(existing, { provider: 'openai', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini' });
-    assert.equal(out.subagent.fallbackModel, 'gpt-4o-mini');
+  test('parseBunVersion 对垃圾输入返回 null，不瞎猜', () => {
+    assert.equal(parseBunVersion(''), null);
+    assert.equal(parseBunVersion('command not found'), null);
+    assert.equal(parseBunVersion(undefined), null);
   });
 
-  test('patch.fallbackModel 为空串 → 视为未设（字段省略，不写空串）', () => {
-    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o', fallbackModel: '' });
-    assert.equal('fallbackModel' in out.subagent, false);
+  test('satisfiesMinVersion 用数字比较，不是字典序（N9 杀手锁）', () => {
+    assert.equal(satisfiesMinVersion('1.10.0', '1.3.0'), true);
+    assert.equal(satisfiesMinVersion('1.3.0', '1.3.0'), true);
+    assert.equal(satisfiesMinVersion('1.2.9', '1.3.0'), false);
+    assert.equal(satisfiesMinVersion('2.0.0', '1.3.0'), true);
+    assert.equal(satisfiesMinVersion('0.9.9', '1.3.0'), false);
   });
 
-  test('不传 fallbackModel 且原 config 无 → 字段省略', () => {
-    const out = mergeSubagentConfig({}, { provider: 'openai', model: 'gpt-4o' });
-    assert.equal('fallbackModel' in out.subagent, false);
+  test('版本段数不齐时按 0 补齐', () => {
+    assert.equal(satisfiesMinVersion('2', '1.3.0'), true);
+    assert.equal(satisfiesMinVersion('1.3', '1.3.0'), true);
+    assert.equal(satisfiesMinVersion('1', '1.3.0'), false);
   });
 
-  test('不传 fallbackModel 但原 config 有 → 保留（不被清掉）', () => {
-    const existing = { subagent: { provider: 'glm', model: 'glm-4', fallbackModel: 'glm-4-flash' } };
-    const out = mergeSubagentConfig(existing, { provider: 'openai', model: 'gpt-4o' });
-    assert.equal(out.subagent.fallbackModel, 'glm-4-flash');
-  });
-
-  test('doWriteConfig --fallback-model 真正落盘到 config 文件', () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr43-fb-'));
-    const cfgPath = path.join(dir, 'config.json');
-    writeFileSync(cfgPath, JSON.stringify(validBaseConfig(), 'utf8'));
-    const report = {
-      shell: { kind: 'bash', profilePath: null, manual: false, manualHint: null },
-      config: { path: cfgPath, exists: true, parseError: null, subagent: null, writability: { ok: true } },
-    };
-    const orig = process.stdout.write;
-    process.stdout.write = () => true;
-    try {
-      doWriteConfig(report, { provider: 'openai', model: 'gpt-4o', fallbackModel: 'gpt-4o-mini', dryRun: false });
-    } finally {
-      process.stdout.write = orig;
-    }
-    const written = JSON.parse(readFileSync(cfgPath, 'utf8'));
-    assert.equal(written.subagent.fallbackModel, 'gpt-4o-mini');
-    rmSync(dir, { recursive: true, force: true });
+  test('null 版本（bun 不存在）判为不满足', () => {
+    assert.equal(satisfiesMinVersion(null, '1.3.0'), false);
   });
 });
+
+// ═══════════════════════════════════════════════
+// [LOCK-53-16] 探测报告形状 + L3 本地模型存在性
+//   真值：ADR-0053 D6（删 shell.*/apiKeysPresent/providers；config.subagent 只报
+//   baseUrl/model/apiKeySet；增机器只读事实 + l3.recommend/l3.modelPresent）；
+//   S5（registry.ts:27,63 —— models/ 下的固定文件名）。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-53-16] 探测报告形状与 l3.modelPresent', () => {
+  test('L3_MODEL_FILENAME 与主仓 registry.ts:27 逐字一致', () => {
+    assert.equal(L3_MODEL_FILENAME, 'Qwen3.5-2B-Q4_K_M.gguf');
+  });
+
+  test('报告无 shell/apiKeysPresent/providers 字段（N10/D6）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-shape-'));
+    try {
+      const report = detect({ homedir: root, env: {} });
+      assert.equal('shell' in report, false, 'shell.* 已退役（D5）');
+      assert.equal('apiKeysPresent' in report, false, 'apiKeysPresent 已删除（D6）');
+      assert.equal('providers' in report, false, 'providers 已删除（D6）');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('config.subagent 投影只含 baseUrl/model/apiKeySet 三键（N10 杀手锁）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-proj-'));
+    try {
+      const checkout = path.join(root, 'myterminal');
+      mkdirSync(path.join(checkout, 'dist'), { recursive: true });
+      writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'myterminal' }));
+      writeFileSync(path.join(checkout, 'dist', 'cli.js'), '// built');
+      const cfgDir = path.join(root, '.config', 'myterminal');
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(
+        path.join(cfgDir, 'config.json'),
+        JSON.stringify(validBaseConfig({ subagent: { model: 'm', baseUrl: 'https://x', apiKey: 'sk-real' } })),
+        'utf8',
+      );
+      const report = detect({ homedir: root, env: {} });
+      assert.deepEqual(Object.keys(report.config.subagent).sort(), ['apiKeySet', 'baseUrl', 'model']);
+      assert.equal(report.config.subagent.apiKeySet, true);
+      assert.equal(report.config.subagent.model, 'm');
+      assert.equal(report.config.subagent.baseUrl, 'https://x');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('机器只读事实：machine 有 platform/freeDiskBytes/totalMemoryBytes，l3.recommend 有 verdict+reasons', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-mach-'));
+    try {
+      const report = detect({ homedir: root, env: {} });
+      assert.equal(typeof report.machine.platform, 'string');
+      assert.ok(report.machine.freeDiskBytes === null || typeof report.machine.freeDiskBytes === 'number');
+      assert.ok(typeof report.machine.totalMemoryBytes === 'number');
+      assert.ok(['install', 'skip'].includes(report.l3.recommend.verdict));
+      assert.ok(Array.isArray(report.l3.recommend.reasons) && report.l3.recommend.reasons.length >= 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('models/ 下有成品 gguf → modelPresent=true；只有 .part / 空目录 / 无 checkout → false', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-l3p-'));
+    try {
+      const checkout = path.join(root, 'myterminal');
+      mkdirSync(path.join(checkout, 'models'), { recursive: true });
+      // 无模型文件 → false
+      assert.equal(detectL3ModelPresent(checkout), false);
+      // 只有半成品 .part → false（下载未完成不算数）
+      writeFileSync(path.join(checkout, 'models', `${L3_MODEL_FILENAME}.part`), 'partial');
+      assert.equal(detectL3ModelPresent(checkout), false);
+      // 成品落盘 → true
+      writeFileSync(path.join(checkout, 'models', L3_MODEL_FILENAME), 'gguf');
+      assert.equal(detectL3ModelPresent(checkout), true);
+      // 无 checkout → false
+      assert.equal(detectL3ModelPresent(null), false);
+      assert.equal(detectL3ModelPresent('/definitely/not/here'), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('detect 报告里 l3.modelPresent 与实际 models 目录一致', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-l3d-'));
+    try {
+      const checkout = path.join(root, 'code', 'myterminal');
+      mkdirSync(path.join(checkout, 'models'), { recursive: true });
+      mkdirSync(path.join(checkout, 'dist'), { recursive: true });
+      writeFileSync(path.join(checkout, 'package.json'), JSON.stringify({ name: 'myterminal' }));
+      writeFileSync(path.join(checkout, 'dist', 'cli.js'), '// built');
+      writeFileSync(path.join(checkout, 'models', L3_MODEL_FILENAME), 'gguf');
+      const report = detect({ homedir: root, env: {} });
+      assert.equal(report.myterminal.installDir, checkout);
+      assert.equal(report.l3.modelPresent, true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-53-18] 磁盘事实探针目标退让（审查 R1）
+//   R1：readFreeDiskBytes 对 `foundDir ?? ~/myterminal` 直测，fresh 机器该目录
+//   不存在 → ENOENT → null → l3.recommend 恒 skip「could not be measured」。
+//   技能核心受众就是 fresh 机器——首次 --json 就报「未知」违背 D7。
+//   修正：探针目标取最近存在的祖先目录（至少退到 homedir；显式 installDir 同理）。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-53-18] 磁盘探针目标退让（审查 R1）', () => {
+  test('nearestExistingAncestor：幽灵路径退到最近存在祖先，存在路径返回自身', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-anc-'));
+    try {
+      mkdirSync(path.join(root, 'deep', 'nest'), { recursive: true });
+      assert.equal(nearestExistingAncestor(root), root);
+      assert.equal(nearestExistingAncestor(path.join(root, 'deep', 'nest')), path.join(root, 'deep', 'nest'));
+      assert.equal(nearestExistingAncestor(path.join(root, 'deep', 'ghost')), path.join(root, 'deep'));
+      assert.equal(nearestExistingAncestor(path.join(root, 'ghost', 'deeper')), root);
+      assert.equal(nearestExistingAncestor(path.join(root, 'a', 'b', 'c')), root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('根目录不死循环（盘符根/卷根即终点）', () => {
+    const rootPath = path.parse(os.tmpdir()).root;
+    assert.equal(nearestExistingAncestor(path.join(rootPath, 'x', 'y')), rootPath);
+  });
+
+  test('fresh 机器（无 checkout 无 ~/myterminal）：freeDiskBytes 必须是数字（R1 杀手锁）', () => {
+    if (process.platform === 'win32') return; // statfs 仅 unix
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-r1-'));
+    try {
+      const report = detect({ homedir: root, env: {} });
+      assert.equal(typeof report.machine.freeDiskBytes, 'number', 'fresh 机器首次 --json 必须报出磁盘字节数，不得 "could not be measured"');
+      assert.ok(report.machine.freeDiskBytes > 0);
+      // 磁盘事实已可测 → 推荐理由里不得出现「无法测量」借口（verdict 本身取决于
+      // 测试机内存，不锁死；只锁磁盘未知的退化路径）
+      assert.equal(
+        report.l3.recommend.reasons.some((r) => r.includes('could not be measured')),
+        false,
+        '磁盘可测时不得用 "could not be measured" 作理由',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('显式 installDir 指向不存在的目录：同样退让，磁盘事实仍为数字', () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-r1b-'));
+    try {
+      const ghost = path.join(root, 'ghost', 'install', 'dir');
+      const report = detect({ homedir: root, installDir: ghost, env: {} });
+      assert.equal(typeof report.machine.freeDiskBytes, 'number', '显式 installDir 幽灵路径不得让磁盘事实退化为 null');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('R2 posix 端：注入 platform=win32 必须走 win32 分支——powershell 缺位 → 诚实 null，不得产出 statfs 假读数', () => {
+    if (process.platform === 'win32') return; // 本锁验证 posix 上的分支生效性
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-r2p-'));
+    try {
+      const report = detect({ homedir: root, env: {}, platform: 'win32' });
+      assert.equal(report.machine.platform, 'win32', 'platform 注入必须生效');
+      // posix 上 powershell 不存在：若实现忘了切分支而走了 statfs → 会给数字 → 必须红。
+      // null 恰好证明 win32 分支真的执行了（R2 杀手锁：Windows 不该恒 skip）。
+      assert.equal(
+        report.machine.freeDiskBytes,
+        null,
+        'posix 注入 win32 不得产出 statfs 假读数——win32 探测分支必须生效，且不伪造数字',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('R2 Windows 真机端：Get-PSDrive 必须报出数字（不伪造、不抛），null 降级必须带保守 skip 理由', () => {
+    if (process.platform !== 'win32') return; // CI windows runner 上跑真 powershell
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-r2w-'));
+    try {
+      const report = detect({ homedir: root, env: {}, platform: 'win32' });
+      const v = report.machine.freeDiskBytes;
+      assert.equal(typeof v, 'number', 'Windows 真机必须报出磁盘字节数（Get-PSDrive 探测不可缺席）');
+      assert.ok(v >= 0, '磁盘字节数不得为负');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('R2 降级口径：null 时 recommend 必须带 "could not be measured" 理由（诚实 skip，不许伪造数字）', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'mt-r2d-'));
+    try {
+      // 直接构造不可测场景（posix 注入 win32 = powershell 缺位）验证 null 的诚实语义
+      const report = detect({ homedir: root, env: {}, platform: 'win32' });
+      if (report.machine.freeDiskBytes === null) {
+        assert.ok(
+          report.l3.recommend.reasons.some((r) => r.includes('could not be measured')),
+          '磁盘不可测时 recommend 必须说明理由，不得静默 skip',
+        );
+        assert.equal(report.l3.recommend.verdict, 'skip', '磁盘不可测 → 保守 skip（绝不误导为 install）');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════
+// [LOCK-53-17] doWriteConfig 端到端：落盘 + 0600 + 备份 + app 可接受
+//
+// 为什么这把锁必须存在（AC1）：
+//   写出的 subagent 块必须能被 app 的 validateSettings 接受（从 dist 真导入验证），
+//   provider 字段绝迹——N11：带 provider 的块被 app 整段静默忽略，subagent 永不工作。
+// ═══════════════════════════════════════════════
+
+describe('[LOCK-53-17] doWriteConfig 端到端', () => {
+  const GB = 1024 ** 3;
+
+  function writeReport(cfgPath) {
+    return { config: { path: cfgPath, exists: true } };
+  }
+
+  test('三必填真实落盘：恰含 model/baseUrl/apiKey，app validateSettings 零错误（AC1/N11 杀手锁）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-e2e-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      writeFileSync(cfgPath, JSON.stringify(validBaseConfig()), 'utf8');
+      captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://api.anthropic.com',
+          model: 'claude-3-5-sonnet-20241022',
+          key: 'sk-e2e',
+          dryRun: false,
+        });
+      });
+      const written = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      assert.deepEqual(written.subagent, {
+        baseUrl: 'https://api.anthropic.com',
+        model: 'claude-3-5-sonnet-20241022',
+        apiKey: 'sk-e2e',
+      });
+      // 真 app 校验：写出的 config 必须被 validateSettings 接受
+      assert.deepEqual(validateSettings(structuredClone(written)), [], 'app 应接受写出的 config');
+      // 备份存在
+      assert.ok(existsSync(`${cfgPath}.myterminal-backup`), '写前必须备份');
+      // 0600（Windows 上 mode 语义不可靠，跳过）——备份含 connectorKey/actionsToken，
+      // 必须与主文件同权，copyFileSync 继承 umask 的 0644 是泄露（R4 杀手锁）
+      if (process.platform !== 'win32') {
+        assert.equal(fs_statMode(cfgPath), 0o600, 'config.json 必须 0600');
+        assert.equal(fs_statMode(`${cfgPath}.myterminal-backup`), 0o600, '备份必须与主文件同权 0600');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('遗留 provider 在写盘前被拔除：validateSettings 接受且不会整段忽略（N2/N11 杀手锁）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-legacy-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      writeFileSync(
+        cfgPath,
+        JSON.stringify(validBaseConfig({
+          subagent: { provider: 'openai', model: 'gpt-4o', baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-old' },
+        })),
+        'utf8',
+      );
+      captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://api.anthropic.com',
+          model: 'claude-3-5-sonnet-20241022',
+          dryRun: false, // 不给新 key → 保留已有
+        });
+      });
+      const written = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      assert.equal('provider' in written.subagent, false, 'provider 必须绝迹');
+      assert.equal(written.subagent.apiKey, 'sk-old', '未给新 key 时应保留已有 key');
+      assert.deepEqual(validateSettings(structuredClone(written)), [], 'app 应接受写出的 config');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('可选字段提示出现在输出里（代理要转述给用户，D2）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-opt-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      writeFileSync(cfgPath, JSON.stringify(validBaseConfig()), 'utf8');
+      const out = captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://x', model: 'm', key: 'k', dryRun: false,
+        });
+      });
+      assert.match(out, /maxTurns/);
+      assert.match(out, /compactThreshold/);
+      assert.match(out, /default\s+50/);   // 对齐列是多空格分隔
+      assert.match(out, /80000/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('缺 key 且 config 无已有 key → 抛错，文件不动（写不出 app 会拒的 config）', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-nokey-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      const before = JSON.stringify(validBaseConfig());
+      writeFileSync(cfgPath, before, 'utf8');
+      assert.throws(
+        () => captureStdout(() => {
+          doWriteConfig(writeReport(cfgPath), { baseUrl: 'https://x', model: 'm', dryRun: false });
+        }),
+        /apiKey/,
+      );
+      assert.equal(readFileSync(cfgPath, 'utf8'), before, '失败时不得落盘');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('--fallback-model 端到端落盘：文件里真实出现 subagent.fallbackModel', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-fb-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      writeFileSync(cfgPath, JSON.stringify(validBaseConfig()), 'utf8');
+      captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://x', model: 'm', key: 'k', fallbackModel: 'm-mini', dryRun: false,
+        });
+      });
+      const written = JSON.parse(readFileSync(cfgPath, 'utf8'));
+      assert.equal(written.subagent.fallbackModel, 'm-mini', 'fallbackModel 必须真实落盘');
+      assert.deepEqual(validateSettings(structuredClone(written)), [], 'app 应接受写出的 config');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('dry-run 不写盘、不备份、输出打码', () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'adr53-dr-'));
+    try {
+      const cfgPath = path.join(dir, 'config.json');
+      const before = JSON.stringify(validBaseConfig());
+      writeFileSync(cfgPath, before, 'utf8');
+      const out = captureStdout(() => {
+        doWriteConfig(writeReport(cfgPath), {
+          baseUrl: 'https://x', model: 'm', key: 'sk-dryrun-secret', dryRun: true,
+        });
+      });
+      assert.equal(out.includes('sk-dryrun-secret'), false);
+      assert.ok(out.includes('<redacted>'));
+      assert.equal(readFileSync(cfgPath, 'utf8'), before);
+      assert.equal(existsSync(`${cfgPath}.myterminal-backup`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+function fs_statMode(file) {
+  // ESM 无 require；statSync 从顶部统一导入
+  return (statSync(file).mode & 0o777);
+}

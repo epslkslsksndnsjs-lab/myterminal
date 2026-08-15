@@ -12,26 +12,33 @@ disable: false
 
 ## Install
 
-这是纯文件夹技能，无需 `npm install`、无构建步骤。一条命令即可安装——运行后会出现一个极简安装向导，
-自动检测已装的 Agent（WorkBuddy / Claude Code / Cursor），按 **Enter** 即全部装好，带进度条：
+This is a pure-folder skill — no `npm install`, no build step. A single command installs it:
+it auto-detects installed agents (WorkBuddy / Claude Code / Cursor) and installs to all of them
+with a progress bar — just press **Enter**:
 
 ```bash
-# 一条命令，从任意目录直接运行（把路径换成你机器上 MyTerminal 的实际位置）
+# One command, runnable from any directory (use the actual MyTerminal path on this machine)
 node <myterminal-path>/skills/myterminal-onboarding/scripts/install.mjs
 ```
 
-> ⚠️ 必须用**绝对路径**（或 `~/...` 这种 home 展开路径）。不要写 `node skills/.../install.mjs` 这种相对路径——
-> 相对路径会从你「当前所在目录」找文件，在 `~` 或别处运行时就会 `Cannot find module`。
+> ⚠️ Use an **absolute path** (or a `~/...` home-expanded path). Do not write `node skills/.../install.mjs` —
+> a relative path resolves from your *current directory* and fails with `Cannot find module`
+> when run from `~` or anywhere else.
 
-- **一条命令 + 回车**：无需选择、无方向键、无多余步骤。检测到的 Agent 全部安装，进度条走完即结束。
-- **幂等**：重复运行只会用当前副本覆盖，更新技能后随时再跑一次，不会重复或残留。
-- **目标目录**：默认装到 `~/.workbuddy/skills/myterminal-onboarding/`（检测到其他 Agent 也会一起装）。
-- **立即生效**：装完无需重启，Agent 里输入 `/myterminal-onboarding` 即可开始配置。
-- **无交互模式**：`node <myterminal-path>/skills/myterminal-onboarding/scripts/install.mjs --yes` 直接装；`--target claude` 只装指定 Agent。
-- **卸载**：删除 `~/.workbuddy/skills/myterminal-onboarding` 即可。
+- **One command + Enter**: no selection, no arrow keys, no extra steps. Detected agents are all
+  installed; the progress bar runs to the end and it's done.
+- **Idempotent**: re-running overwrites with the current copy — safe to re-run any time after a
+  skill update, with no duplicates or leftovers.
+- **Target directory**: defaults to `~/.workbuddy/skills/myterminal-onboarding/` (other detected
+  agents get a copy too).
+- **Works immediately**: no restart needed — type `/myterminal-onboarding` in the agent to start.
+- **Non-interactive**: `node <myterminal-path>/skills/myterminal-onboarding/scripts/install.mjs --yes`
+  installs directly; `--target claude` installs to one agent only.
+- **Uninstall**: delete `~/.workbuddy/skills/myterminal-onboarding`.
 
-这与参考技能（mattpocock/skills）的设计哲学一致：技能是被 Agent 加载的文件夹，而不是要注册的包。
-（参考技能用 `npx skills add` 从 registry 复制；本安装器做同样的复制，但完全本地、无需发布到任何地方。）
+This follows the same design philosophy as reference skills (mattpocock/skills): a skill is a
+folder an agent loads, not a package to register. (Reference skills use `npx skills add` to copy
+from a registry; this installer does the same copy, but fully locally — nothing is published.)
 
 # MyTerminal Onboarding
 
@@ -40,8 +47,9 @@ Get a user from "nothing installed" to "MyTerminal running with a working subage
 - **Prerequisites** — bun >= 1.3.0 (hard requirement, the build needs it)
 - **The app** — clone + `bun install` + `bun run build`
 - **Base config** — the first-run setup screen, which mints the connector credentials
-- **Subagent LLM** — endpoint (base URL) + model + API key written into `config.json`
-- **API key** — exported from the shell profile, never stored in a file MyTerminal reads
+- **Subagent LLM** — a user decision: configure (base URL + model + API key written into
+  `config.json`) or skip, with the impact of skipping stated plainly
+- **Connectivity** — a keyless probe of the endpoint, never touching the key
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found,
 confirm with the user one decision at a time, then write.
@@ -49,22 +57,32 @@ confirm with the user one decision at a time, then write.
 Do all the work you are able to do. Hand the user only the steps a script genuinely cannot
 perform, and hand them one at a time with the exact command to run.
 
+**Language.** Match the user's language: from here on, respond in whatever language the user is
+using. If the user only invokes the skill by name with no language signal, default to English
+(the skill's own text is English).
+
 ## Non-negotiables
 
 Read these before doing anything. Violating one of them breaks the user's machine or lies to them.
 
-1. **One protocol, no provider picker.** MyTerminal now speaks a single Anthropic-compatible
-   protocol — ADR-0045 removed the `provider` concept. You fill three things: an **endpoint**
-   (base URL), a **model** id, and an **API key**. There is no provider selection; do not pretend
-   a config field enables a specific vendor. The app only reads `baseUrl` + `model` + `apiKey`.
-2. **Never write the API key into `config.json`.** Keys are read from environment variables only.
-   The script strips key-like fields on merge; do not add them back by hand.
+1. **One protocol, no provider picker.** MyTerminal speaks a single Anthropic-compatible
+   protocol — the `provider` concept was removed (ADR-0045). You fill three things: an
+   **endpoint** (base URL), a **model** id, and an **API key** — all three are required by the
+   app. There is no provider selection; do not pretend a config field enables a specific vendor.
+   The app only reads `baseUrl` + `model` + `apiKey`.
+2. **The API key lives in `config.json` — and never leaves it.** The app requires the key in
+   `subagent.apiKey` (three-required contract). It must be provided via stdin (`--key -`), never
+   pasted on a command line; the script writes it at `0600` with a backup. The value must never
+   appear in any output (dry-run drafts, echoes, reports) and never in any outbound call — the
+   connectivity probe is keyless by design. If you ever see the key in an output, that is a bug;
+   stop and re-check.
 3. **Never hand-write a fresh `config.json`.** A base config carries randomly generated
    `connectorKey` / `actionsToken`. A partial file makes MyTerminal throw on startup *and* locks
    the user out of the setup screen. If `--write-config` refuses, that refusal is correct —
    follow the guidance it prints instead of working around it.
-4. **Order matters.** bun → build → **first run** → write subagent config → API key. Never write
-   the subagent config before the user has completed the first-run setup screen.
+4. **Order matters.** bun → build → **first run** → (decision: configure the subagent or skip it) →
+   verify connectivity. Never write the subagent config before the user has completed the
+   first-run setup screen — and never write it unless the user chose to configure it.
 5. **Read-only until told otherwise.** `node scripts/onboard.mjs` with no flags writes nothing.
    Use `--dry-run` when you want to show the user what a write would do.
 
@@ -72,7 +90,9 @@ Read these before doing anything. Violating one of them breaks the user's machin
 
 ### 1. Explore
 
-Run the detector and read the report. It writes nothing:
+Before running anything that scans the machine, tell the user: **"I'm now doing a read-only
+check of this machine's disk and memory — nothing is modified, deleted or written."** Then run
+the detector. It writes nothing:
 
 ```bash
 node scripts/onboard.mjs --json
@@ -82,12 +102,13 @@ The JSON tells you everything you need:
 
 | Field | What it decides |
 | --- | --- |
+| `machine.freeDiskBytes` / `machine.totalMemoryBytes` | Read-only machine facts (disk/memory) |
 | `bun.satisfiesMinimum` | Whether the build can proceed at all |
 | `myterminal.installed` / `.built` | Whether to clone / build, and where it already lives |
 | `config.exists` / `config.writability` | Whether the first-run setup screen still has to happen |
-| `config.subagent` | The current model / endpoint, if any — use it as the default |
-| `apiKeysPresent` | Booleans only. Which keys are already in this shell |
-| `shell.profilePath` / `shell.manual` | Where the export line goes, or that this is native Windows |
+| `config.subagent` | `baseUrl` / `model` / `apiKeySet` (boolean only — the key value is never read) |
+| `l3.recommend` | Deterministic install recommendation for the L3 local model (computed from the machine facts, always with a reason) |
+| `l3.modelPresent` | Whether the local model file already sits in the checkout's `models/` dir |
 
 Do not guess any of this from the filesystem yourself; the report already resolved
 `MYTERMINAL_CONFIG_DIR` / `XDG_CONFIG_HOME` exactly the way the app does.
@@ -98,47 +119,44 @@ Summarise what is present and what is missing in a few lines. Then take the deci
 one decision, one answer, then the next. Lead each with the recommended answer so the user can
 accept it in a single word. Skip any decision that exploration already settled.
 
-**Decision A — Endpoint & model.** Skip if `config.subagent.model` already exists and the user has not
-asked to change it; just confirm you are keeping it. Lead with the recommended endpoint + model in
-the table below. **Note:** the current `onboard.mjs` build still takes a `--provider <p>` flag on
-its `--write-config` / `--key` commands — that flag is legacy and inert (the app ignores the
-`provider` field; it only reads endpoint + model + key). A later cleanup drops it.
-
-Recommend Anthropic native (`https://api.anthropic.com` + `claude-3-5-sonnet-20241022`) for a fresh install, or a Chinese gateway if the user is in China. Present the options honestly:
+**Decision A — Endpoint & model** (only relevant if the user chooses "configure" at Stage 4;
+otherwise skip it entirely). Skip if `config.subagent.model` already exists and the user has
+not asked to change it; just confirm you are keeping it. Lead with the recommended endpoint +
+model in the table below. Recommend Anthropic native (`https://api.anthropic.com` +
+`claude-3-5-sonnet-20241022`) for a fresh install, or a Chinese gateway if the user is in China.
+Present the options honestly:
 
 | Endpoint (base URL) | Recommended model | Notes |
 | --- | --- | --- |
 | `https://api.anthropic.com` | `claude-3-5-sonnet-20241022` | Anthropic native |
 | Chinese gateways (Moonshot / Qwen / …) | vendor model id | use the gateway's `ANTHROPIC_BASE_URL`; the base URL already carries the vendor |
 
-The API key is read from the environment (see Stage 5); there is no provider field to pick.
+The base URL is the vendor's Anthropic-compatible base — **without** `/v1` and **without**
+`/messages`; the app appends `/v1/messages` itself.
 
-If `apiKeysPresent` already shows a key for one of them, lead with that endpoint/model — the user
-clearly has an account there.
+If `config.subagent.apiKeySet` is already `true`, you only need to confirm the endpoint/model —
+the key is in place. If the user names a model or endpoint outside the table, apply
+Non-negotiable 1: offer the closest supported alternative (a different Anthropic-compatible
+endpoint or model).
 
-If the user names a model or endpoint outside the table, apply Non-negotiable 1. Offer the
-closest supported alternative (a different Anthropic-compatible endpoint or model).
-
-**Decision B — Model.** Recommend a model for the chosen endpoint (see the table in Decision A).
-The script keeps a light model-prefix sanity check; an unknown prefix is allowed with a warning.
-If the user names a model that clearly belongs to a different vendor's endpoint, suggest the
-matching endpoint instead of a provider flag.
-
-**Decision C — Install location.** Skip if `myterminal.installed` is true; say where it was found.
+**Decision B — Install location.** Skip if `myterminal.installed` is true; say where it was found.
 Otherwise recommend `~/myterminal` and accept any path.
 
-### 3. Confirm and edit
+### 3. Confirm and edit (only the "configure" branch of Stage 4)
 
 Show a draft before writing anything:
 
 - The `subagent` block that will be merged into `config.json` — use
   [subagent-config.template.json](./templates/subagent-config.template.json) as the shape, and
   show it filled in with the chosen endpoint and model. Point out that everything else in the
-  file is preserved and that no key appears in it.
-- The exact `export` line that will go into their shell profile, with the key redacted.
+  file is preserved. The key appears in the draft only as a redacted placeholder — never as its
+  real value.
+- The three optional-decision inputs: endpoint, model, and (if the user wants it) a fallback
+  model.
 
-`node scripts/onboard.mjs --write-config --provider <p> --model <m> --dry-run` prints the exact merged
-file without touching disk. Prefer showing that over describing it.
+`node scripts/onboard.mjs --write-config --base-url <url> --model <m> --key - --dry-run` prints
+the exact merged file (with the key redacted) without touching disk. Prefer showing that over
+describing it.
 
 Let the user edit before you write.
 
@@ -153,7 +171,14 @@ single command, and wait.
 curl -fsSL https://bun.sh/install | bash
 ```
 
-Then have them reopen the shell and re-run the detector. Do not attempt the build without bun.
+On native Windows (PowerShell), the official installer is:
+
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+(In WSL, the `curl | bash` form works normally.) Either way, have them reopen the shell and
+re-run the detector afterwards. Do not attempt the build without bun.
 
 **Stage 2 — Install.** You can do this one:
 
@@ -190,47 +215,72 @@ present, then you quit. **Verify before moving on** — re-run `node scripts/onb
 check that `config.writability.ok` is now `true`. If it is not, read the `guidance` field aloud
 rather than improvising; do not hand-write a config.json.
 
-**Stage 4 — Subagent config.** You can do this one:
+**Stage 4 — Subagent config (a decision; the same decision pattern applies to the L3
+local-model stage).** The subagent
+is the delegated LLM the app calls for subagent work. Whether to configure it is the user's
+choice — you report the facts, ask once, and both branches move on.
+
+Facts: the subagent is the app's delegated model over an Anthropic-compatible endpoint; it needs
+exactly three things — endpoint (base URL), model, and API key (the app's three-required
+contract, ADR-0045).
+
+Ask one decision: **configure the subagent, or skip it?**
+
+- **Configure** — you do this one, with the user's key:
+  [the write command below].
+- **Skip** — tell the user the impact, then move on (nothing is written): subagent delegation
+  will be unavailable — `subagent_start` / `subagent_status` / `subagent_abort` and skill fork
+  report "needs `subagent.apiKey` / `baseUrl` / `model` to be configured". The main conversation,
+  tool shaping, Actions, and L3 are unaffected. They can configure it later by re-running this
+  stage.
+
+If the user chooses **configure**, here is the write:
 
 ```bash
-node scripts/onboard.mjs --write-config --provider <p> --model <m> [--fallback-model <f>]
+printf '%s' '<KEY>' | node scripts/onboard.mjs --write-config --base-url <url> --model <m> [--fallback-model <f>] --key -
 ```
 
-It merges into the existing file, preserves every other setting, backs the file up first, and
-keeps `0600` permissions. If it refuses, see Non-negotiable 3.
+On native Windows (PowerShell), the same stdin pipe looks like this — the `|` works in
+PowerShell too:
 
-`--fallback-model <f>` is optional and writes `subagent.fallbackModel` (types.ts:194, the 529
-overload-degradation model). Same-provider family recommended. Omit to leave it unset. The value
-is passed through verbatim — no provider validation is applied to it (the app doesn't validate it
-either), so a typo there fails later at runtime, not at write time.
+```powershell
+'<KEY>' | node scripts/onboard.mjs --write-config --base-url <url> --model <m> [--fallback-model <f>] --key -
+```
 
-**Stage 5 — API key.** The user has to fetch the key from their model provider's console themselves —
-send them to the URL from the table. Once they paste it to you, prefer stdin so the key never
-reaches shell history:
+(If you are in WSL, the first form — `printf '%s' '<KEY>' |` — reads more naturally, and
+the skill behaves identically there: same script, same probe, same write path.)
+
+The user fetches the key from their model provider's console themselves. The key is piped via
+stdin so it never reaches shell history. The script merges into the existing file, preserves
+every other setting, deletes any leftover `provider` field (the app silently ignores the block
+if one is present), backs the file up first, and keeps `0600` permissions. It echoes the base URL
+and model and reports `apiKeySet` — never the key itself. If it refuses, see Non-negotiable 3.
+
+`--fallback-model <f>` is optional and writes `subagent.fallbackModel` (types.ts:222, the 529
+overload-degradation model). Omit to leave it unset; the value is passed through verbatim.
+
+After the write succeeds, the script prints the optional subagent fields (defaults and ranges)
+that it deliberately does *not* write — the app applies its own defaults for them
+(`maxTurns`/`timeoutSec`/`maxParallel`/`contextWindow`/`maxOutput`/`compactThreshold`, see
+`src/config.ts applySubagentDefaults`). Relay that list to the user: these are the knobs they can
+tune later by editing the `subagent` block in `config.json` directly.
+
+Then verify connectivity — keyless, no credentials are ever sent:
 
 ```bash
-printf '%s' '<KEY>' | node scripts/onboard.mjs --key - --provider <p> --write-profile
+node scripts/onboard.mjs --probe [--base-url <url>]
 ```
 
-This appends a marked block to their shell profile, backs it up, and is idempotent — running it
-again with the same key is a no-op, and running it with a new key replaces the old line in place
-rather than stacking a second one.
-
-On native Windows the script refuses to touch the environment and prints the `setx` steps
-instead. Read them to the user; do not try to work around it. WSL is the smoother path and worth
-suggesting.
-
-If the user would rather paste the line themselves, drop `--write-profile` and the script just
-prints the line for their profile.
+Expect `✓ REACHABLE` with an honest note that this validates connectivity only — a 401/403 from
+a real endpoint is the expected, healthy answer. Report the result verbatim to the user,
+including the "connectivity only" caveat.
 
 ### 5. Done
 
-Tell them to restart the terminal (or `source` the profile), then verify:
+Verify the service is actually up (not just "started without crashing"):
 
 ```bash
-echo $<ENV_VAR>          # should print the key
 cd <install-dir> && bun start
-# confirm the service is actually up (not just "started without crashing"):
 node scripts/onboard.mjs --healthcheck     # expect: ✓ PASS  MyTerminal is healthy at http://127.0.0.1:3210/health
 ```
 
@@ -240,24 +290,25 @@ isn't listening — usually a wrong port or a crashed `bun start`; re-check befo
 Custom host/port: `node scripts/onboard.mjs --healthcheck --host <h> --port <p>`.
 
 Mention that they can change endpoint or model later by re-running
-`node scripts/onboard.mjs --write-config`, and that the key lives in their shell profile inside the
-`# >>> myterminal-onboarding >>>` block if they ever need to rotate it.
+`node scripts/onboard.mjs --write-config --base-url <url> --model <m> --key -` (the key can be
+omitted when the config already has one), and that the key lives in `config.json` under
+`subagent.apiKey` if they ever need to rotate it (re-write with a new key via stdin, or edit the
+file — it is `0600`).
 
 ### 6. Keep the copy current (self-check)
 
 This skill is a *copy* of the one in the MyTerminal repo. A stale copy won't error at import —
-it just silently rejects a model the repo now supports, or lacks a flag you expect. After install
+it just lacks a flag you expect, or still carries the retired provider machinery. After install
 (or any time you suspect drift), run the built-in self-test:
 
 ```bash
 node scripts/onboard.mjs --self-test    # expect: SELF-TEST PASSED: N checks OK
 ```
 
-It checks that every critical export and CLI flag (`--verify`, `--base-url`, `--healthcheck`,
-`--fallback-model`) is present — no repo, no network. Non-zero exit means the copy is stale;
-re-sync it from the MyTerminal repo. Repo-level provider-list parity is no longer enforced —
-the `scripts/check-provider-sync.mjs` guard was removed with ADR-0045 (the `provider` concept was
-deleted). Keep your copy current by re-running `--self-test` and pulling updates from the repo.
+It checks that every critical export and CLI flag (`--write-config`, `--base-url`, `--model`,
+`--fallback-model`, `--probe`, `--healthcheck`, `--repair`) is present — no repo, no network —
+and that the retired API (`provider` family, shell-profile exports) is *gone*. Non-zero exit
+means the copy is stale or pre-ADR-0053; re-sync it from the MyTerminal repo.
 
 ## Reference
 
@@ -269,14 +320,16 @@ checkout* — read them only once you know where that checkout is (the detector 
 | Path in the checkout | What it settles |
 | --- | --- |
 | `docs/SUBAGENT_SETUP.md` / `docs/SUBAGENT_SETUP.zh-CN.md` | The full manual setup document — endpoint/model/key fields, every config field, troubleshooting |
-| `src/subagent/llm-adapter.ts` | `createAdapter` — the single Anthropic-compatible adapter; reads `apiKey`/`baseUrl` from settings |
-| `src/config.ts` | `settingsPath`, `createDefaultSettings`, `validateSettings` — why a partial config is fatal |
-| `src/types.ts` | `SubagentSettings` — the authoritative field list (single Anthropic entry; no provider enum) |
+| `src/subagent/llm-adapter.ts` | `createAdapter` — the single Anthropic-compatible adapter; reads `apiKey`/`baseUrl` from settings, appends `/v1/messages` |
+| `src/config.ts` | `settingsPath`, `createDefaultSettings`, `validateSettings`, `applySubagentDefaults` — the three-required contract and the optional-field defaults |
+| `src/types.ts` | `SubagentSettings` — the authoritative field list (no provider enum) |
+| `src/l3/registry.ts` | `DEFAULT_L3_MODEL_PATH` — the local model's file name under `<installRoot>/models/` |
 | `test/adr43-onboarding-skill.test.mjs` | The locks on this skill's own logic; read it if you suspect a behaviour changed |
 
 If the user has no checkout yet, the online copy of the setup document is at
 <https://github.com/epslkslsksndnsjs-lab/myterminal/blob/main/docs/SUBAGENT_SETUP.md>.
 
-The design rationale for this skill lives in the maintainer's ADR-0043
-(`docs/adr/0043-myterminal-onboarding-skill.md`). That directory is git-ignored, so it may be
-absent from a fresh clone — do not treat a missing file there as an error.
+The design rationale for this skill lives in ADR-0053
+(`docs/adr/0053-onboarding-skill-adr0045-migration-l3-install.md`, which supersedes ADR-0043).
+That directory is git-ignored, so it may be absent from a fresh clone — do not treat a missing
+file there as an error.
