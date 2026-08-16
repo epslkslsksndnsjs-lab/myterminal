@@ -5,6 +5,8 @@
 // ── 常量正则（决策 17 + 32）──
 
 // 放行名单——前缀匹配，\b 边界防止 warm 误伤 rm（决策 17）
+// #169（P3-2）认账：npm run 系形状判断而非语义判断——任意 package.json script 都算
+// 「安全」（执行内容由脚本定义、不在本名单管辖）；若未来收紧需按语义白名单另议。
 const SAFE_PATTERNS = /^\s*(ls|cat|echo|pwd|grep|rg|head|tail|wc|find|git\s+(status|log|diff|show|branch)|npm\s+(test|run|ls)|bun\s+(test|run)|node\s+--version|tsc)\b/;
 
 // 拦截名单——命中即 deny，无论模式（决策 17 + 32 + ADR-0013 加固）
@@ -52,7 +54,12 @@ export function splitCommands(command: string): string[] {
     }
 
     // 不在引号内——检查分隔符
-    if (ch === "'") {
+    if (ch === '\\' && next) {
+      // #169（P3-1）：引号外反斜杠转义——与 hasCommandSubstitution 语义统一
+      // （shell 视 \x 为字面量，被转义的分隔符不拆）。此前缺此分支=过度拆分（保守方向）。
+      current += ch + next;
+      i++;
+    } else if (ch === "'") {
       current += ch;
       inSingle = true;
     } else if (ch === '"') {
@@ -251,6 +258,9 @@ export function isCommandConcurrencySafe(command: string): boolean {
  * - 其余命令：exit 0 = 成功，非 0 = 错误
  */
 export function interpretExitCode(command: string, exitCode: number): { isError: boolean; message?: string } {
+  // #169（P3-3）注记：只取首个命令名（extractMainCommand）——cd missing && important 的
+  // 尾命令退出码不会被语义解释（保守边角；shell 默认报末命令退出码，此差异不改变
+  // isError 判定方向：unknown 首命令走通用 exit != 0 分支，仍如实上报）。
   // 取第一个主命令名
   const mainCommand = extractMainCommand(command);
 
