@@ -75,8 +75,8 @@ const mutations = [
   // ── src/subagent/output-dir.ts (4) ──
   { name: 'OPD-1: running gate removed', file: 'src/subagent/output-dir.ts', find: "if (record && record.status === 'running') return;", replace: 'if (false) return;' },
   { name: 'OPD-2: output dir removal disabled', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: '/* mutation: skip removal */' },
-  { name: 'OPD-3: output dir registration not cleared', file: 'src/subagent/output-dir.ts', find: 'ctx.outputDirs.delete(agentId);', replace: '/* mutation: skip delete */' },
-  { name: 'OPD-4: ENOENT force removed (throws on missing dir)', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: 'rmSync(dir, { recursive: true, force: false });' },
+  { name: 'OPD-3: output dir registration not cleared', file: 'src/subagent/output-dir.ts', find: 'ctx.outputDirs.delete(agentId);', replace: '/* mutation: skip delete */', all: true },
+  { name: 'OPD-4: ENOENT force removed (throws on missing dir)', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: 'rmSync(dir, { recursive: true, force: false });', all: true },
   // ── src/subagent/tools.ts + shell-tracker.ts（#156 R4，8）──
   { name: 'TLS-1: backgroundize 守卫失效', file: 'src/subagent/tools.ts', find: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();', replace: 'if (false) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();' },
   { name: 'TLS-2: backgroundize 守卫 unlink 移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();', replace: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();' },
@@ -100,7 +100,7 @@ const mutations = [
   { name: 'SR-6: reverse-lookup guard removed', file: 'src/subagent/store.ts', find: '  if (!bySession) return;', replace: '  if (false) return;' },
   { name: 'SR-7: subagent-records registration removed', file: 'src/session-resource-manager.ts', find: "sessionResourceManager.registerAgentResource('subagent-records', (agentId) => cleanupSubagentRecord(agentId));\n", replace: '' },
   // ── src/subagent/store.ts (2) — ADR-0048 D5 中（#153）未验收清理豁免 ──
-  { name: 'SUB-1: reviewed-check removed (unconditional cleanup bypass)', file: 'src/subagent/store.ts', find: 'if (!current || current.resultFetched === true) {', replace: 'if (!current) {' },
+  { name: 'SUB-1: reviewed-check removed (unconditional cleanup bypass)', file: 'src/subagent/store.ts', find: 'if (!current || current.resultFetched === true || ++rearms > 24) {', replace: 'if (!current || ++rearms > 24) {' },
   { name: 'SUB-2: re-arm removed (late-reviewed record never cleaned)', file: 'src/subagent/store.ts', find: '          scheduleCleanup();', replace: '          /* mutation: no re-arm */' },
   // ── src/tool-parse.ts / src/extensions.ts (#147) ──
   { name: 'TBP-1: builtin-target reduce fallback removed', file: 'src/tool-parse.ts', find: '(TOOL_SHAPES.get(targetName)?.reduce ?? denoiseCommandResult)', replace: '(TOOL_SHAPES.get(targetName)?.reduce)' },
@@ -136,8 +136,12 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   });
 }
 
+// #177：单点重跑过滤（ONLY=SUB-1,OPD-3,OPD-4）——按点名前缀子串匹配
+const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+
 for (let i = 0; i < mutations.length; i++) {
   const m = mutations[i];
+  if (ONLY.length && !ONLY.some((p) => m.name.includes(p))) continue;
   if (m.equivalent) {
     equivalent++;
     results.push({ name: m.name, status: 'EQUIVALENT (skipped)' });
