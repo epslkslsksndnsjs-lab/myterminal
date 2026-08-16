@@ -106,10 +106,13 @@ export function updateSubagentStatus(
     // 1 小时兜底清理（决策 7），timer 必须 unref()。
     // ADR-0048 D5 中（#153）：到点仍未验收（父未取过终态 result）→ 豁免清理并重武装——
     // 完成闸门依赖本记录拦「熬过 1h 收工」旁路；已验收才按兜底删除。
+    // #173-3：重挂有界——永未验收的弃管子最多重挂 24 次（24h 上限）后强制清理，
+    // 防定时器无界累积。
+    let rearms = 0;
     const scheduleCleanup = (): void => {
       setTimeout(() => {
         const current = ctx.subagents.get(id);
-        if (!current || current.resultFetched === true) {
+        if (!current || current.resultFetched === true || ++rearms > 24) {
           ctx.subagents.delete(id);
         } else {
           scheduleCleanup();

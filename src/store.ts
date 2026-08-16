@@ -383,6 +383,12 @@ export class MyTerminalStore {
         .filter(({ record }) => record && TERMINAL_SUBAGENT_STATUSES.has(record.status) && !record.resultFetched);
       if (unreviewedSubagentResults.length) {
         const first = unreviewedSubagentResults[0].record!;
+        // #173-2：details 补模型面契约字段——未读消息/待确认事件计数（与下方
+        // CHILD_REVIEW_REQUIRED 的 requiresReview 同口径），父可据此定位补救路径。
+        const unreadMessages = unreviewedSubagentResults.reduce(
+          (n, { child }) => n + this.state.messages.filter((m) => m.from === child.id && m.to === session.id && !m.readAt).length, 0);
+        const pendingEvents = unreviewedSubagentResults.reduce(
+          (n, { child }) => n + this.state.events.filter((e) => e.recipientSessionId === session.id && e.sourceSessionId === child.id && !e.acknowledgedAt).length, 0);
         // A1（#157）：抛错前落审计痕迹——镜像下方 CHILD_REVIEW_REQUIRED 同机制
         // （checkpoint + completion_blocked + save），拦截事件进审计链可查。
         const unreviewedCheckpoint: SessionCheckpoint = {
@@ -405,6 +411,9 @@ export class MyTerminalStore {
         throw new MyTerminalError('CHILD_RESULT_UNREVIEWED', '先查子结果再收工', {
           taskId: first.id,
           childSessionId: first.sessionId,
+          unreadMessages,
+          pendingEvents,
+          unreviewedCount: unreviewedSubagentResults.length,
           mustContinue: true,
           userFacingFinalProhibited: true,
           currentTime: now,

@@ -222,7 +222,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
 
       // ADR-0048 D5（#136）：父首次取终态结果即置「已验收」标记（completed 取 result；failed/aborted 看过 error 即验收）。
       // 幂等：重复轮询不删记录、不重置标记（ADR-0007 决策 7/13，读完即删违 D5 红线）。
-      if (record.status !== 'running' && !record.resultFetched) markResultFetched(taskId);
+      // #173-1：先组装后置位——组装/切片抛错不烧闸门（置位统一在各 return 前）。
+      const markIfUnreviewed = (): void => {
+        if (record.status !== 'running' && !record.resultFetched) markResultFetched(taskId);
+      };
 
       // ADR-0048 #164：后台任务存活——record 元数据（backgroundId→pid）+ shell-tracker 句柄判活。
       // getBackgroundTask 自此获得生产消费方（此前仅测试断言保活）。
@@ -252,6 +255,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         if (pageOffset > 0) {
           const pageLimit = Math.min(Math.max(1, Math.floor(limit ?? SUBAGENT_STATUS_PAGE_CHARS)), SUBAGENT_STATUS_PAGE_MAX_CHARS);
           const page = record.result.slice(pageOffset, pageOffset + pageLimit);
+          markIfUnreviewed();
           return {
             ...base,
             result: page,
@@ -261,8 +265,10 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
             truncated: pageOffset + page.length < totalChars,
           };
         }
+        markIfUnreviewed();
         return { ...base, taskId, resultOffset: 0, resultTotalChars: totalChars, truncated: false };
       }
+      markIfUnreviewed();
       return base;
     },
 
