@@ -71,18 +71,21 @@ export function resetBackgroundOutputCapForTest(): void {
 type SnapshotBuffers = {
   out: { stdout: string; stderr: string };
   outTotal: { stdout: number; stderr: number };
+  // #162：pendingText 是 let 重赋值（flush 置空）——捕获字符串会过期，用访问器
+  pendingText: () => string;
 };
 let snapshotBuffersForTest: SnapshotBuffers | undefined;
 
-/** 仅供测试——读取最近一次 execute_cli 调用的内存快照缓冲占用（#151 内存有界断言）。 */
-export function getSnapshotBufferForTest(): { stdoutChars: number; stderrChars: number; stdoutTotalChars: number; stderrTotalChars: number } | undefined {
+/** 仅供测试——读取最近一次 execute_cli 调用的内存快照缓冲占用（#151 内存有界断言 + #162 单缓冲断言）。 */
+export function getSnapshotBufferForTest(): { stdoutChars: number; stderrChars: number; stdoutTotalChars: number; stderrTotalChars: number; pendingTextChars: number } | undefined {
   if (!snapshotBuffersForTest) return undefined;
-  const { out, outTotal } = snapshotBuffersForTest;
+  const { out, outTotal, pendingText } = snapshotBuffersForTest;
   return {
     stdoutChars: out.stdout.length,
     stderrChars: out.stderr.length,
     stdoutTotalChars: outTotal.stdout,
     stderrTotalChars: outTotal.stderr,
+    pendingTextChars: pendingText().length,
   };
 }
 
@@ -370,10 +373,21 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       // D8 第 4 条：写入侧盘帽——累计超限 → 截断提示 + 丢弃后续 chunk（pipe 模式不杀进程；
       // diskOutput.ts #capped 语义）。content.length（UTF-16）欠计 UTF-8 字节 ≤3×，
       // 对磁盘防满防护足够。
+      async function writeOutput(text: string): Promise<void> {
+        if (capped || !text) return;
+        bytesWritten += text.length;
+        if (bytesWritten > backgroundOutputCapBytes) {
+          capped = true;
+          try { await fileHandle!.write(`\n[output truncated: exceeded ${BACKGROUND_OUTPUT_CAP_BYTES_DISPLAY} disk cap]\n`); } catch { /* 忽略 */ }
+          return;
+        }
+        try { await fileHandle!.write(text); } catch { /* 忽略 */ }
+      }
       async function appendOutput(text: string | undefined): Promise<void> {
         if (capped) return;
         if (!fileHandle) {
-          // 文件句柄就绪前暂存（显式后台先 spawn 后建文件）；'' = flush 信号
+          // 文件句柄就绪前暂存（显式后台先 spawn 后建文件）；'' = flush 信号。
+          // #162：前台阶段不再喂入（data handler 已跳过）——pendingText 仅后台化后接收。
           if (text !== undefined) pendingText += text;
           return;
         }
@@ -382,14 +396,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
           pendingText = '';
           text = (text ?? '') === '' ? buffered : buffered + text;
         }
-        if (!text) return;
-        bytesWritten += text.length;
-        if (bytesWritten > backgroundOutputCapBytes) {
-          capped = true;
-          try { await fileHandle.write(`\n[output truncated: exceeded ${BACKGROUND_OUTPUT_CAP_BYTES_DISPLAY} disk cap]\n`); } catch { /* 忽略 */ }
-          return;
-        }
-        try { await fileHandle.write(text); } catch { /* 忽略 */ }
+        await writeOutput(text ?? '');
       }
 
       // D8 第 4 条：创建输出文件——O_NOFOLLOW 防 symlink 攻击 + O_EXCL 防抢先占位
@@ -439,7 +446,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       // 全量字符数记计数器；快照后（settled）停止累积。落盘文件为权威源（盘帽 256MB 照旧）。
       const outTotal = { stdout: 0, stderr: 0 };
       // 测试观察钩子（先例：setBackgroundOutputCapForTest）——供 GB 级模拟流内存有界断言
-      snapshotBuffersForTest = { out, outTotal };
+      snapshotBuffersForTest = { out, outTotal, pendingText: () => pendingText };
       function appendSnapshot(kind: 'stdout' | 'stderr', text: string): void {
         if (settled) return; // 快照已定——停止累积（后台生命周期不再无限增长）
         outTotal[kind] += text.length;
@@ -449,7 +456,10 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
           out[kind] = (out[kind] + text).slice(0, MAX_RESULT_SIZE_CHARS);
           return;
         }
-        out[kind] += text; // 前台照旧全量（退出时同源截断）
+        // #162：前台单缓冲全量（豁免快照帽）——本快照=超时转后台的补全源
+        // （AC2 已产输出不丢）；帽对齐会截断补全源，故豁免。退出时 truncateCappedResult
+        // 同源截断（out 未帽时与 truncateResult 等价），返回语义不变。
+        out[kind] += text;
       }
       // 转后台失败兜底：建文件失败（磁盘/权限）→ 杀进程 + 报错（比后台失联更可诊断）
       function failBackground(err: unknown): void {
@@ -486,12 +496,14 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       child.stdout?.on('data', (d: Buffer) => {
         const text = d.toString();
         appendSnapshot('stdout', text);
-        void appendOutput(text);
+        // #162：前台单缓冲——pendingText 仅后台化后接收（免 2× 双喂；
+        // 转后台前已产输出由 backgroundize 从快照直写补全）
+        if (explicitBackground || backgrounded) void appendOutput(text);
       });
       child.stderr?.on('data', (d: Buffer) => {
         const text = d.toString();
         appendSnapshot('stderr', text);
-        void appendOutput(text);
+        if (explicitBackground || backgrounded) void appendOutput(text);
       });
 
       // ADR-0048 D8：自持计时器声明在分支前——exit/error 清理要引用；显式后台无计时器
@@ -587,7 +599,9 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
 
       // ADR-0048 #154：两后台分支共用单函数——createOutputFile.then 链逐字相同，抽 backgroundize
       // （显式 run_in_background 与超时转后台：建文件→排空→flush→登记→后台语义 resolve）
-      function backgroundize(child: ChildProcess): void {
+      // #162：preStdout/preStderr = 超时转后台时点捕获的前台全量（前台单缓冲——pendingText
+      // 未喂前段）；显式后台路径两参为空 → 直写 no-op，行为不变。
+      function backgroundize(child: ChildProcess, preStdout = '', preStderr = ''): void {
         // 局部 const 跨回调捕获（闭包变量跨函数边界不窄化——TS control-flow）
         const bgId = `bg_${randomUUID().slice(0, 8)}`;
         backgroundId = bgId;
@@ -596,9 +610,12 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             outputPath = file;
             // 竞态：exit 先于 data 排空——等流结束再取快照（快命令输出不丢）
             if (childExited) await drainStreams(child);
-            // 只 flush pendingText：每次 data 已逐条进 appendOutput（句柄就绪前暂存，
-            // 就绪后直写；转后台前已产输出（D8 第 11 条）亦在 pendingText），
-            // 追加 out.stdout 会双重写入（pendingText ⊆ out.stdout）
+            // #162：转后台前已产输出从快照直写补全（经盘帽记账，不经 pendingText 合流——
+            // 保持 pre 在 post 之前；stdout 块在前 stderr 块在后）。显式后台 pre 为空 → no-op。
+            await writeOutput(preStdout);
+            await writeOutput(preStderr);
+            // 只 flush pendingText：后台化后的 chunk 逐条进 appendOutput（句柄就绪前暂存，
+            // 就绪后直写）；追加 out.stdout 会双重写入且转后台时点快照已帽
             await appendOutput('');
             // R4（#156）+ #160：spawn 已失败（error handler 已 settle）或子已在建文件窗口
             // 内被 abort 杀死 → 不登记死进程、不泄漏句柄、不留空 .output
@@ -632,10 +649,14 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         if (child.exitCode !== null || child.killed) return;
         if (isAutobackgroundingAllowed(command)) {
           backgrounded = true;
+          // #162：前台单缓冲（pendingText 未喂前段）——转后台前已产输出在此捕获，
+          // 交 backgroundize 直写补全（AC2 已产输出不丢）
+          const preStdout = out.stdout;
+          const preStderr = out.stderr;
           // #151：转后台时点收紧内存——前台阶段已积累的也截到快照帽（总量已在 outTotal 记账）
           out.stdout = out.stdout.slice(0, MAX_RESULT_SIZE_CHARS);
           out.stderr = out.stderr.slice(0, MAX_RESULT_SIZE_CHARS);
-          backgroundize(child);
+          backgroundize(child, preStdout, preStderr);
         } else {
           // sleep 类不转后台——超时杀（决策 32 语义保持：exitCode 非 null，非 is_error）
           child.kill('SIGTERM');
