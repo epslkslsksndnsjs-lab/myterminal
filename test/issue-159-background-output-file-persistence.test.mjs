@@ -56,12 +56,23 @@ test.skipIf(skipOnWin)('159-AC1: 快照后 abort 收尸 → bg_*.output 文件�
   assert.ok(result.backgroundId, '返回 backgroundId');
   const file = outputPathFor(ctx, result.backgroundId);
   assert.ok(fs.existsSync(file), '转后台后文件已落盘（快照返回时存在）');
-  await sleep(300); // 等子进程启动并产出（100KB 立即 + 30ms 持续）
+  // 等子进程启动并产出（100KB 立即 + 30ms 持续）——有界轮询（CI 负载下固定 300ms 不足，#176 实测 mac 轮换 flake）
+  for (let i = 0; i < 25; i++) {
+    await sleep(200);
+    try {
+      if (fs.readFileSync(file, 'utf-8').includes('z')) break;
+    } catch { /* 文件尚未就绪 */ }
+  }
   assert.ok(fs.readFileSync(file, 'utf-8').includes('z'), '已产输出持续落盘');
 
   // 收尸：abort 杀进程（AbortError 'error' 事件会触发）——文件必须留存且内容保全
   ctx.abort();
-  await sleep(400);
+  for (let i = 0; i < 25; i++) {
+    await sleep(200);
+    try {
+      if (fs.existsSync(file) && fs.readFileSync(file, 'utf-8').includes('z')) break;
+    } catch { /* 文件尚未就绪 */ }
+  }
   assert.ok(fs.existsSync(file), 'abort 收尸后落盘文件仍在（#156 R4 回滚不得误删）');
   assert.ok(fs.readFileSync(file, 'utf-8').includes('z'), '文件可 read_file 读（含已产输出）');
 });
