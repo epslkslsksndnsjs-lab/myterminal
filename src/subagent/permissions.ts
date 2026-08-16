@@ -307,27 +307,28 @@ const REDIRECT_GLUED = /^[0-9]*&?>{1,2}/;
 // touch 有意排除：subagent-m3 锁定「touch /tmp/ok 放行」语义（touch 由既有
 // DANGEROUS/SAFE 防线管辖，本守卫不重复判）。
 
-/** 目标是否为字面路径（含斜杠/家目录/点开头），非字面（$ 变量/命令替换）不判。 */
+/** 目标是否为字面路径——除 $/命令替换外的所有 token 均视为潜在路径（含裸名：
+ *  裸名在 cd 跟踪下必须判包含，`cd /tmp && rm important.txt` 才拦得住）。 */
 function isLiteralPath(token: string): boolean {
-  if (token.includes('$') || token.includes('`')) return false;
-  return token.startsWith('/') || token.startsWith('~') || token.startsWith('.') || token.includes('/');
+  return !token.includes('$') && !token.includes('`');
 }
 
-/** 字面目标是否越出工作区（绝对路径判包含；相对路径 resolve 后判包含；~ 恒在区外）。 */
-function isOutsideWorkspace(target: string, cwd: string): boolean {
+/** 字面目标是否越出工作区（绝对路径判包含；相对路径 resolve 后判包含；~ 恒在区外）。
+ *  baseCwd=命令实际执行目录（cd 跟踪后可能已变化）；workspaceRoot=原始工作区（包含判定基准）。 */
+function isOutsideWorkspace(target: string, baseCwd: string, workspaceRoot: string): boolean {
   if (target.includes('$') || target.includes('`')) return false; // 静态不可解析——交既有防线（已知限制，注释认账）
   if (target.startsWith('~')) return true;
-  const abs = isAbsolute(target) ? target : resolve(cwd, target);
+  const abs = isAbsolute(target) ? target : resolve(baseCwd, target);
   // #172-2：symlink 盲修复——realpath 归一（成功才采信；失败回退词法，最深层存在祖先也解析），
   // 种链逃逸（ln -s /etc cwd/evil; rm cwd/evil/passwd）被真实路径包含拦下。
-  const realCwd = safeRealpath(cwd) ?? resolve(cwd);
+  const realRoot = safeRealpath(workspaceRoot) ?? resolve(workspaceRoot);
   let realAbs = safeRealpath(abs);
   if (!realAbs) {
     const parentReal = safeRealpath(dirname(abs));
     if (!parentReal) return false; // 祖先不存在（如 mkdir -p 新建路径）——回退词法口径
     realAbs = join(parentReal, basename(abs));
   }
-  return realAbs !== realCwd && !realAbs.startsWith(realCwd + sep);
+  return realAbs !== realRoot && !realAbs.startsWith(realRoot + sep);
 }
 
 function safeRealpath(p: string): string | null {
@@ -340,8 +341,21 @@ function safeRealpath(p: string): string | null {
  * 跟踪（`cd /tmp && rm x` 静态不可见）、$VAR 展开、xargs/管道间接传参。
  */
 export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow' | 'deny' {
+  // #171-2：字面 cd 跟踪——越区 cd 后相对写目标按新 cwd 判包含；cd $VAR 不可静态解析时
+  // 回退原始 cwd（保守从宽，由既有防线管辖）。
+  let effCwd: string = cwd;
   for (const seg of splitCommands(command)) {
     const tokens = seg.trim().split(/\s+/).filter((t) => t.length > 0);
+    // cd 段处理（纯字面单参数）
+    if (tokens.length >= 2 && tokens[0] === 'cd') {
+      const dest = tokens[1];
+      if (dest.includes('$') || dest.includes('`')) effCwd = cwd;
+      else if (dest.startsWith('~')) effCwd = '~'; // 家目录恒在区外——后续写目标全 deny
+      else effCwd = isAbsolute(dest) ? dest : resolve(effCwd === '~' ? cwd : effCwd, dest);
+      continue;
+    }
+    // #171-1：xargs 链写类动词保守 deny（参数由 stdin 静态不可判）
+    if (tokens[0] === 'xargs' && tokens.some((t) => WRITE_VERBS.has(t))) return 'deny';
     let verbIdx = -1;
     for (let i = 0; i < tokens.length; i++) {
       if (WRITE_VERBS.has(tokens[i])) { verbIdx = i; break; }
@@ -349,10 +363,15 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
       if (INPLACE_VERBS.has(tokens[i]) && /\s-(-in-place|i)\b/.test(' ' + seg)) { verbIdx = i; break; }
     }
 
+    // #171-2：effCwd 生效（cd 跟踪）；cd ~ 后任何字面写目标直接 deny。
+    // 包含判定基准恒为原始工作区——`cd /tmp && rm x` 按 /tmp/x 对 workspace 判，拦截。
+    const out = (target: string): boolean =>
+      effCwd === '~' ? isLiteralPath(target) : isLiteralPath(target) && isOutsideWorkspace(target, effCwd, cwd);
+
     // 无写类动词的段——仍检查重定向目标（echo hi > /etc/passwd 形态）
     if (verbIdx === -1) {
       for (let i = 0; i < tokens.length; i++) {
-        const rr = redirectResolve(tokens, i, cwd);
+        const rr = redirectResolve(tokens, i, effCwd === '~' ? cwd : effCwd, out);
         if (rr === 'deny') return 'deny';
         if (rr !== null) i++; // 裸操作符已消费下一个 token
       }
@@ -363,7 +382,7 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
     for (let i = verbIdx + 1; i < tokens.length; i++) {
       const t = tokens[i];
       // #172-1：重定向两形态（粘连 >/path 与独立 > /path）
-      const rr = redirectResolve(tokens, i, cwd);
+      const rr = redirectResolve(tokens, i, effCwd === '~' ? cwd : effCwd, out);
       if (rr !== null) {
         if (rr === 'deny') return 'deny';
         i++; // 裸操作符消费下一个 token
@@ -371,12 +390,12 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
       }
       if (verb === 'dd' && t.startsWith('if=')) continue; // 读侧
       if (verb === 'dd' && t.startsWith('of=')) {
-        if (isOutsideWorkspace(t.slice(3), cwd)) return 'deny';
+        if (out(t.slice(3))) return 'deny';
         continue;
       }
       if (t.startsWith('-')) continue; // 选项/flag（sed -i 的 -i 亦在此跳过）
-      if (t.includes('=') && !isLiteralPath(t)) continue; // VAR=x 赋值
-      if (isLiteralPath(t) && isOutsideWorkspace(t, cwd)) return 'deny';
+      if (t.includes('=') && !t.startsWith('/') && !t.startsWith('~') && !t.startsWith('.')) continue; // VAR=x 赋值（无路径前缀）
+      if (out(t)) return 'deny';
       // 非字面目标（相对裸名/变量）不判——由既有防线管辖
     }
   }
@@ -384,17 +403,17 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
 }
 
 /** 重定向解析：粘连形态（>/path、2>/path）直接判；裸操作符（>、>>）取下一个 token 为目标。
- *  返回 null=非重定向；'allow'=已判通过；'deny'=越界。 */
-function redirectResolve(tokens: string[], i: number, cwd: string): 'allow' | 'deny' | null {
+ *  返回 null=非重定向；'allow'=已判通过；'deny'=越界。outCheck=调用方提供的越界判定（含 cd 跟踪）。 */
+function redirectResolve(tokens: string[], i: number, _cwd: string, outCheck: (t: string) => boolean): 'allow' | 'deny' | null {
   const t = tokens[i];
   const m = t.match(REDIRECT_GLUED);
   if (!m) return null;
   const rest = t.slice(m[0].length);
   if (rest.length > 0) {
-    if (isLiteralPath(rest) && isOutsideWorkspace(rest, cwd)) return 'deny';
+    if (outCheck(rest)) return 'deny';
     return 'allow';
   }
   const target = tokens[i + 1];
-  if (target !== undefined && isLiteralPath(target) && isOutsideWorkspace(target, cwd)) return 'deny';
+  if (target !== undefined && outCheck(target)) return 'deny';
   return 'allow';
 }
