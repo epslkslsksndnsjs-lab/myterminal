@@ -155,17 +155,19 @@ for (let i = 0; i < mutations.length; i++) {
   writeFileSync(m.file, mutated);
   activeMutation = { file: m.file, orig };
   try {
-    execSync('bun run build 2>&1', { stdio: 'pipe' });
-  } catch {
+    // 每点超时加固（#171 会话教训：无 timeout 的 execSync 遇挂起测试会永久阻塞——2026-08-16
+    // 首跑在 SKL 点挂死 77 分钟）：build 120s、全量测试 480s，超时即 KILLED（挂起=可观测行为破坏）。
+    execSync('bun run build 2>&1', { stdio: 'pipe', timeout: 120_000 });
+  } catch (e) {
     killedByBuild++;
-    results.push({ name: m.name, status: 'KILLED (build error)' });
-    console.log('KILLED (build)');
+    results.push({ name: m.name, status: e.killed ? 'KILLED (build timeout)' : 'KILLED (build error)' });
+    console.log(e.killed ? 'KILLED (build timeout)' : 'KILLED (build)');
     writeFileSync(m.file, orig);
     activeMutation = null;
     continue;
   }
   try {
-    const out = execSync(`bun test --timeout 120000 ${TEST_GLOB} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' } });
+    const out = execSync(`bun test --timeout 120000 ${TEST_GLOB} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 480_000 });
     const passMatch = out.match(/(\d+) pass/);
     const failMatch = out.match(/(\d+) fail/);
     const passes = passMatch ? parseInt(passMatch[1]) : 0;
@@ -181,10 +183,15 @@ for (let i = 0; i < mutations.length; i++) {
     }
   } catch (e) {
     killedByTest++;
-    const out = e.stdout?.toString() || '';
-    const failMatch = out.match(/(\d+) fail/);
-    results.push({ name: m.name, status: `KILLED (test exited: ${failMatch ? failMatch[1] + ' fail' : 'nonzero'})` });
-    console.log(`KILLED (${failMatch ? failMatch[1] + ' fail' : 'nonzero exit'})`);
+    if (e.killed) {
+      results.push({ name: m.name, status: 'KILLED (test timeout 480s)' });
+      console.log('KILLED (test timeout)');
+    } else {
+      const out = e.stdout?.toString() || '';
+      const failMatch = out.match(/(\d+) fail/);
+      results.push({ name: m.name, status: `KILLED (test exited: ${failMatch ? failMatch[1] + ' fail' : 'nonzero'})` });
+      console.log(`KILLED (${failMatch ? failMatch[1] + ' fail' : 'nonzero exit'})`);
+    }
   }
   writeFileSync(m.file, orig);
   activeMutation = null;
