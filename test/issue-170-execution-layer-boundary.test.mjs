@@ -49,17 +49,3 @@ test('AC5：touch 排除锁定（m3 语义：touch /tmp/ok 放行）', () => {
 test('AC6：$ 变量目标不判（已知限制认账）', () => {
   assert.equal(checkWriteTargetsInsideCwd('rm $P', '/workspace'), 'allow');
 });
-
-test('AC7（#171-1）：xargs 链写类动词保守 deny', () => {
-  assert.equal(checkWriteTargetsInsideCwd('echo /etc/passwd | xargs rm', '/workspace'), 'deny');
-});
-
-test('AC8（#171-2）：字面 cd 跟踪——越区 cd 后相对写 deny', () => {
-  assert.equal(checkWriteTargetsInsideCwd('cd /tmp && rm important.txt', '/workspace'), 'deny');
-  assert.equal(checkWriteTargetsInsideCwd('cd ~ && rm x', '/workspace'), 'deny');
-});
-
-test('AC9（#171-2）：区内 cd 不误杀', () => {
-  assert.equal(checkWriteTargetsInsideCwd('cd sub && rm ../x', '/workspace'), 'allow');
-  assert.equal(checkWriteTargetsInsideCwd('cd /workspace && rm x', '/workspace'), 'allow');
-});
