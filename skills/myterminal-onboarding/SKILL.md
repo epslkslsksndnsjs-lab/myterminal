@@ -36,6 +36,19 @@ node <myterminal-path>/skills/myterminal-onboarding/scripts/install.mjs
   installs directly; `--target claude` installs to one agent only.
 - **Uninstall**: delete `~/.workbuddy/skills/myterminal-onboarding`.
 
+No checkout yet? The repo ships a one-line remote installer (downloads the skill folder and runs the
+same install.mjs above). macOS / Linux:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/main/scripts/install-skill.sh)"
+```
+
+Windows PowerShell:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/main/scripts/install-skill.ps1 | iex"
+```
+
 This follows the same design philosophy as reference skills (mattpocock/skills): a skill is a
 folder an agent loads, not a package to register. (Reference skills use `npx skills add` to copy
 from a registry; this installer does the same copy, but fully locally — nothing is published.)
