@@ -14,6 +14,9 @@ const DANGEROUS_PATTERNS = /\b(rm\s+(-[a-zA-Z]*[rRfF]|--recursive|--force)|sudo|
 
 // ADR-0013: 解释器壳模式——提取内层命令递归检查
 const INTERPRETER_SHELL = /\b(bash|sh|zsh|dash|ksh)\s+-c\s+(['"])([\s\S]*)\2/;
+
+// #168（P2）：写类动词 + 绝对路径/家目录组合——工作区边界的执行层守卫
+const WRITE_VERB_ABS_PATH = /^\s*(rm|mv|dd|tee|chmod)\s+.*[\/~]/;
 const INTERPRETER_LANG = /\b(python[23]?|perl|ruby|node)\s+-c\s+(['"])([\s\S]*)\2/;
 const EVAL_PATTERN = /\beval\s+([\s\S]+)/;
 
@@ -196,6 +199,10 @@ export function checkCommandSafety(command: string, readOnly: boolean, _depth = 
   for (const sub of subCommands) {
     const stripped = stripSingleQuotedContent(sub);
     if (DANGEROUS_PATTERNS.test(stripped)) return 'deny';
+    // #168（P2）：写类动词 + 绝对路径/家目录 → deny（工作区边界在执行层强制，
+    // 读类仍放行——子 agent 需要读全局配置）。touch/cp/ln 不在名单：既有语义
+    // 保留（subagent-m3 锁定 touch /tmp/ok 放行）。
+    if (WRITE_VERB_ABS_PATH.test(sub)) return 'deny';
     // ADR-0013: 每个子命令也检查解释器壳
     if (checkInterpreterInner(sub, readOnly, _depth) === 'deny') return 'deny';
   }
