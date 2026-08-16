@@ -18,7 +18,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import type { JsonObject, JsonSchema } from '../types.js';
 import { recordFileRead, validateEdit, applyEdit } from './file-state.js';
 import { trackShellTask, registerBackgroundTask, unregisterBackgroundTask } from './shell-tracker.js';
-import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode, checkWriteTargetsInsideCwd } from './permissions.js';
+import { checkCommandSafety, isCommandConcurrencySafe, interpretExitCode } from './permissions.js';
 import { truncateResult, truncateCappedResult, MAX_RESULT_SIZE_CHARS } from './result-budget.js';
 import { getSubagent, createSubagent } from './store.js';
 import { getAgentOutputDir } from './output-dir.js';
@@ -679,12 +679,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
   // 决策 17 + 32：命令级安全检查
   checkPermissions(input, ctx) {
     const cmd = input.command as string;
-    const safety = checkCommandSafety(cmd, ctx.readOnly ?? false);
-    if (safety === 'deny') return 'deny';
-    // #170（P2 回炉）：执行层工作区边界——写目标解析判包含（checkCommandSafety
-    // 只管命令形状，边界由本层守卫；read_file 的路径包含是同一概念先例）
-    if (ctx.cwd) return checkWriteTargetsInsideCwd(cmd, ctx.cwd);
-    return 'allow';
+    return checkCommandSafety(cmd, ctx.readOnly ?? false);
   },
 });
 
