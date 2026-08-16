@@ -1,4 +1,5 @@
 // ADR-0007 决策 17：三层权限防线（命令模式匹配 + 命令分割 + 命令替换检测）
+import { resolve, isAbsolute, sep } from 'node:path';
 // ADR-0007 决策 32：命令分割 + 命令替换检测 + 退出码语义
 // ADR-0007 决策 31：isConcurrencySafe 函数化
 
@@ -16,9 +17,6 @@ const DANGEROUS_PATTERNS = /\b(rm\s+(-[a-zA-Z]*[rRfF]|--recursive|--force)|sudo|
 
 // ADR-0013: 解释器壳模式——提取内层命令递归检查
 const INTERPRETER_SHELL = /\b(bash|sh|zsh|dash|ksh)\s+-c\s+(['"])([\s\S]*)\2/;
-
-// #168（P2）：写类动词 + 绝对路径/家目录组合——工作区边界的执行层守卫
-const WRITE_VERB_ABS_PATH = /^\s*(rm|mv|dd|tee|chmod)\s+.*[\/~]/;
 const INTERPRETER_LANG = /\b(python[23]?|perl|ruby|node)\s+-c\s+(['"])([\s\S]*)\2/;
 const EVAL_PATTERN = /\beval\s+([\s\S]+)/;
 
@@ -206,10 +204,6 @@ export function checkCommandSafety(command: string, readOnly: boolean, _depth = 
   for (const sub of subCommands) {
     const stripped = stripSingleQuotedContent(sub);
     if (DANGEROUS_PATTERNS.test(stripped)) return 'deny';
-    // #168（P2）：写类动词 + 绝对路径/家目录 → deny（工作区边界在执行层强制，
-    // 读类仍放行——子 agent 需要读全局配置）。touch/cp/ln 不在名单：既有语义
-    // 保留（subagent-m3 锁定 touch /tmp/ok 放行）。
-    if (WRITE_VERB_ABS_PATH.test(sub)) return 'deny';
     // ADR-0013: 每个子命令也检查解释器壳
     if (checkInterpreterInner(sub, readOnly, _depth) === 'deny') return 'deny';
   }
@@ -300,4 +294,72 @@ function extractMainCommand(command: string): string {
   const spaceIdx = trimmed.search(/\s/);
   if (spaceIdx === -1) return trimmed;
   return trimmed.slice(0, spaceIdx);
+}
+
+// ── #170（P2 回炉）：执行层工作区边界守卫 ──
+
+const WRITE_VERBS = new Set(['rm', 'mv', 'cp', 'ln', 'mkdir', 'rmdir', 'tee', 'chmod', 'dd']);
+const REDIRECT_OPS = new Set(['>', '>>', '2>', '&>']);
+// touch 有意排除：subagent-m3 锁定「touch /tmp/ok 放行」语义（touch 由既有
+// DANGEROUS/SAFE 防线管辖，本守卫不重复判）。
+
+/** 目标是否为字面路径（含斜杠/家目录/点开头），非字面（$ 变量/命令替换）不判。 */
+function isLiteralPath(token: string): boolean {
+  if (token.includes('$') || token.includes('`')) return false;
+  return token.startsWith('/') || token.startsWith('~') || token.startsWith('.') || token.includes('/');
+}
+
+/** 字面目标是否越出工作区（绝对路径判包含；相对路径 resolve 后判包含；~ 恒在区外）。 */
+function isOutsideWorkspace(target: string, cwd: string): boolean {
+  if (target.includes('$') || target.includes('`')) return false; // 静态不可解析——交既有防线（已知限制，注释认账）
+  if (target.startsWith('~')) return true;
+  const abs = isAbsolute(target) ? target : resolve(cwd, target);
+  const normCwd = resolve(cwd);
+  return abs !== normCwd && !abs.startsWith(normCwd + sep);
+}
+
+/**
+ * 执行层工作区边界检查（#170）：把写目标解析为绝对路径判包含，覆盖
+ * 重定向/~ 展开/../ 逃逸/前缀伪装。已知限制（注释认账，不判）：cd 状态
+ * 跟踪（`cd /tmp && rm x` 静态不可见）、$VAR 展开、xargs/管道间接传参。
+ */
+export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow' | 'deny' {
+  for (const seg of splitCommands(command)) {
+    const tokens = seg.trim().split(/\s+/).filter((t) => t.length > 0);
+    let verbIdx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      if (WRITE_VERBS.has(tokens[i])) { verbIdx = i; break; }
+    }
+
+    // 无写类动词的段——仍检查重定向目标（echo hi > /etc/passwd 形态）
+    if (verbIdx === -1) {
+      for (let i = 0; i < tokens.length; i++) {
+        if (REDIRECT_OPS.has(tokens[i]) && tokens[i + 1] !== undefined) {
+          if (isLiteralPath(tokens[i + 1]) && isOutsideWorkspace(tokens[i + 1], cwd)) return 'deny';
+        }
+      }
+      continue;
+    }
+
+    const verb = tokens[verbIdx];
+    for (let i = verbIdx + 1; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (REDIRECT_OPS.has(t)) {
+        const target = tokens[i + 1];
+        if (target !== undefined && isLiteralPath(target) && isOutsideWorkspace(target, cwd)) return 'deny';
+        i++;
+        continue;
+      }
+      if (verb === 'dd' && t.startsWith('if=')) continue; // 读侧
+      if (verb === 'dd' && t.startsWith('of=')) {
+        if (isOutsideWorkspace(t.slice(3), cwd)) return 'deny';
+        continue;
+      }
+      if (t.startsWith('-')) continue; // 选项/flag
+      if (t.includes('=') && !isLiteralPath(t)) continue; // VAR=x 赋值
+      if (isLiteralPath(t) && isOutsideWorkspace(t, cwd)) return 'deny';
+      // 非字面目标（相对裸名/变量）不判——由既有防线管辖
+    }
+  }
+  return 'allow';
 }
