@@ -1071,8 +1071,8 @@ export function seedOperationCache(taskId: string | undefined, op: ToolResponse)
 //
 // subagent_status 是控制工具、不在 TOOL_SHAPES → resolveShape 判 passthrough。此例外
 // 只对 data.result.result 子字段做 L3-if-small 路由（仅 status==='completed' + 自由文本
-// string + ≤24K tokens），其余内部上下文（status/sessionId/tasks/usage/error/origin，
-// auditLogs 已随 D11 砍出 status 返回体）一律不整形（避免双重整形，D2）。预算门只量 result
+// string + ≤24K tokens），其余内部上下文（status/sessionId/tasks/usage/error/origin）
+// 一律不整形（避免双重整形，D2；auditLogs 已随 D11/#161 全通道删净）。预算门只量 result
 // 子字段（非整对象），超门
 // fail-open reason=over-budget；非 completed / result 非 string → 保持 passthrough。
 // W2-07（#90）：D-13 旁挂式——L3 抽取结果挂 data.result.extracted，result 字段原文原样

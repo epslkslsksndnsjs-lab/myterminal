@@ -21,19 +21,6 @@ export type SubagentTask = {
   blockedReason?: string;
 };
 
-export interface ToolAuditLog {
-  toolName: string;
-  toolUseId: string;
-  input: string;          // JSON 序列化后截断到 1000 字符
-  startTime: number;
-  endTime: number;
-  durationMs: number;
-  success: boolean;
-  errorType?: 'schema_validation' | 'permission_denied' | 'execution_error' | 'timeout';
-  errorMessage?: string;  // 截断到 500 字符
-  resultSizeChars: number;
-}
-
 export interface SubagentRecord {
   id: string;
   sessionId?: string;         // M8 接入 delegate session 后回填
@@ -49,7 +36,6 @@ export interface SubagentRecord {
   resultFetched?: boolean;
   abortController: AbortController;
   usage: UsageSummary;
-  auditLogs: ToolAuditLog[];
   /** ADR-0048 D8（第四轮修订）：转后台命令元数据——句柄在 shell-tracker backgroundTasks 索引，此处只存 backgroundId→pid 供审计/可见性 */
   backgroundTasks?: Array<{ backgroundId: string; pid: number }>;
 }
@@ -84,7 +70,6 @@ export function createSubagent(
     origin: fields.origin,
     abortController: new AbortController(),
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
-    auditLogs: [],
   };
   ctx.subagents.set(id, record);
   return record;
@@ -160,41 +145,12 @@ export function cleanupSubagentRecord(agentId: string, ctx: SubagentContext = de
   ctx.subagents.delete(bySession.id);
 }
 
-export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext = defaultContext): void {
-  const record = ctx.subagents.get(id);
-  if (!record) return;
-
-  // 截断输入到 1000 字符
-  if (log.input.length > 1000) {
-    log.input = log.input.slice(0, 1000);
-  }
-  // 截断错误消息到 500 字符
-  if (log.errorMessage && log.errorMessage.length > 500) {
-    log.errorMessage = log.errorMessage.slice(0, 500);
-  }
-
-  record.auditLogs.push(log);
-
-  // 只保留最近 50 条（决策 39）
-  if (record.auditLogs.length > 50) {
-    record.auditLogs = record.auditLogs.slice(-50);
-  }
-}
-
-
 export function countRunning(ctx: SubagentContext = defaultContext): number {
   let count = 0;
   for (const record of ctx.subagents.values()) {
     if (record.status === 'running') count++;
   }
   return count;
-}
-
-/** 查询时返回最近 20 条 auditLogs（决策 39） */
-export function getRecentAuditLogs(id: string, ctx: SubagentContext = defaultContext): ToolAuditLog[] {
-  const record = ctx.subagents.get(id);
-  if (!record) return [];
-  return record.auditLogs.slice(-20);
 }
 
 /** M8：列出所有 subagent（TUI 列表页数据源） */

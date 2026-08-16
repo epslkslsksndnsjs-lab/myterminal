@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 
 import { executeToolCalls, partitionToolCalls, validateSchema, formatSchemaError } from '../dist/subagent/tool-executor.js';
 import { buildTool, toolRegistry } from '../dist/subagent/tools.js';
-import { createSubagent, getRecentAuditLogs, clearAllSubagents } from '../dist/subagent/store.js';
+import { createSubagent, clearAllSubagents } from '../dist/subagent/store.js';
 import { resetReplacementDecisions } from '../dist/subagent/result-budget.js';
 
 // ── 测试夹具 ──
@@ -381,12 +381,6 @@ test('权限拒绝——危险命令返回 is_error + permission_denied', async 
     assert.equal(results.length, 1);
     assert.equal(results[0].is_error, true);
     assert.ok(results[0].content.includes('Permission denied'));
-
-    // 审计日志应记录 permission_denied
-    const logs = getRecentAuditLogs(agentId);
-    const permLog = logs.find((l) => l.errorType === 'permission_denied');
-    assert.ok(permLog);
-    assert.equal(permLog.toolName, 'execute_cli');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -442,52 +436,6 @@ test('审计日志——成功与失败均有完整字段', async () => {
     ];
 
     await executeToolCalls(calls, ctx, collector.fn);
-
-    const logs = getRecentAuditLogs(agentId);
-    assert.equal(logs.length, 2);
-
-    // 成功日志（glob）
-    const successLog = logs.find((l) => l.toolUseId === 'a1');
-    assert.ok(successLog);
-    assert.equal(successLog.toolName, 'glob');
-    assert.equal(successLog.success, true);
-    assert.ok(successLog.durationMs >= 0);
-    assert.ok(successLog.resultSizeChars > 0);
-    assert.ok(typeof successLog.input === 'string');
-    assert.ok(successLog.input.includes('*.txt'));
-
-    // 失败日志（read_file）
-    const failLog = logs.find((l) => l.toolUseId === 'a2');
-    assert.ok(failLog);
-    assert.equal(failLog.toolName, 'read_file');
-    assert.equal(failLog.success, false);
-    assert.equal(failLog.errorType, 'execution_error');
-    assert.ok(failLog.errorMessage);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('审计日志——input 截断到 1000 字符', async () => {
-  const dir = setupTempDir();
-  try {
-    const agentId = 'test-audit-trunc';
-    createSubagent(agentId, { subject: 'audit trunc test' });
-    const ctx = makeCtx(agentId, dir);
-    const collector = eventCollector();
-
-    // 构造超过 1000 字符的 input
-    const longPath = 'a'.repeat(1200);
-    const calls = [
-      { id: 'at1', name: 'read_file', input: { path: longPath } },
-    ];
-
-    await executeToolCalls(calls, ctx, collector.fn);
-
-    const logs = getRecentAuditLogs(agentId);
-    assert.equal(logs.length, 1);
-    // addAuditLog 在 store 中截断 input 到 1000 字符
-    assert.ok(logs[0].input.length <= 1000);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -688,10 +636,6 @@ test('集成——模拟 LLM 一轮混合调用', async () => {
 
     // write_file 成功
     assert.equal(results[3].is_error, false);
-
-    // 审计日志：6 条工具调用
-    const logs = getRecentAuditLogs(agentId);
-    assert.equal(logs.length, 6);
 
     // 事件流：START/ARGS/RESULT 成对出现
     const startEvents = collector.events.filter((e) => e.type === 'TOOL_CALL_START');

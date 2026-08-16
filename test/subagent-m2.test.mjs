@@ -21,10 +21,8 @@ import {
   createSubagent,
   getSubagent,
   updateSubagentStatus,
-  addAuditLog,
   updateSubagentCost,
   countRunning,
-  getRecentAuditLogs,
   setCleanupDelayMs,
   getCleanupDelayMs,
   markResultFetched,
@@ -203,35 +201,6 @@ test('subagent store full CRUD flow', () => {
 
 // 用例 14（collectSubagentResult 返回并删除）已随 ADR-0048 #144 F3 移除——collect 即删语义已废（幂等保留，清理只靠 1 小时定时器）。
 
-// 用例 15：auditLogs 超过 50 条只保留最近 50
-test('subagent store auditLogs caps at 50', () => {
-  clearAllSubagents();
-  createSubagent('sub-3', { subject: 'Audit test' });
-
-  for (let i = 0; i < 60; i++) {
-    addAuditLog('sub-3', {
-      toolName: `tool_${i}`,
-      toolUseId: `id_${i}`,
-      input: `{"i":${i}}`,
-      startTime: Date.now(),
-      endTime: Date.now() + 10,
-      durationMs: 10,
-      success: true,
-      resultSizeChars: 100,
-    });
-  }
-
-  // getRecentAuditLogs returns last 20
-  const recent = getRecentAuditLogs('sub-3');
-  assert.equal(recent.length, 20, 'should return last 20');
-  assert.equal(recent[0].toolName, 'tool_40', 'first should be the 41st');
-
-  // The record internally has 50 but we only get 20
-  const full = getSubagent('sub-3');
-  assert.ok(full);
-  assert.equal(full.auditLogs.length, 50, 'internal should retain 50');
-});
-
 // 用例 16：countRunning 只统计 running
 test('subagent store countRunning filters correctly', () => {
   clearAllSubagents();
@@ -296,46 +265,23 @@ test('integration: full subagent lifecycle', () => {
   const record = createSubagent(agentId, { subject: 'Integration test', description: 'Complete cycle' });
   assert.equal(record.status, 'running');
 
-  // 2. add audit logs
-  addAuditLog(agentId, {
-    toolName: 'read_file',
-    toolUseId: 'tool_1',
-    input: '{"path":"/test.ts"}',
-    startTime: Date.now() - 100,
-    endTime: Date.now(),
-    durationMs: 100,
-    success: true,
-    resultSizeChars: 200,
-  });
-  addAuditLog(agentId, {
-    toolName: 'write_file',
-    toolUseId: 'tool_2',
-    input: '{"path":"/out.txt"}',
-    startTime: Date.now() - 50,
-    endTime: Date.now(),
-    durationMs: 50,
-    success: true,
-    resultSizeChars: 50,
-  });
-
-  // 4. update cost
+  // 2. update cost
   updateSubagentCost(agentId, { inputTokens: 5000, outputTokens: 1200, cacheReadTokens: 500 });
 
-  // 5. getSubagent (reads without removing)
+  // 3. getSubagent (reads without removing)
   const before = getSubagent(agentId);
   assert.ok(before);
   assert.equal(before.usage.inputTokens, 5000);
 
-  // 6. complete
+  // 4. complete
   updateSubagentStatus(agentId, 'completed', { result: 'All tasks completed successfully' });
 
-  // 7. read result（幂等保留，不删记录——清理只靠 1 小时定时器，见用例 17）
+  // 5. read result（幂等保留，不删记录——清理只靠 1 小时定时器，见用例 17）
   const completed = getSubagent(agentId);
   assert.ok(completed);
   assert.equal(completed.status, 'completed');
   assert.equal(completed.result, 'All tasks completed successfully');
   assert.equal(completed.tasks.length, 0, 'A48-W1 M1（#145）：无 task_create 即无任务（不再注入主任务幻影）');
-  assert.equal(completed.auditLogs.length, 2);
   assert.ok(completed.usage.inputTokens > 0);
   assert.equal(getSubagent(agentId), completed, '记录保留，可重复读取');
 });
@@ -351,28 +297,4 @@ test('subagent store updateSubagentStatus with error', () => {
   assert.equal(updated.result, undefined);
 });
 
-// 用例 20：addAuditLog truncates long input and errorMessage
-test('subagent store addAuditLog truncates long fields', () => {
-  clearAllSubagents();
-  createSubagent('sub-trunc', { subject: 'Truncation test' });
-
-  const longInput = 'x'.repeat(2000);
-  const longError = 'e'.repeat(1000);
-  addAuditLog('sub-trunc', {
-    toolName: 'test_tool',
-    toolUseId: 'id_1',
-    input: longInput,
-    startTime: Date.now(),
-    endTime: Date.now(),
-    durationMs: 1,
-    success: false,
-    errorType: 'execution_error',
-    errorMessage: longError,
-    resultSizeChars: 0,
-  });
-
-  const logs = getRecentAuditLogs('sub-trunc');
-  assert.equal(logs.length, 1);
-  assert.equal(logs[0].input.length, 1000, 'input should be truncated to 1000');
-  assert.equal(logs[0].errorMessage.length, 500, 'errorMessage should be truncated to 500');
-});
+// 用例 20：已随 ADR-0048 #161 移除（addAuditLog 死通道删净，截断语义随写端一并作废）
