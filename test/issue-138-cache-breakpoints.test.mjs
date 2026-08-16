@@ -1,10 +1,11 @@
 // ADR-0048 T7 (#138)：提示词缓存断点（D10）— 契约测试
 //
-// 锁定四项 AC：
+// 锁定四项 AC（#165 F1 收窄后口径）：
 //   AC1 首请求 system/tools 两处 cache_control 断点（顺序 system→tools，ephemeral；
 //       tools 断点只在末项——全项打点 8 工具=9 断点超网关 4 断点上限必 400）
-//   AC2 4xx → 去断点重试一次 + 会话级禁用（不反复探测）；5xx 不重试不置位（瞬态不误禁）；
-//       宽容派（非 4xx）不降级
+//   AC2 仅「400 且响应体点名 cache_control/breakpoint」→ 去断点重试一次 + 会话级禁用；
+//       其余 4xx（429/401/403/400 其他参数错）不碰缓存开关、不即时重试，走原错误分类；
+//       5xx 不重试不置位（瞬态不误禁）；宽容派（200）不降级
 //   AC3 三处解析点（message_start/message_delta/非流式）补读 cache_creation_input_tokens
 //        + CostTracker 账本含 cacheCreationTokens（addUsage 累加、getUsage 输出）
 //   AC4 T1 结论引用：宽容派判定（cache_read 恒 0）只记账展示不切行为
@@ -169,6 +170,96 @@ test('AC2 5xx 带断点 → 不重试不置位（瞬态过载不误禁缓存）�
   assert.equal(ok.message.content[0].type, 'text');
   assert.equal(seen.length, 2);
   assert.equal(JSON.stringify(seen[1].body).includes('cache_control'), true, '5xx 后会话未被误禁，仍带断点');
+});
+
+test('F1 429 限流带断点 → 不重试不置位（抛 rate_limit），后续调用仍带断点', async () => {
+  const seen = [];
+  const adapter = new AnthropicAdapter('sk-test', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ body });
+    if (seen.length === 1) {
+      return jsonFakeResponse({ type: 'error', error: { message: 'rate limited' } }, 429);
+    }
+    return jsonFakeResponse({ content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 3, output_tokens: 1 } });
+  });
+
+  await assert.rejects(adapter.create(makeChatParams(), NEVER_ABORT), (err) => {
+    assert.equal(err.kind, 'rate_limit', '429 走原错误分类');
+    return true;
+  });
+  assert.equal(seen.length, 1, '429 不触发去断点重试');
+  assert.equal(JSON.stringify(seen[0].body).includes('cache_control'), true, '首次仍带断点');
+
+  const ok = await adapter.create(makeChatParams(), NEVER_ABORT);
+  assert.equal(ok.message.content[0].type, 'text');
+  assert.equal(seen.length, 2);
+  assert.equal(JSON.stringify(seen[1].body).includes('cache_control'), true, '429 后会话缓存未被误禁，仍带断点');
+});
+
+test('F1 401 鉴权带断点 → 不重试不置位（抛 auth）', async () => {
+  const seen = [];
+  const adapter = new AnthropicAdapter('sk-test', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ body });
+    if (seen.length === 1) {
+      return jsonFakeResponse({ type: 'error', error: { message: 'invalid api key' } }, 401);
+    }
+    return jsonFakeResponse({ content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 3, output_tokens: 1 } });
+  });
+
+  await assert.rejects(adapter.create(makeChatParams(), NEVER_ABORT), (err) => {
+    assert.equal(err.kind, 'auth', '401 走原错误分类');
+    return true;
+  });
+  assert.equal(seen.length, 1, '401 不触发去断点重试');
+
+  const ok = await adapter.create(makeChatParams(), NEVER_ABORT);
+  assert.equal(ok.message.content[0].type, 'text');
+  assert.equal(JSON.stringify(seen[1].body).includes('cache_control'), true, '401 后会话缓存未被误禁');
+});
+
+test('F1 400 prompt_too_long 带断点 → 不重试不置位（抛 prompt_too_long）', async () => {
+  const seen = [];
+  const adapter = new AnthropicAdapter('sk-test', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ body });
+    if (seen.length === 1) {
+      return jsonFakeResponse({ type: 'error', error: { message: 'prompt is too long' } }, 400);
+    }
+    return jsonFakeResponse({ content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 3, output_tokens: 1 } });
+  });
+
+  await assert.rejects(adapter.create(makeChatParams(), NEVER_ABORT), (err) => {
+    assert.equal(err.kind, 'prompt_too_long', '400 上下文超限走原错误分类');
+    return true;
+  });
+  assert.equal(seen.length, 1, '400 无缓存字样不触发重试');
+
+  const ok = await adapter.create(makeChatParams(), NEVER_ABORT);
+  assert.equal(ok.message.content[0].type, 'text');
+  assert.equal(JSON.stringify(seen[1].body).includes('cache_control'), true, '400 参数错后会话缓存未被误禁');
+});
+
+test('F1 400 无缓存字样（generic）→ 不重试不置位（抛 system）', async () => {
+  const seen = [];
+  const adapter = new AnthropicAdapter('sk-test', async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seen.push({ body });
+    if (seen.length === 1) {
+      return jsonFakeResponse({ type: 'error', error: { message: 'bad request' } }, 400);
+    }
+    return jsonFakeResponse({ content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 3, output_tokens: 1 } });
+  });
+
+  await assert.rejects(adapter.create(makeChatParams(), NEVER_ABORT), (err) => {
+    assert.equal(err.kind, 'system', '400 其他参数错走原错误分类');
+    return true;
+  });
+  assert.equal(seen.length, 1, '400 无缓存字样不触发重试');
+
+  const ok = await adapter.create(makeChatParams(), NEVER_ABORT);
+  assert.equal(ok.message.content[0].type, 'text');
+  assert.equal(JSON.stringify(seen[1].body).includes('cache_control'), true, '400 generic 后会话缓存未被误禁');
 });
 
 test('AC4 宽容派（200 恒响应，cache_read=0）不降级：后续调用仍带断点（只记账展示不切行为）', async () => {
