@@ -40,8 +40,9 @@ export async function doSelfTest() {
   ok('export: detect', typeof onboard.detect === 'function');
   ok('export: SUBAGENT_OPTIONAL_FIELDS',
     Array.isArray(onboard.SUBAGENT_OPTIONAL_FIELDS) && onboard.SUBAGENT_OPTIONAL_FIELDS.length === 6);
+  // ADR-0048 数值口径（同步源：src/config.ts applySubagentDefaults——maxTurns 700 / timeoutSec 7200）
   ok('optional fields match app defaults (applySubagentDefaults)',
-    ['maxTurns=50', 'timeoutSec=300', 'maxParallel=2', 'contextWindow=120000', 'maxOutput=32000', 'compactThreshold=80000']
+    ['maxTurns=700', 'timeoutSec=7200', 'maxParallel=2', 'contextWindow=120000', 'maxOutput=32000', 'compactThreshold=80000']
       .every((spec) => {
         const [field, value] = spec.split('=');
         const entry = onboard.SUBAGENT_OPTIONAL_FIELDS.find((f) => f.field === field);

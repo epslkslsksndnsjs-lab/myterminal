@@ -139,7 +139,10 @@ test('147-AC4: read_file 内层套自身 reducer（lineCount 派生）', () => {
 
 // ── AC5：运行时 builtin-target（execute_cli）响应内层剥噪声键 ──────────────────
 
-test('147-AC5: builtin-target 扩展（execute_cli）响应内层无噪声键，wrapper 保全', async () => {
+// #176 CI 修复：本文件用例依赖 POSIX shell 语义（bash 链 / & 后台 / exec / sleep / seq 与引号规则），
+// Windows cmd.exe 无对应语义——win32 仅 AC5 跳过；实现侧 win32 降级路径由既有适配用例覆盖。
+const skipOnWin = process.platform === 'win32';
+test.skipIf(skipOnWin)('147-AC5: builtin-target 扩展（execute_cli）响应内层无噪声键，wrapper 保全', async () => {
   const server = await createRuntime();
   try {
     const main = await root(server);

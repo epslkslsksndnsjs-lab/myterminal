@@ -54,7 +54,11 @@ function expectedTruncated(totalChars, fillChar = 'x') {
 // AC2：快照语义不变（超时转后台——转后台时点数据完整 + 逐字节一致）
 // ═══════════════════════════════════════════════════════════════
 
-test('151-快照语义: 超时转后台 100K 已产输出 → 快照 = 2000 预览 + Original size 通知（与 truncateResult 逐字节一致）', async () => {
+// #176 CI 修复：本文件用例依赖 POSIX shell 语义（bash 链 / & 后台 / exec / sleep / seq 与引号规则），
+// Windows cmd.exe 无对应语义——win32 整文件跳过；实现侧 win32 降级路径由既有适配用例覆盖。
+const skipOnWin = process.platform === 'win32';
+
+test.skipIf(skipOnWin)('151-快照语义: 超时转后台 100K 已产输出 → 快照 = 2000 预览 + Original size 通知（与 truncateResult 逐字节一致）', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   const total = 100_000;
@@ -75,7 +79,7 @@ test('151-快照语义: 超时转后台 100K 已产输出 → 快照 = 2000 预�
   ctx.abort(); // 收尸空转进程
 });
 
-test('151-快照语义: 转后台时点内存收紧——已积累 100K 缓冲在后台化后封顶 50000', async () => {
+test.skipIf(skipOnWin)('151-快照语义: 转后台时点内存收紧——已积累 100K 缓冲在后台化后封顶 50000', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   const total = 100_000;
@@ -95,7 +99,7 @@ test('151-快照语义: 转后台时点内存收紧——已积累 100K 缓冲�
 // AC1 + AC3：GB 级模拟流内存有界（封顶 + 快照后停止累积 + 盘帽照旧）
 // ═══════════════════════════════════════════════════════════════
 
-test('151-内存有界: GB 级模拟流下转后台后 out.* 封顶 50000 且冻结，落盘盘帽照旧', async () => {
+test.skipIf(skipOnWin)('151-内存有界: GB 级模拟流下转后台后 out.* 封顶 50000 且冻结，落盘盘帽照旧', async () => {
   const ctx = makeCtx();
   // 盘帽注入小值：文件侧 5MB 截断（不占磁盘跑 GB），内存侧断言才是本票核心
   setBackgroundOutputCapForTest(5 * 1024 * 1024);
@@ -150,7 +154,7 @@ test('151-内存有界: GB 级模拟流下转后台后 out.* 封顶 50000 且冻
 // 前台语义不回归 + 小输出文件权威
 // ═══════════════════════════════════════════════════════════════
 
-test('151-前台不回归: 前台大输出退出 → 与 truncateResult(全量) 逐字节一致', async () => {
+test.skipIf(skipOnWin)('151-前台不回归: 前台大输出退出 → 与 truncateResult(全量) 逐字节一致', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   const total = 200_000;
@@ -160,7 +164,7 @@ test('151-前台不回归: 前台大输出退出 → 与 truncateResult(全量) 
   assert.strictEqual(result.stdout, expectedTruncated(total), '前台路径输出与修复前逐字节一致');
 });
 
-test('151-小输出权威源: 显式后台小输出 → 文件含全量（落盘为权威源）', async () => {
+test.skipIf(skipOnWin)('151-小输出权威源: 显式后台小输出 → 文件含全量（落盘为权威源）', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   const result = await tool.call({ command: "node -e \"process.stdout.write('hello background')\"", run_in_background: true }, ctx);

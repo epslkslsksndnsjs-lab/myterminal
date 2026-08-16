@@ -63,7 +63,11 @@ async function waitFor(fn, timeoutMs = 5000) {
 // AC1 + AC2：前台单缓冲 + 退出同源截断语义不变
 // ═══════════════════════════════════════════════════════
 
-test('162-单缓冲: 前台 300K 输出运行中 pendingText 恒零（无重复累积），退出截断语义不变', async () => {
+// #176 CI 修复：本文件用例依赖 POSIX shell 语义（bash 链 / & 后台 / exec / sleep / seq 与引号规则），
+// Windows cmd.exe 无对应语义——win32 整文件跳过；实现侧 win32 降级路径由既有适配用例覆盖。
+const skipOnWin = process.platform === 'win32';
+
+test.skipIf(skipOnWin)('162-单缓冲: 前台 300K 输出运行中 pendingText 恒零（无重复累积），退出截断语义不变', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   const total = 300_000;
@@ -83,7 +87,7 @@ test('162-单缓冲: 前台 300K 输出运行中 pendingText 恒零（无重复�
   assert.equal(buf.stdoutTotalChars, total, '记账诚实');
 });
 
-test('162-单缓冲: 前台大输出运行中轮询——pendingText 每刻为零', async () => {
+test.skipIf(skipOnWin)('162-单缓冲: 前台大输出运行中轮询——pendingText 每刻为零', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   // 慢速流：200K 分 20 块 × 50ms = 1s——轮询窗口内多次观察
@@ -114,7 +118,7 @@ test('162-单缓冲: 前台大输出运行中轮询——pendingText 每刻为�
 // AC3：超时转后台 pre-conversion 输出补全不丢（stdout+stderr 全量进文件）
 // ═══════════════════════════════════════════════════════
 
-test('162-补全: 超时转后台 pre-conversion stdout 60K + stderr 40K 全量进文件（151-AC2 语义保持）', async () => {
+test.skipIf(skipOnWin)('162-补全: 超时转后台 pre-conversion stdout 60K + stderr 40K 全量进文件（151-AC2 语义保持）', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   // 立即产出 100K（stdout 60K + stderr 40K）后空转——超时（1s）转后台时输出已全部到达

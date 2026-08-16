@@ -44,7 +44,11 @@ function outputPathFor(ctx, backgroundId) {
 // AC1：快照后 abort 收尸 → 落盘文件仍在（回归 #159 ENOENT）
 // ═══════════════════════════════════════════════════════════════
 
-test('159-AC1: 快照后 abort 收尸 → bg_*.output 文件仍在且可读（D8 落盘留存）', async () => {
+// #176 CI 修复：本文件用例依赖 POSIX shell 语义（bash 链 / & 后台 / exec / sleep / seq 与引号规则），
+// Windows cmd.exe 无对应语义——win32 整文件跳过；实现侧 win32 降级路径由既有适配用例覆盖。
+const skipOnWin = process.platform === 'win32';
+
+test.skipIf(skipOnWin)('159-AC1: 快照后 abort 收尸 → bg_*.output 文件仍在且可读（D8 落盘留存）', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   // 持续流：快照（~1ms）先于 node 启动（~50ms）——等输出产出一批后再 abort 收尸
@@ -62,7 +66,7 @@ test('159-AC1: 快照后 abort 收尸 → bg_*.output 文件仍在且可读（D8
   assert.ok(fs.readFileSync(file, 'utf-8').includes('z'), '文件可 read_file 读（含已产输出）');
 });
 
-test('159-AC1b: 一次性输出命令快照后 abort → 文件落盘且内容保全', async () => {
+test.skipIf(skipOnWin)('159-AC1b: 一次性输出命令快照后 abort → 文件落盘且内容保全', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   // 写 50KB 后空转：输出产出一批后再 abort——覆盖 backgroundize .then 已完成路径
@@ -81,7 +85,7 @@ test('159-AC1b: 一次性输出命令快照后 abort → 文件落盘且内容�
 // AC2：#151 内存有界用例（合体后口径）
 // ═══════════════════════════════════════════════════════════════
 
-test('159-AC2: #151 内存有界断言在合体后保持绿（abort 后盘帽文件可读）', async () => {
+test.skipIf(skipOnWin)('159-AC2: #151 内存有界断言在合体后保持绿（abort 后盘帽文件可读）', async () => {
   const ctx = makeCtx();
   const tool = getTool('execute_cli');
   const result = await tool.call({ command: `node -e 'let w=()=>{process.stdout.write("y".repeat(1000000));setTimeout(w,20)};w()'`, timeoutSec: 1 }, ctx);
