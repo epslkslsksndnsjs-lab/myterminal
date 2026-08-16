@@ -10,6 +10,30 @@ MyTerminal 0.1.2 provides that bridge through an auditable, inheritable work-ses
 
 ## Install and start
 
+### Agent skill install
+
+If you already have Claude Code (or WorkBuddy / Cursor), install the `myterminal-onboarding` skill into your agent and let the AI walk you through the entire install and configuration. Requires Node.js 18+ (your agent already requires it).
+
+#### macOS / Linux
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/main/scripts/install-skill.sh)"
+```
+
+#### Windows PowerShell
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/main/scripts/install-skill.ps1 | iex"
+```
+
+The installer downloads the skill folder, installs it into every detected agent (idempotent — safe to re-run), and runs a self-test. Then open your agent and type:
+
+```text
+/myterminal-onboarding
+```
+
+The AI guide starts with a read-only probe, then walks you through: Bun environment → clone and build → first-run TUI configuration → subagent LLM (endpoint + model + API key, the key goes over stdin only) → optional L3 local model → health check.
+
 ### First installation
 
 You do not need Git, Node.js, Bun, or another programming environment beforehand. The installers download the standalone `v0.1.2` executable for the current operating system and CPU architecture, verify its SHA-256 checksum, register the global `myterminal` command, and start the TUI. Release installations no longer download a source archive or runtime dependencies.
