@@ -404,22 +404,29 @@ export class AnthropicAdapter implements LlmAdapter {
       signal,
     });
 
-    // 4xx 去断点重试一次 + 会话级禁用（ADR D10 第 6 条：不反复探测）。
-    // 只对 4xx 降级：5xx 是网关瞬态/过载、与断点无关——若一并禁用会把瞬态故障
-    // 误判为「断点被拒」、本会话缓存被永久误关（ADR 口径=4xx）。
-    if (response.status >= 400 && response.status < 500 && withCacheControl) {
-      this.cacheDisabled = true;
-      body = buildBody(params, false, messages, true);
-      response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: requestHeaders,
-        body: JSON.stringify(body),
-        signal,
-      });
+    // #165（F1）：缓存禁用条件收窄——仅「400 且响应体点名缓存相关错误（cache_control/breakpoint）」
+    // 才认定断点被拒 → 去断点重试一次 + 会话级禁用（ADR D10 第 6 条勘误口径，不反复探测）。
+    // 其余 4xx（429 限流/401 鉴权/403 鉴权/400 其他参数错）与 cache_control 无关——
+    // 走原错误分类路径，不碰会话缓存开关、不即时重试（429 须按 Retry-After 等待）。
+    // 5xx 是网关瞬态/过载、同样不误禁。响应体只读一次，读后复用给错误分类。
+    let errorText = '';
+    if (response.status === 400 && withCacheControl) {
+      errorText = await response.text().catch(() => '');
+      if (/cache_control|breakpoint/i.test(errorText)) {
+        this.cacheDisabled = true;
+        body = buildBody(params, false, messages, true);
+        response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: requestHeaders,
+          body: JSON.stringify(body),
+          signal,
+        });
+        errorText = ''; // 重试响应体未读，留给下方错误分类按需读取
+      }
     }
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
+      const errorBody = errorText || await response.text().catch(() => '');
       throw classifyHttpError(response.status, errorBody, response.headers as unknown as Headers);
     }
 
@@ -560,20 +567,26 @@ export class AnthropicAdapter implements LlmAdapter {
       signal,
     });
 
-    // 同 stream：只对 4xx 降级（5xx 瞬态与断点无关，不误禁缓存）
-    if (response.status >= 400 && response.status < 500 && withCacheControl) {
-      this.cacheDisabled = true;
-      body = buildBody(params, false, messages);
-      response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: requestHeaders,
-        body: JSON.stringify(body),
-        signal,
-      });
+    // #165（F1）：同 stream 收窄口径——仅「400 且响应体点名 cache_control/breakpoint」
+    // 触发去断点重试+会话级禁用；其余 4xx/5xx 走原错误分类、不碰缓存开关。
+    let errorText = '';
+    if (response.status === 400 && withCacheControl) {
+      errorText = await response.text().catch(() => '');
+      if (/cache_control|breakpoint/i.test(errorText)) {
+        this.cacheDisabled = true;
+        body = buildBody(params, false, messages);
+        response = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: requestHeaders,
+          body: JSON.stringify(body),
+          signal,
+        });
+        errorText = '';
+      }
     }
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => '');
+      const errorBody = errorText || await response.text().catch(() => '');
       throw classifyHttpError(response.status, errorBody, response.headers as unknown as Headers);
     }
 
