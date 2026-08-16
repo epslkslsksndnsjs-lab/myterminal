@@ -9,6 +9,7 @@ import {
   createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost, markResultFetched,
   countRunning, listAllSubagents,
 } from './store.js';
+import { getBackgroundTask } from './shell-tracker.js';
 import { MyTerminalError } from '../store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
 import { SUBAGENT_STATUS_PAGE_CHARS, SUBAGENT_STATUS_PAGE_MAX_CHARS } from '../tool-schemas.js';
@@ -62,6 +63,9 @@ export type SubagentStatusResult = {
   resultOffset?: number;
   resultTotalChars?: number;
   truncated?: boolean;
+  /** ADR-0048 #164：后台任务存活状态——getBackgroundTask 生产消费方。
+   *  仅 record.backgroundTasks 非空时附；退出后条目保留（收尸才清）但 alive=false。 */
+  backgroundTasks?: Array<{ backgroundId: string; alive: boolean; pid?: number }>;
 };
 
 export type SubagentStartResult = {
@@ -220,6 +224,14 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       // 幂等：重复轮询不删记录、不重置标记（ADR-0007 决策 7/13，读完即删违 D5 红线）。
       if (record.status !== 'running' && !record.resultFetched) markResultFetched(taskId);
 
+      // ADR-0048 #164：后台任务存活——record 元数据（backgroundId→pid）+ shell-tracker 句柄判活。
+      // getBackgroundTask 自此获得生产消费方（此前仅测试断言保活）。
+      const backgroundTasks = record.backgroundTasks?.map(({ backgroundId, pid }) => {
+        const child = getBackgroundTask(backgroundId);
+        const alive = child !== undefined && !child.killed && child.exitCode === null && child.signalCode === null;
+        return { backgroundId, pid, alive };
+      });
+
       const base: SubagentStatusResult = {
         status: record.status,
         sessionId: record.sessionId,
@@ -228,6 +240,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         error: record.error,
         result: record.status === 'completed' ? record.result : undefined,
         origin: record.origin,
+        ...(backgroundTasks?.length ? { backgroundTasks } : {}),
       };
 
       // ADR-0048 票B（#130）：completed + string result 才附分页记账字段与切片。

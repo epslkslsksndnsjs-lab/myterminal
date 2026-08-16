@@ -1165,3 +1165,38 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 - **现状**：`src/store.ts:13-14`（核心会话存储 MyTerminalStore）反向 import 子系统运行时内存态——`SubagentStatus`（type）+ `getSubagentBySessionId`（runtime）。核心 store 内用法仅一处：checkpoint 完成闸门（D5 #136）在 directChildren 上反查 SubagentRecord 的 status/resultFetched；`getSubagentBySessionId` 对 `ctx.subagents` Map 做 O(n) 线性扫描。
 - **为何可接受**：①闸门判据（终态+未验收）本质是运行时会话事实，落盘到 StoredState 会复制运行时真值并引入同步复杂度；②n = 进程内活跃 subagent 数，量级小，O(n) 扫描开销可忽略；③只读方向（store 不修改 subagent 态），无循环写依赖。
 - **演进方向**：若 SubagentRecord 持久化为第一类状态（schema v3+），将闸门数据源下沉——runner finalize 时把 resultFetched/终态写进 session 状态，store 自持判据，取消反向依赖；或经注册表/事件接口倒置，核心 store 不直达子系统。
+
+## 14. ADR-0048 #164 — subagent_status 报后台任务存活（getBackgroundTask 接线，2026-08-16）
+
+- 基线：wk-164 @ 31cec15（adr-0048-parent-child-handoff = main，fetch+rebase 后）
+- 性质：主理人批准新增接线——getBackgroundTask 死线获得生产消费方；D8 未定义该状态面，本票即授权（与 D8「子侧无 kill」零冲突：只报存活、不引入 kill 能力）
+- 调度：调度3 派单（myterminal-34）→ 本窗（pid 87973，myterminal-7c）接单；查库结论已贴 #164 评论（5304904395）
+
+### 一、改动文件（2 src + 1 测试）
+
+| 文件 | 改动 |
+|---|---|
+| `src/subagent/runner.ts` | `SubagentStatusResult` 增可选键 `backgroundTasks?: Array<{backgroundId, alive, pid?}>`；`status()` 用 `getBackgroundTask(backgroundId)`（shell-tracker 句柄）判活：`child 存在 && !killed && exitCode===null && signalCode===null`；仅 record.backgroundTasks 非空时附键。getBackgroundTask 自此有生产消费方（此前仅 issue-134/160 测试断言保活） |
+| `test/issue-164-background-liveness.test.mjs` | 4 用例：s1 真实链路转后台→alive=true（backgroundId/pid 齐全）/ s2 退出后 alive=false（索引保留至收尸）/ s3 无后台任务键缺失 / s4 收尸清索引→alive=false。全 MCP 链（issue-136 手法）+ 直调 execute_cli（issue-134 手法） |
+
+> 注：曾试改 subagent_status 描述（T8 描述照实现），撞 LOCK-3 展示层逐字锁 + #144-F5 描述幂等锁 → 撤回。描述锁优先，描述照实现约束在本票不适用（工具描述由锁票统一治理）。
+
+### 二、语义要点
+
+- 存活判据：shell-tracker 索引条目保留至 agent 收尸（收尸后 alive=false）；命令自行退出后 exitCode/signalCode 非 null → alive=false
+- shaper（reduceSubagentStatusResult）：非 completed 原样透传；completed 只剥 4 记账字段——backgroundTasks 两路径均可达父侧
+- 无持久化承诺：与 SubagentRecord 同生命周期（决策 6/7 内存态），重启后键自然消失（#163 R3 同源语义）
+
+### 三、验证结果
+
+| 门 | 结果 |
+|---|---|
+| 单文件 | `bun test test/issue-164-background-liveness.test.mjs` **4 pass / 0 fail**（1.94s） |
+| 定向 | issue-134/136/160 34/0 + status 6 套件（subagent-m8/status-color-issue54/issue-130/issue-45/W207/issue-90）60/0 + 锁套件（issue-144/tool-schema-contract/fatal-error-boundary/extension-tool-input-baseline）27/0 |
+| 全量回归 | `bun test` **1381 pass / 0 fail**（130 文件，90.09s） |
+
+### 四、纪律记录（教训）
+
+1. **描述锁优先**：曾按 T8「描述照实现」改 subagent_status 描述，撞 LOCK-3 展示层逐字锁 + #144-F5 描述幂等锁（全量 2 fail）→ 撤回。工具描述由锁票统一治理，功能票不得动描述。
+2. **MCP 嵌套**：subagent_status 真数据在 `structuredContent.data.result`，`content[0].text` 是 summary 句——解析要下钻两层。
+3. **全量 flake 甄别**：首轮全量 2 fail 中 workspace registry 为并行资源争用 flake（单跑 78/0），确定性与非确定性失败分开处理。
