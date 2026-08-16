@@ -253,8 +253,9 @@ export function reduceBuiltinTargetResult(targetName: string, result: JsonObject
   const reduce = (TOOL_SHAPES.get(targetName)?.reduce ?? denoiseCommandResult) as (r: JsonObject) => JsonObject;
   const reduced = reduce(result);
   const counted = applyCountRule(reduced);
-  delete counted.pagination;
-  delete counted.__reduction;
+  // #174-3：pagination/__reduction 保留交由 L2 处理——L2 剥离后发射 data.continuation.pagination
+  // 并写入审计（D17 绝不进模型上下文由 L2 保证）。此前此处删除导致扩展路径截断结果
+  // 无 nextCall 不可分页（静默数据丢失）。
   return counted;
 }
 
@@ -1418,7 +1419,10 @@ export async function shapeToolResponse(response: ToolResponse, ctx: ShapeContex
           shaping = { applied: true };
         } else {
           // L3 失败（模型不可用/超时/配额/Q5 全丢）→ 原样 passthrough（D11，不伪造）——
-          // 旧语义不变：base 重置回 raw（L1 剥记账字段的结果在失败路径按 D11 弃用）
+          // 旧语义不变：base 重置回 raw（L1 剥记账字段的结果在失败路径按 D11 弃用）。
+          // #174 审查发现 6 曾主张此处 raw 含记账字段泄漏；但 W2-07/T11 契约测试
+          // （#90/D11 fail-open 定案）锁死「raw 原样」语义——契约 vs 零影响主张冲突，
+          // 挂账待主理人裁决，本票不动。
           base = response;
           shaping = { applied: false, reason: outcome.reason ?? 'passthrough' };
         }
