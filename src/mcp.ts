@@ -235,8 +235,15 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
   // ── Subagent tools（ADR-0009 决策 1）──
   registerDirect('subagent_start', 'Start Subagent', 'Start a subagent for a sub-task. Asynchronous: returns taskId immediately; poll with subagent_status; completion arrives via message.', safeLocalMutation);
   registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, token usage, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.', undefined, {},
-    // ADR-0048 D5（#136）：completed→"子已完成，请验收"、running（及其他非终态）→"运行中"
-    (response) => (response.data as { result?: { status?: string } } | undefined)?.result?.status === 'completed' ? '子已完成，请验收' : '运行中');
+    // ADR-0048 D5（#136）：completed→"子已完成，请验收"、running→"运行中"；
+    // #174-1：死子不再映射「运行中」——failed/aborted 各给明确信号（父不再对死子空轮询）。
+    (response) => {
+      const status = (response.data as { result?: { status?: string } } | undefined)?.result?.status;
+      if (status === 'completed') return '子已完成，请验收';
+      if (status === 'failed') return '子已失败，请查 error';
+      if (status === 'aborted') return '子已中止，请查 error';
+      return '运行中';
+    });
   registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
 
   // ── Skill 工具（ADR-0037 #82：指令 mcp.ts:150 已承诺 skill() 直呼，须补齐 direct 注册）──

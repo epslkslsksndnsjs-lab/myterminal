@@ -253,11 +253,11 @@ export function isCommandConcurrencySafe(command: string): boolean {
  * - 其余命令：exit 0 = 成功，非 0 = 错误
  */
 export function interpretExitCode(command: string, exitCode: number): { isError: boolean; message?: string } {
-  // #169（P3-3）注记：只取首个命令名（extractMainCommand）——cd missing && important 的
-  // 尾命令退出码不会被语义解释（保守边角；shell 默认报末命令退出码，此差异不改变
-  // isError 判定方向：unknown 首命令走通用 exit != 0 分支，仍如实上报）。
-  // 取第一个主命令名
-  const mainCommand = extractMainCommand(command);
+  // #174-4：取末命令名解释（shell 报链末命令退出码）——grep -q M f && mv f f.bak
+  // （mv 失败 1）不再误报「无匹配」；cd missing && important 同理按末命令解释。
+  const segments = splitCommands(command);
+  const last = segments.length > 0 ? segments[segments.length - 1] : command;
+  const mainCommand = extractMainCommand(last);
 
   // grep / rg：exit 1 = 无匹配，exit ≥ 2 = 错误
   if (mainCommand === 'grep' || mainCommand === 'rg') {
