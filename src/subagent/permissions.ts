@@ -178,7 +178,10 @@ function checkInterpreterInner(command: string, readOnly: boolean, depth: number
  */
 export function checkCommandSafety(command: string, readOnly: boolean, _depth = 0): 'allow' | 'deny' {
   // ADR-0013: 递归深度限制（防无限循环）
-  if (_depth > 3) return readOnly ? 'deny' : 'allow';
+  // #167（P1 修复）：深度耗尽一律 deny（fail-closed）——写模式下放行会被
+  // 「4 层嵌套解释器壳 + 引号遮蔽」组合拳绕过三层防线；合法命令不存在需要
+  // 4 层壳的场景，误杀成本约 0。
+  if (_depth > 3) return 'deny';
 
   // ADR-0013: 解释器壳递归检查——提取内层命令独立判断
   if (checkInterpreterInner(command, readOnly, _depth) === 'deny') return 'deny';
