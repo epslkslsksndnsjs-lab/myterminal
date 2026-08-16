@@ -1,6 +1,5 @@
 // ADR-0007 决策 17：三层权限防线（命令模式匹配 + 命令分割 + 命令替换检测）
-import { resolve, isAbsolute, sep, dirname, join, basename } from 'node:path';
-import { realpathSync } from 'node:fs';
+import { resolve, isAbsolute, sep } from 'node:path';
 // ADR-0007 决策 32：命令分割 + 命令替换检测 + 退出码语义
 // ADR-0007 决策 31：isConcurrencySafe 函数化
 
@@ -299,11 +298,8 @@ function extractMainCommand(command: string): string {
 
 // ── #170（P2 回炉）：执行层工作区边界守卫 ──
 
-// #172-3：sed/awk 仅在 -i/--in-place 时是写类；install/truncate 恒写。
-const WRITE_VERBS = new Set(['rm', 'mv', 'cp', 'ln', 'mkdir', 'rmdir', 'tee', 'chmod', 'dd', 'install', 'truncate']);
-const INPLACE_VERBS = new Set(['sed', 'awk']);
-// #172-1：重定向粘连 token 前缀匹配（>/etc/passwd 无空格形态）
-const REDIRECT_GLUED = /^[0-9]*&?>{1,2}/;
+const WRITE_VERBS = new Set(['rm', 'mv', 'cp', 'ln', 'mkdir', 'rmdir', 'tee', 'chmod', 'dd']);
+const REDIRECT_OPS = new Set(['>', '>>', '2>', '&>']);
 // touch 有意排除：subagent-m3 锁定「touch /tmp/ok 放行」语义（touch 由既有
 // DANGEROUS/SAFE 防线管辖，本守卫不重复判）。
 
@@ -318,20 +314,8 @@ function isOutsideWorkspace(target: string, cwd: string): boolean {
   if (target.includes('$') || target.includes('`')) return false; // 静态不可解析——交既有防线（已知限制，注释认账）
   if (target.startsWith('~')) return true;
   const abs = isAbsolute(target) ? target : resolve(cwd, target);
-  // #172-2：symlink 盲修复——realpath 归一（成功才采信；失败回退词法，最深层存在祖先也解析），
-  // 种链逃逸（ln -s /etc cwd/evil; rm cwd/evil/passwd）被真实路径包含拦下。
-  const realCwd = safeRealpath(cwd) ?? resolve(cwd);
-  let realAbs = safeRealpath(abs);
-  if (!realAbs) {
-    const parentReal = safeRealpath(dirname(abs));
-    if (!parentReal) return false; // 祖先不存在（如 mkdir -p 新建路径）——回退词法口径
-    realAbs = join(parentReal, basename(abs));
-  }
-  return realAbs !== realCwd && !realAbs.startsWith(realCwd + sep);
-}
-
-function safeRealpath(p: string): string | null {
-  try { return realpathSync(p); } catch { return null; }
+  const normCwd = resolve(cwd);
+  return abs !== normCwd && !abs.startsWith(normCwd + sep);
 }
 
 /**
@@ -345,16 +329,14 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
     let verbIdx = -1;
     for (let i = 0; i < tokens.length; i++) {
       if (WRITE_VERBS.has(tokens[i])) { verbIdx = i; break; }
-      // #172-3：sed/awk 仅 -i/--in-place 形态为写类
-      if (INPLACE_VERBS.has(tokens[i]) && /\s-(-in-place|i)\b/.test(' ' + seg)) { verbIdx = i; break; }
     }
 
     // 无写类动词的段——仍检查重定向目标（echo hi > /etc/passwd 形态）
     if (verbIdx === -1) {
       for (let i = 0; i < tokens.length; i++) {
-        const rr = redirectResolve(tokens, i, cwd);
-        if (rr === 'deny') return 'deny';
-        if (rr !== null) i++; // 裸操作符已消费下一个 token
+        if (REDIRECT_OPS.has(tokens[i]) && tokens[i + 1] !== undefined) {
+          if (isLiteralPath(tokens[i + 1]) && isOutsideWorkspace(tokens[i + 1], cwd)) return 'deny';
+        }
       }
       continue;
     }
@@ -362,11 +344,10 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
     const verb = tokens[verbIdx];
     for (let i = verbIdx + 1; i < tokens.length; i++) {
       const t = tokens[i];
-      // #172-1：重定向两形态（粘连 >/path 与独立 > /path）
-      const rr = redirectResolve(tokens, i, cwd);
-      if (rr !== null) {
-        if (rr === 'deny') return 'deny';
-        i++; // 裸操作符消费下一个 token
+      if (REDIRECT_OPS.has(t)) {
+        const target = tokens[i + 1];
+        if (target !== undefined && isLiteralPath(target) && isOutsideWorkspace(target, cwd)) return 'deny';
+        i++;
         continue;
       }
       if (verb === 'dd' && t.startsWith('if=')) continue; // 读侧
@@ -374,27 +355,11 @@ export function checkWriteTargetsInsideCwd(command: string, cwd: string): 'allow
         if (isOutsideWorkspace(t.slice(3), cwd)) return 'deny';
         continue;
       }
-      if (t.startsWith('-')) continue; // 选项/flag（sed -i 的 -i 亦在此跳过）
+      if (t.startsWith('-')) continue; // 选项/flag
       if (t.includes('=') && !isLiteralPath(t)) continue; // VAR=x 赋值
       if (isLiteralPath(t) && isOutsideWorkspace(t, cwd)) return 'deny';
       // 非字面目标（相对裸名/变量）不判——由既有防线管辖
     }
   }
-  return 'allow';
-}
-
-/** 重定向解析：粘连形态（>/path、2>/path）直接判；裸操作符（>、>>）取下一个 token 为目标。
- *  返回 null=非重定向；'allow'=已判通过；'deny'=越界。 */
-function redirectResolve(tokens: string[], i: number, cwd: string): 'allow' | 'deny' | null {
-  const t = tokens[i];
-  const m = t.match(REDIRECT_GLUED);
-  if (!m) return null;
-  const rest = t.slice(m[0].length);
-  if (rest.length > 0) {
-    if (isLiteralPath(rest) && isOutsideWorkspace(rest, cwd)) return 'deny';
-    return 'allow';
-  }
-  const target = tokens[i + 1];
-  if (target !== undefined && isLiteralPath(target) && isOutsideWorkspace(target, cwd)) return 'deny';
   return 'allow';
 }

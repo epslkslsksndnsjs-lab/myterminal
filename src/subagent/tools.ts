@@ -682,10 +682,8 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
     const safety = checkCommandSafety(cmd, ctx.readOnly ?? false);
     if (safety === 'deny') return 'deny';
     // #170（P2 回炉）：执行层工作区边界——写目标解析判包含（checkCommandSafety
-    // 只管命令形状，边界由本层守卫；read_file 的路径包含是同一概念先例）。
-    // #172-4：按 spawn 同口径 workingDir 判包含（input.cwd 子目录场景不误杀合法 ../ 写）。
-    const workingDir = input.cwd ? resolvePath(input.cwd as string, ctx.cwd) : ctx.cwd;
-    if (workingDir) return checkWriteTargetsInsideCwd(cmd, workingDir);
+    // 只管命令形状，边界由本层守卫；read_file 的路径包含是同一概念先例）
+    if (ctx.cwd) return checkWriteTargetsInsideCwd(cmd, ctx.cwd);
     return 'allow';
   },
 });
