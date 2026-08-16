@@ -10,6 +10,30 @@ MyTerminal 0.1.2 通过可审计、可继承的工作 session 层提供这座桥
 
 ## 安装与启动
 
+### Agent 技能安装
+
+如果你已经装有 Claude Code（或 WorkBuddy / Cursor），可以把 `myterminal-onboarding` 技能装进 Agent，让 AI 一步步带你完成整个安装与配置。需要 Node.js 18+（你的 Agent 本身已要求）。
+
+#### macOS / Linux
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/main/scripts/install-skill.sh)"
+```
+
+#### Windows PowerShell
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/main/scripts/install-skill.ps1 | iex"
+```
+
+安装脚本会下载技能文件夹，装进检测到的所有 Agent（幂等，可随时重跑），并运行自检。完成后打开你的 Agent，输入：
+
+```text
+/myterminal-onboarding
+```
+
+AI 向导会先做一次只读探测，再按顺序带你完成：Bun 环境 → 克隆与构建 → 首次 TUI 配置 → 子代理 LLM（endpoint + 模型 + API key，key 只走 stdin）→ 可选 L3 本地模型 → 健康检查。
+
 ### 第一次安装
 
 无需提前安装 Git、Node.js、Bun 或其他编程环境。安装脚本会下载与当前平台和 CPU 架构匹配的 `v0.1.2` 独立可执行文件，校验 SHA-256，把 `myterminal` 注册成当前用户的全局命令，然后启动 TUI。发行安装不再下载臃肿的源码包或安装运行时依赖。
