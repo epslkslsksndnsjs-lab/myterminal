@@ -718,14 +718,18 @@ test('M8-e2e-14: full lifecycle via ExtensionService.call()', async () => {
 
   // Step 4: 手动 resolve — 让 subagent 完成
   manualResolve();
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // 有界轮询替代固定 300ms（Windows runner 手动 resolve 后的异步 finalize 链慢，#176 CI 实测）
+  let statusResponse2;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    statusResponse2 = await ext.call(
+      { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
+      { transport: 'tui' },
+    );
+    if (statusResponse2.ok && statusResponse2.data.result.status === 'completed') break;
+  }
 
   // Step 5: subagent_status 拿到 completed + result
-  const statusResponse2 = await ext.call(
-    { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
-    { transport: 'tui' },
-  );
-
   // ADR-0010 决策 13：idempotent——completed 后可多次查
   assert.equal(statusResponse2.ok, true);
   assert.equal(statusResponse2.data.result.status, 'completed');

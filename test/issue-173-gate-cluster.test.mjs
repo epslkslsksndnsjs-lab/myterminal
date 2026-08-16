@@ -54,11 +54,19 @@ test('173-F3: 永未验收记录重挂有界（24 次后强制清理）', async 
   const rec = createSubagent('task-never-reviewed', { subject: 'orphan work' });
   // 走 updateSubagentStatus 触达终态分支→启动清理定时器（直接改 rec.status 不会启动定时器）
   updateSubagentStatus('task-never-reviewed', 'completed', { result: 'x' });
-  // resultFetched 保持 false——重挂 24 次（24×5ms≈120ms）后强制删除
-  await new Promise((r) => setTimeout(r, 400));
-  const still = getSubagentBySessionId(rec.sessionId);
-  assert.equal(still, undefined, '弃管子记录应在重挂上限后被强制清理');
-  setCleanupDelayMs(60 * 60 * 1000);
+  // resultFetched 保持 false——重挂 24 次（24×5ms≈120ms）后强制删除；
+  // 有界轮询替代固定 400ms（Windows runner 定时器抖动可远超 400ms，#176 CI 实测）
+  try {
+    let still;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      still = getSubagentBySessionId(rec.sessionId);
+      if (still === undefined) break;
+    }
+    assert.equal(still, undefined, '弃管子记录应在重挂上限后被强制清理');
+  } finally {
+    setCleanupDelayMs(60 * 60 * 1000);
+  }
 });
 
 test('173-F1: NOT_FOUND 查询不产生残留标记', () => {

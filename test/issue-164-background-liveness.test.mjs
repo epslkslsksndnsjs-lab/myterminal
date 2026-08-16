@@ -154,8 +154,14 @@ test('s2 命令退出后 alive=false（索引保留至收尸）', async () => {
   const rec = createSubagent('agent-164-s2', { subject: 'bg liveness s2' });
 
   await spawnBackground(rec.id, dir, 'sleep 1');
-  await sleep(1800); // 等命令退出（exit 事件 → exitCode 非 null）
-  const st = await queryStatus(client, rootIdentity, rec.id);
+  // 等命令退出（exit 事件 → exitCode 非 null）——有界轮询替代固定 sleep：
+  // Windows runner 进程启动/杀毒扫描延迟显著（#176 CI 实测 1800ms 不够）
+  let st;
+  for (let i = 0; i < 40; i++) {
+    await sleep(200);
+    st = await queryStatus(client, rootIdentity, rec.id);
+    if (st.backgroundTasks.length === 1 && st.backgroundTasks[0].alive === false) break;
+  }
 
   assert.strictEqual(st.backgroundTasks.length, 1, '收尸前索引条目应保留');
   assert.strictEqual(st.backgroundTasks[0].alive, false, '已退出应报 alive=false');
