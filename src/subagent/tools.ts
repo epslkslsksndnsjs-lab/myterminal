@@ -347,7 +347,9 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
     const command = input.command as string;
     const workingDir = input.cwd ? resolvePath(input.cwd as string, ctx.cwd) : ctx.cwd;
     // ADR-0048 D8：超时上限 600s——schema maximum 之外防御性钳制（直调路径不走 schema 校验）
-    const timeoutSec = Math.min((input.timeoutSec as number) ?? 120, EXECUTE_CLI_MAX_TIMEOUT_SEC);
+    // #175-4：下限钳制——NaN 回落默认 120、0/负数钳到 1（NaN 会令 setTimeout 0ms 立转后台）。
+    const rawTimeout = typeof input.timeoutSec === 'number' ? input.timeoutSec : 120;
+    const timeoutSec = Math.min(Math.max(1, Number.isFinite(rawTimeout) ? Math.floor(rawTimeout) : 120), EXECUTE_CLI_MAX_TIMEOUT_SEC);
     const timeoutMs = timeoutSec * 1000;
     const explicitBackground = input.run_in_background === true;
 
@@ -368,6 +370,7 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
       let bytesWritten = 0;
       let capped = false;
       let pendingText = '';
+      const PENDING_TEXT_MAX_CHARS = 1_000_000; // #175-1：句柄关闭后暂存缓冲上限
       const outputDir = ctx.outputDir ?? getAgentOutputDir(ctx.cwd, ctx.agentId);
 
       // D8 第 4 条：写入侧盘帽——累计超限 → 截断提示 + 丢弃后续 chunk（pipe 模式不杀进程；
@@ -388,7 +391,11 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
         if (!fileHandle) {
           // 文件句柄就绪前暂存（显式后台先 spawn 后建文件）；'' = flush 信号。
           // #162：前台阶段不再喂入（data handler 已跳过）——pendingText 仅后台化后接收。
-          if (text !== undefined) pendingText += text;
+          // #175-1：句柄已关（closeOutputHandle 置 null）时永远无法落盘——封顶防 OOM
+          // （孙进程持管道场景的无界累积）；上限内数据在句柄就绪时照常 flush。
+          if (text !== undefined && pendingText.length < PENDING_TEXT_MAX_CHARS) {
+            pendingText = (pendingText + text).slice(0, PENDING_TEXT_MAX_CHARS);
+          }
           return;
         }
         if (pendingText) {
@@ -531,6 +538,10 @@ IMPORTANT: Prefer dedicated tools over raw shell. Use read_file (not cat/head/ta
             const stream = s as NodeJS.ReadableStream;
             stream.once('end', r);
             stream.once('close', r);
+            // #175-3：事件已错过的快路径——流早已结束时立即放行，免除 2s 兜底税。
+            // AC9b 风险（Bun exit 时刻 readableEnded 假提前）由 issue-134 用例全量回归兜底验证。
+            const nodeStream = stream as unknown as { readableEnded?: boolean; destroyed?: boolean };
+            if (nodeStream.readableEnded || nodeStream.destroyed) r();
           }));
         }
         if (waits.length === 0) return Promise.resolve();

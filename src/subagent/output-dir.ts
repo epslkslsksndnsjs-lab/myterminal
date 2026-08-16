@@ -14,10 +14,22 @@ import { join } from 'node:path';
 import { defaultContext } from './context.js';
 import type { SubagentContext } from './context.js';
 import { getSubagent } from './store.js';
+import { getBackgroundTask } from './shell-tracker.js';
 
 /** D8 落盘目录公式——executor 注入与 tools.ts 兜底共用单一真相源 */
 export function getAgentOutputDir(cwd: string, agentId: string): string {
   return join(cwd, '.myterminal', 'subagent-outputs', agentId);
+}
+
+/** 该 agent 是否仍有后台子进程在写（SIGTERM 异步消亡窗口内仍算在世） */
+function hasLivingBackgroundChildren(agentId: string, ctx: SubagentContext): boolean {
+  const record = getSubagent(agentId, ctx);
+  return (
+    record?.backgroundTasks?.some(({ backgroundId }) => {
+      const c = getBackgroundTask(backgroundId);
+      return c !== undefined && !c.killed && c.exitCode === null && c.signalCode === null;
+    }) ?? false
+  );
 }
 
 export function cleanupAgentOutputDir(agentId: string, ctx: SubagentContext = defaultContext): void {
@@ -25,6 +37,16 @@ export function cleanupAgentOutputDir(agentId: string, ctx: SubagentContext = de
   if (record && record.status === 'running') return; // AC2：在世 agent 目录不误删
   const dir = ctx.outputDirs.get(agentId);
   if (!dir) return;
+  // #175-2：后台子在写时同步删目录=输出丢给已删 inode（父 read_file ENOENT）——
+  // 仍存活则 2s 后重试一次（SIGKILL 兜底定时器同窗）；重试仍存活则放弃本次收尸。
+  if (hasLivingBackgroundChildren(agentId, ctx)) {
+    setTimeout(() => {
+      if (hasLivingBackgroundChildren(agentId, ctx)) return;
+      rmSync(dir, { recursive: true, force: true });
+      ctx.outputDirs.delete(agentId);
+    }, 2000).unref();
+    return;
+  }
   rmSync(dir, { recursive: true, force: true });
   ctx.outputDirs.delete(agentId);
 }
