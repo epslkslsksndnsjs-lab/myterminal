@@ -235,7 +235,7 @@ test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 
   const status2 = runner.status(result.taskId);
   assert.equal(status2.status, 'completed');
   assert.equal(status2.result, 'Final summary');
-  // ADR-0048 D11：status() 返回体砍 auditLogs（父侧瘦身；store 层照旧可查）
+  // ADR-0048 D11+#161：status() 返回体砍 auditLogs（父侧瘦身；store 层已随 #161 删净）
   assert.equal('auditLogs' in status2, false, 'status() 返回体无 auditLogs');
 
   // ADR-0010 决策 13：第二次 status 仍返回 result（idempotent，不再取走即删）

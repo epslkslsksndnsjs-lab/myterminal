@@ -422,11 +422,11 @@ test('工具崩溃包装——异常返回 "Tool execution failed" 不炸 loop',
   }
 });
 
-test('审计日志——成功与失败均有完整字段', async () => {
+test('批量执行——成功与失败混合（glob 成功 / read_file 失败）', async () => {
   const dir = setupTempDir();
   try {
-    const agentId = 'test-audit';
-    createSubagent(agentId, { subject: 'audit test' });
+    const agentId = 'test-mixed';
+    createSubagent(agentId, { subject: 'mixed exec test' });
     const ctx = makeCtx(agentId, dir);
     const collector = eventCollector();
 
@@ -435,7 +435,11 @@ test('审计日志——成功与失败均有完整字段', async () => {
       { id: 'a2', name: 'read_file', input: { path: 'nonexistent.xyz' } },
     ];
 
-    await executeToolCalls(calls, ctx, collector.fn);
+    const results = await executeToolCalls(calls, ctx, collector.fn);
+
+    assert.equal(results.length, 2);
+    assert.equal(results[0].is_error, false, 'glob 成功');
+    assert.equal(results[1].is_error, true, 'read_file 不存在文件应报错');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
