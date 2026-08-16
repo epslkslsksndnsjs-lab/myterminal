@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { join } from 'node:path';
 import { MyTerminalStore } from '../dist/store.js';
-import { createSubagent, clearAllSubagents, setCleanupDelayMs, getSubagentBySessionId, updateSubagentStatus } from '../dist/subagent/store.js';
+import { createSubagent, clearAllSubagents, setCleanupDelayMs, getSubagentBySessionId, markResultFetched, updateSubagentStatus } from '../dist/subagent/store.js';
 
 function tempDir() {
   return fs.mkdtempSync(join(os.tmpdir(), 'mg-173-'));
@@ -65,4 +65,17 @@ test('173-F1: NOT_FOUND 查询不产生残留标记', () => {
   clearAllSubagents();
   // 无记录时 runner.status 抛 NOT_FOUND——不应有任何 subagent 记录残留
   assert.equal(getSubagentBySessionId('no-such-session'), undefined);
+});
+
+test('173-F4（#177）：已验收记录首火即删（resultFetched 快径）', async () => {
+  setCleanupDelayMs(5);
+  clearAllSubagents();
+  const rec = createSubagent('task-reviewed', { subject: 'reviewed work' });
+  // 走 updateSubagentStatus 触达终态分支→启动清理定时器（直接改 rec.status 不会启动定时器）
+  updateSubagentStatus('task-reviewed', 'completed', { result: 'x' });
+  markResultFetched('task-reviewed');
+  // 断言窗口 40ms：正确实现首火（~5ms）即删；resultFetched 快径被移除时 24 次重挂（~120ms）前必在
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(getSubagentBySessionId(rec.sessionId), undefined, '已验收记录应在首火即删');
+  setCleanupDelayMs(60 * 60 * 1000);
 });
