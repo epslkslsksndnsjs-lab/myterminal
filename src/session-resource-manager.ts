@@ -18,6 +18,8 @@ import type { MyTerminalConfig } from './types.js';
 import { cleanupAgentShellTasks } from './subagent/shell-tracker.js';
 import { clearFileState } from './subagent/file-state.js';
 import { resetReplacementDecisions } from './subagent/result-budget.js';
+import { cleanupAgentOutputDir } from './subagent/output-dir.js';
+import { cleanupSubagentRecord } from './subagent/store.js';
 import {
   disarmSessionResources,
   disarmAllSessionResources,
@@ -86,10 +88,12 @@ export class SessionResourceManager {
 
 export const sessionResourceManager = new SessionResourceManager();
 
-// agent 作用域（executor.finally 原 3 项，注册顺序即现状 ①②③）
+// agent 作用域（executor.finally 原 3 项 + #152 收口 ④ + #143 收口 ⑤，注册顺序即执行顺序）
 sessionResourceManager.registerAgentResource('agent-shell-tasks', cleanupAgentShellTasks);
 sessionResourceManager.registerAgentResource('file-state', clearFileState);
 sessionResourceManager.registerAgentResource('replacement-decisions', (agentId) => resetReplacementDecisions(agentId));
+sessionResourceManager.registerAgentResource('subagent-outputs', cleanupAgentOutputDir);
+sessionResourceManager.registerAgentResource('subagent-records', (agentId) => cleanupSubagentRecord(agentId));
 
 // session 作用域（session 结束收口）
 sessionResourceManager.registerSessionResource('session-resources', (config, sessionId) =>

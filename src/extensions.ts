@@ -9,7 +9,7 @@ import { runCommand } from './core-tools.js';
 import { TASK_POLL_TOOL } from './tool-schemas.js';
 import type { CustomExtensionSpec, InvocationContext, JsonObject, SessionIdentity, ToolAuditEvent, ToolDefinition, ToolResponse } from './types.js';
 import { continuationPolicy, HARNESS_CONTRACT_REVISION, harnessContract, harnessRequirement } from './continuation.js';
-import { clearOperationCache, denoiseCommandResult, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
+import { clearOperationCache, denoiseCommandResult, reduceBuiltinTargetResult, seedOperationCache, shapeToolResponse, type ShapingAudit, type ShapingAuditRecord } from './tool-parse.js';
 import { clearL3Quota } from './l3/engine.js';
 
 const EXTENSION_NAME = /^[a-z][a-z0-9_]{2,63}$/;
@@ -63,7 +63,9 @@ function callArguments(input: JsonObject): JsonObject {
 
 function validateSpec(value: unknown, builtins: Map<string, ToolDefinition>): CustomExtensionSpec {
   const spec = objectValue(value, 'spec') as unknown as CustomExtensionSpec;
-  if (typeof spec.name !== 'string' || !EXTENSION_NAME.test(spec.name) || RESERVED_NAMES.has(spec.name)) throw new MyTerminalError('INVALID_INPUT', 'Extension name must match [a-z][a-z0-9_]{2,63} and cannot use a facade name.');
+  // A48-W1 低危B-3：builtin 名冲突守卫——自定义扩展名撞 builtin 工具名会在 discover 目录出现双条目
+  //（[...builtins, ...custom] 拼接无去重），此处注册即拒。
+  if (typeof spec.name !== 'string' || !EXTENSION_NAME.test(spec.name) || RESERVED_NAMES.has(spec.name) || builtins.has(spec.name)) throw new MyTerminalError('INVALID_INPUT', 'Extension name must match [a-z][a-z0-9_]{2,63} and cannot use a facade or builtin tool name.');
   if (typeof spec.title !== 'string' || !spec.title.trim() || spec.title.length > 100) throw new MyTerminalError('INVALID_INPUT', 'Extension title must contain 1-100 characters.');
   if (typeof spec.description !== 'string' || spec.description.length < 10 || spec.description.length > 800) throw new MyTerminalError('INVALID_INPUT', 'Extension description must contain 10-800 characters.');
   if (!spec.inputSchema || spec.inputSchema.type !== 'object' || spec.inputSchema.additionalProperties !== false) throw new MyTerminalError('INVALID_INPUT', 'inputSchema must be an object schema with additionalProperties=false.');
@@ -786,7 +788,9 @@ export class ExtensionService {
     if (custom.handler.kind === 'builtin') {
       const target = this.builtins.get(custom.handler.target)!; const merged = { ...(custom.handler.defaults ?? {}), ...args };
       const targetErrors = validateJsonSchema(target.inputSchema, merged); if (targetErrors.length) throw new MyTerminalError('INVALID_INPUT', targetErrors.join('; '));
-      return { target: target.name, result: await target.invoke(merged, context) };
+      // A48-W1 M3（#147）：内层按 target 名套 TOOL_SHAPES L1 reduce（denoise 起步），
+      // 与 command-kind（#108 R5）同政策——裸包噪声键/派生绕过不再进模型上下文。
+      return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };
     }
     const cwd = resolveWorkspacePath(this.config.workspaceDir, this.config.stateDir, custom.handler.cwd || '.');
     // 增补-09（#108，R5）：command-kind 扩展与 execute_cli 同政策——返回前过 denoiseCommandResult，

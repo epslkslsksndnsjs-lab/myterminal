@@ -235,7 +235,8 @@ test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 
   const status2 = runner.status(result.taskId);
   assert.equal(status2.status, 'completed');
   assert.equal(status2.result, 'Final summary');
-  assert.ok(status2.auditLogs);
+  // ADR-0048 D11+#161：status() 返回体砍 auditLogs（父侧瘦身；store 层已随 #161 删净）
+  assert.equal('auditLogs' in status2, false, 'status() 返回体无 auditLogs');
 
   // ADR-0010 决策 13：第二次 status 仍返回 result（idempotent，不再取走即删）
   const status3 = runner.status(result.taskId);
@@ -717,14 +718,18 @@ test('M8-e2e-14: full lifecycle via ExtensionService.call()', async () => {
 
   // Step 4: 手动 resolve — 让 subagent 完成
   manualResolve();
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // 有界轮询替代固定 300ms（Windows runner 手动 resolve 后的异步 finalize 链慢，#176 CI 实测）
+  let statusResponse2;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    statusResponse2 = await ext.call(
+      { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
+      { transport: 'tui' },
+    );
+    if (statusResponse2.ok && statusResponse2.data.result.status === 'completed') break;
+  }
 
   // Step 5: subagent_status 拿到 completed + result
-  const statusResponse2 = await ext.call(
-    { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
-    { transport: 'tui' },
-  );
-
   // ADR-0010 决策 13：idempotent——completed 后可多次查
   assert.equal(statusResponse2.ok, true);
   assert.equal(statusResponse2.data.result.status, 'completed');

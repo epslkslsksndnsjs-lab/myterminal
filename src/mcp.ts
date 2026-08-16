@@ -28,7 +28,8 @@ const optionalIdentitySchema = identitySchema.nullish();
  * extension_call/extension_register 入参的协议层 schema —— **main 09f2246 基线逐字还原**。
  *
  * 语义（#70 门禁探针实证，见 scripts/probe-41-baseline-vs-seams.mjs）：
- *   · 44 个**已声明**字段的类型校验在协议层生效（`limit:"abc"`、`mode:"wildcard"` 等即拒）；
+ *   · 42 个**已声明**字段的类型校验在协议层生效（`limit:"abc"`、`mode:"wildcard"` 等即拒；
+ *     A48-W1 低危B-4 删 note/patch 死字段，44→42）；
  *   · `.catchall(z.unknown())` 只放行**未声明**的额外键（面向任意 custom extension 的开放性）。
  * #41 曾把它退化为 `z.record`（全通），使 6 类类型错误从「协议层即拒」变「放行」——
  * 那是真实行为放宽，违反批5「纯重构行为不变」铁律，已还原。
@@ -42,7 +43,6 @@ export const extensionToolInput = z.object({
   workspaceId: z.string().optional(),
   mode: z.enum(['root', 'delegate']).optional(),
   phase: z.enum(['pending', 'working', 'waiting', 'blocked', 'completed', 'cancelled']).optional(),
-  note: z.string().optional(),
   sessionId: z.string().optional(),
   sessionToken: z.string().optional(),
   claimCode: z.string().optional(),
@@ -72,7 +72,6 @@ export const extensionToolInput = z.object({
   with: z.string().optional(),
   path: z.string().optional(),
   content: z.string().optional(),
-  patch: z.string().optional(),
   encoding: z.string().optional(),
   sha256: z.string().optional(),
   createParents: z.boolean().optional(),
@@ -193,14 +192,16 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
    * 刻意撰写（强调"只动本地会话元数据、不联网"），与 core-tools 面向内部的
    * 描述是两个受众，不合并（详见 tool-schemas.ts 顶部说明）。
    */
-  const registerDirect = (name: BuiltinToolName, title: string, description: string, annotations = safeRead, extraShape: Record<string, z.ZodType> = {}) => {
+  const registerDirect = (name: BuiltinToolName, title: string, description: string, annotations = safeRead, extraShape: Record<string, z.ZodType> = {}, summaryFor?: (response: ToolResponse) => string) => {
     const derived = jsonSchemaToZod(BUILTIN_INPUT_SCHEMAS[name], name) as z.ZodObject<z.ZodRawShape>;
     server.registerTool(name, {
       title, description, inputSchema: derived.extend({ ...extraShape, identity: optionalIdentitySchema }), outputSchema: responseSchema, annotations,
       _meta: { 'openai/toolInvocation/invoking': `Running ${title}…`, 'openai/toolInvocation/invoked': `${title} ready` },
     }, async (input, callContext) => {
       const { identity, ...rest } = input as JsonObject & { identity?: unknown };
-      return toToolResult(await service.call({ tool: name, input: rest, ...(identity ? { identity } : {}) }, contextFromCall(callContext)), `${title} completed.`);
+      const response = await service.call({ tool: name, input: rest, ...(identity ? { identity } : {}) }, contextFromCall(callContext));
+      // ADR-0048 D5（#136）：subagent_status 文本块按状态动态（0044 N3 summary 函数化）；其余工具默认逐字不变
+      return toToolResult(response, summaryFor ? summaryFor(response) : `${title} completed.`);
     });
   };
 
@@ -233,7 +234,16 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
 
   // ── Subagent tools（ADR-0009 决策 1）──
   registerDirect('subagent_start', 'Start Subagent', 'Start a subagent for a sub-task. Asynchronous: returns taskId immediately; poll with subagent_status; completion arrives via message.', safeLocalMutation);
-  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, token usage, and result. On first call after completion, returns the result and cleans up.');
+  registerDirect('subagent_status', 'Subagent Status', 'Query subagent progress, tasks, token usage, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.', undefined, {},
+    // ADR-0048 D5（#136）：completed→"子已完成，请验收"、running→"运行中"；
+    // #174-1：死子不再映射「运行中」——failed/aborted 各给明确信号（父不再对死子空轮询）。
+    (response) => {
+      const status = (response.data as { result?: { status?: string } } | undefined)?.result?.status;
+      if (status === 'completed') return '子已完成，请验收';
+      if (status === 'failed') return '子已失败，请查 error';
+      if (status === 'aborted') return '子已中止，请查 error';
+      return '运行中';
+    });
   registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
 
   // ── Skill 工具（ADR-0037 #82：指令 mcp.ts:150 已承诺 skill() 直呼，须补齐 direct 注册）──

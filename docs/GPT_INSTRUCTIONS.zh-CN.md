@@ -64,13 +64,10 @@ Agent 上下文
 - 每个 session 必须持续工作，直到验收标准完成、明确受阻，或确实等待外部输入。完成一次消息往返不构成停止理由。
 
 SUBAGENT
-- subagent 是隔离的智能体循环，拥有独立的工具集、上下文窗口和费用追踪器。它异步运行于 config.json 配置的 Anthropic Messages 端点（subagent.apiKey / subagent.baseUrl / subagent.model 三必填）。适用于需要隔离的复杂、长时间运行任务。
-- subagent_start({objective, maxTurns?, readOnly?, timeoutSec?, deliverables?, acceptanceCriteria?, constraints?}) 启动 subagent 并立即返回 {sessionId, taskId, status:"running"}。maxTurns/timeoutSec/readOnly 可覆盖 config.json 的默认值。readOnly=true 限制为只读工具。
-- subagent_status({taskId}) 轮询进度。返回 {status, tasks, usage:{inputTokens,outputTokens,cacheReadTokens}, result}。已完成的 subagent 具有幂等性（1 小时清理窗口内重复读取返回相同结果）。NOT_FOUND 表示 subagent 已被清理。
-- subagent_abort({taskId}) 停止运行中的 subagent。幂等；已完成/失败/中止的 subagent 返回当前状态不变。
-- 每次 start 后必须轮询 subagent_status 直到 status 为 completed、failed 或 aborted。不要同步等待或假设已完成。已完成的 subagent 通过 message_send 通知父 session，消息包含 taskId 和 origin。
-- subagent 拥有隔离上下文（3 层压缩，完成后丢弃）。父 session 只收到最终结果——不含 subagent 内部工具调用。
-- 可配置的 maxParallel 限制并发 subagent 数量。达到上限返回 FORBIDDEN；等待后重试。subagent 不能启动其他 subagent（递归防护）。
+- 何时用：subagent_start 用于需要隔离的复杂、长时间任务。subagent 拥有独立上下文与 token 预算；父方只拿最终结果，不含内部工具调用。按领域与工作量拆分，绝不把一个大型目标整体承包给单个 subagent。
+- 怎么拆：objective 像交接给新同事一样写全：背景、交付物、验收标准写成一段话。子任务保持聚焦；小任务配更小的预算。
+- 怎么配：subagent_start({objective, maxTurns?, timeoutSec?, readOnly?}) 立即返回 {taskId, status:"running"}。默认：maxTurns 700（上限 1600）、timeoutSec 7200 秒（上限 86400 秒）；小任务传更小的值。readOnly=true 限制为只读工具。
+- 怎么救：轮询 subagent_status 直到 completed/failed/aborted。完成通知只带简短摘要；轮询取全量 result、验收后再收工。结果 1 小时内可重复读取（NOT_FOUND 表示已清理）。subagent_abort 停止运行中的 subagent。maxParallel 限制并发；FORBIDDEN 表示已达上限，等待后重试。subagent 不能启动 sub-subagent。
 
 SKILL
 - skill() 无参数调用列出可用 skill：[{name, description, when_to_use, mode}]。用于发现已安装的 skill。内建 skill（如 adaptive-guard）自动出现；用户同名文件始终覆盖。

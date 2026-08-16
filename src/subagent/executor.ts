@@ -27,6 +27,8 @@ import { getToolNames, getAllToolSchemas } from './tools.js';
 import type { SubagentToolContext } from './tools.js';
 import { emitAgUi } from './tui-bridge.js';
 import { sessionResourceManager } from '../session-resource-manager.js';
+import { defaultContext } from './context.js';
+import { getAgentOutputDir } from './output-dir.js';
 import type { AgUiEvent } from './tui-bridge.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -91,12 +93,20 @@ export function getSubagentSystemPrompt(task: string, toolNames: string[], cwd: 
     '- If an approach fails, diagnose why before switching tactics: read the error,',
     '  check your assumptions, try a focused fix. A single tool error is not failure —',
     '  analyze, fix, retry. Do not blindly repeat the identical failing call.',
+    '- Fail fast: if you cannot do the work (a needed tool is unavailable, permission',
+    '  is denied, or the task conflicts with the parameters given), set the task to',
+    '  blocked with a blockedReason stating which parameter mismatches the task, and',
+    '  immediately produce the final report — stop rotating through other tasks,',
+    '  do not spin, do not burn turns.',
+    '- Never proactively create documentation files (*.md, README*) unless the task',
+    '  explicitly requires them.',
     '- Verify your work before declaring done: if you changed code, run the relevant',
     '  tests / typecheck; if you cannot verify, say so explicitly instead of implying',
     '  success.',
     '',
     '# Using your tools',
-    '- Use absolute paths for all file operations.',
+    '- Use absolute paths for all file operations (cwd resets on every call, so',
+    '  relative paths would break across calls).',
     '- Prefer dedicated tools over raw shell: read_file (not cat), write_file /',
     '  edit_file (not sed / awk), glob (not find / ls), grep (not grep / rg).',
     '  Reserve execute_cli for commands that truly need a shell.',
@@ -108,6 +118,9 @@ export function getSubagentSystemPrompt(task: string, toolNames: string[], cwd: 
     '# Reporting',
     '- When all work is done, reply with a concise final report and no further tool',
     '  calls. State what changed and how it was verified.',
+    '- Keep the final report under 2000 tokens. If the details matter, write them to',
+    '  a file instead of the report; share absolute file paths for everything you',
+    '  changed or verified, and include code snippets only when load-bearing.',
     '- If you cannot complete the task or lack required information, report the',
     '  blocker and what you tried — never fabricate results or claim success falsely.',
     '- Keep output lean: no filler, no restating the task, no recap of code you only',
@@ -292,11 +305,18 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
   const signal = AbortSignal.any([abortController.signal, timeoutSignal]);
 
   // 工具上下文（决策 23）
+  // ADR-0048 D8（第四轮修订）：后台输出落盘目录 = <cwd>/.myterminal/subagent-outputs/<agentId>
+  // （workspace 内状态目录先例 .myterminal/skills；IGNORE_DIRECTORIES 含 .myterminal → glob/grep 忽略；
+  // git 侧由输出层自忽略 .gitignore 兜住（R6/#157））
+  // D8 中（#152）：同步登记 outputDirs——agent 收尸（disposeAgent）按此删除目录
+  const outputDir = getAgentOutputDir(cwd, agentId);
+  defaultContext.outputDirs.set(agentId, outputDir);
   const ctx: SubagentToolContext = {
     cwd,
     signal,
     agentId,
     readOnly: options.readOnly ?? false,
+    outputDir,
   };
 
   // token 追踪（ADR-0046 D1：纯 token 累加器，不再核算成本）
@@ -575,7 +595,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
 
   } finally {
     // 决策 8：清理顺序固定——统一收口到 SessionResourceManager（ADR-0032 #38）
-    // 注册顺序即现状 ①②③：agent-shell-tasks / file-state / replacement-decisions
+    // 注册顺序即现状 ①②③④⑤：agent-shell-tasks / file-state / replacement-decisions / subagent-outputs（#152）/ subagent-records（#143）
     sessionResourceManager.disposeAgent(agentId);
     messages.length = 0;               // ⑤ 释放 messages（决策 9）
     // ⑥ 终态事件与 store 更新在 finishXxx 里已做

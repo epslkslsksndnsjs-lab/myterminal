@@ -1,6 +1,6 @@
 import type { Copy } from './types.js';
 
-/** en 文案（L1 Claude Code 式俏皮原创）。 */
+/** en 文案（L1 俏皮原创）。 */
 export const en: Copy = {
   greetingFor(hour: number): string {
     if (hour >= 23 || hour < 5) return 'Burning the midnight oil.';

@@ -4,14 +4,12 @@
 // ADR-0007 决策 31：isConcurrencySafe 函数化——分区时用实际 input 求值
 // ADR-0007 决策 37：配对保证——执行端保证每个 tool_use 有 tool_result（不 crash）
 // ADR-0007 决策 38：两层校验——schema + validateInput
-// ADR-0007 决策 39：审计日志——addAuditLog 记录每次工具调用
+// ADR-0007 决策 39：审计日志——已随 ADR-0048 #161 死通道删净（T6 砍读端后写端零消费）
 // ADR-0007 决策 40：Pre/Post Hooks——v1 空数组但接口支撑
 
 import type { JsonObject, JsonSchema } from '../types.js';
 import { getTool, getToolNames } from './tools.js';
 import type { SubagentTool, SubagentToolContext } from './tools.js';
-import { addAuditLog } from './store.js';
-import type { ToolAuditLog } from './store.js';
 import { enforceMessageBudget, ensureNonEmpty } from './result-budget.js';
 import type { ToolResult } from './result-budget.js';
 
@@ -193,42 +191,29 @@ async function executeSingleTool(
   onEvent: (event: { type: string; data?: unknown }) => void,
   siblingSignal?: AbortSignal,
 ): Promise<ToolResult> {
-  const startTime = Date.now();
-  let success = true;
-  let errorType: ToolAuditLog['errorType'] = undefined;
   let errorMessage: string | undefined = undefined;
-  let resultSizeChars = 0;
 
   try {
     // ① 未知工具（决策 3：名字对不上注册表）
     const tool = getTool(call.name);
     if (!tool) {
-      errorType = 'execution_error';
       errorMessage = `Unknown tool: ${call.name}`;
-      success = false;
       const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
-      resultSizeChars = result.content.length;
       return result;
     }
 
     // ADR-0014: 只读执行层硬门禁——readOnly 模式下拒绝非只读工具
     if (ctx.readOnly && !getToolNames({ readOnly: true }).includes(call.name)) {
-      errorType = 'execution_error';
       errorMessage = `Tool "${call.name}" is not allowed in read-only mode.`;
-      success = false;
       const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
-      resultSizeChars = result.content.length;
       return result;
     }
 
     // ② schema 校验（决策 38 第 1 层）
     const schemaResult = validateSchema(call.input, tool.inputSchema);
     if (!schemaResult.ok) {
-      errorType = 'schema_validation';
       errorMessage = formatSchemaError(schemaResult.errors, call.name);
-      success = false;
       const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
-      resultSizeChars = result.content.length;
       return result;
     }
 
@@ -236,11 +221,8 @@ async function executeSingleTool(
     if (tool.validateInput) {
       const validation = tool.validateInput(call.input, ctx);
       if (!validation.ok) {
-        errorType = 'schema_validation';
         errorMessage = validation.message ?? `Input validation failed for tool "${call.name}"`;
-        success = false;
         const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
-        resultSizeChars = result.content.length;
         return result;
       }
     }
@@ -249,11 +231,8 @@ async function executeSingleTool(
     if (tool.checkPermissions) {
       const decision = tool.checkPermissions(call.input, ctx);
       if (decision === 'deny') {
-        errorType = 'permission_denied';
         errorMessage = `Permission denied for tool "${call.name}" — command blocked by safety rules.`;
-        success = false;
         const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
-        resultSizeChars = result.content.length;
         return result;
       }
     }
@@ -267,11 +246,8 @@ async function executeSingleTool(
         if (!hookResult) continue;
 
         if (hookResult.blockExecution) {
-          errorType = 'execution_error';
           errorMessage = `Tool execution blocked by pre-hook "${hook.name}"`;
-          success = false;
           const result: ToolResult = { tool_use_id: call.id, content: errorMessage, is_error: true };
-          resultSizeChars = result.content.length;
           return result;
         }
 
@@ -310,10 +286,7 @@ async function executeSingleTool(
 
     onEvent({ type: 'TOOL_CALL_RESULT', data: { id: call.id, result: finalResult } });
 
-    resultSizeChars = content.length;
     if (isError) {
-      success = false;
-      errorType = 'execution_error';
       errorMessage = content.slice(0, 500); // 截断错误内容
     }
 
@@ -321,31 +294,12 @@ async function executeSingleTool(
 
   } catch (err) {
     // ⑩ 决策 21：工具崩溃包装成 tool_result（不 crash agent loop）
-    success = false;
-    errorType = 'execution_error';
     errorMessage = (err as Error).message ?? 'Unknown error';
     const content = `Tool execution failed: ${errorMessage}`;
-    resultSizeChars = content.length;
 
     onEvent({ type: 'TOOL_CALL_RESULT', data: { id: call.id, error: errorMessage } });
 
     return { tool_use_id: call.id, content, is_error: true };
-
-  } finally {
-    // ⑪ 审计日志（决策 39）——无论成功/失败都写
-    const log: ToolAuditLog = {
-      toolName: call.name,
-      toolUseId: call.id,
-      input: JSON.stringify(call.input),
-      startTime,
-      endTime: Date.now(),
-      durationMs: Date.now() - startTime,
-      success,
-      errorType,
-      errorMessage,
-      resultSizeChars,
-    };
-    addAuditLog(ctx.agentId, log);
   }
 }
 

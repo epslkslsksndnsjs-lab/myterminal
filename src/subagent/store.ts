@@ -16,21 +16,10 @@ export type SubagentTask = {
   id: string;
   subject: string;
   description: string;
-  status: 'pending' | 'in_progress' | 'completed';
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+  /** D12（ADR-0048 #135）：blocked 时必填的原因（≤1000 字符）——父轮询 tasks 字段可见 */
+  blockedReason?: string;
 };
-
-export interface ToolAuditLog {
-  toolName: string;
-  toolUseId: string;
-  input: string;          // JSON 序列化后截断到 1000 字符
-  startTime: number;
-  endTime: number;
-  durationMs: number;
-  success: boolean;
-  errorType?: 'schema_validation' | 'permission_denied' | 'execution_error' | 'timeout';
-  errorMessage?: string;  // 截断到 500 字符
-  resultSizeChars: number;
-}
 
 export interface SubagentRecord {
   id: string;
@@ -42,11 +31,13 @@ export interface SubagentRecord {
   /** ADR-0042 #78（选项 A）：subagent 来源——skill fork 时记录派生 skill，direct start 为 undefined。
    *  仅可选字段，不影响既有序列化（#62 持久化格式纪律）。 */
   origin?: SubagentOrigin;
+  /** ADR-0048 D5（#136）：「已验收」标记——父首次调 subagent_status 取终态 result 时置位；
+   *  未验收定义 = 子进终态后父从未取到结果（完成闸门据此拦收工）。仅可选字段，不影响既有序列化。 */
+  resultFetched?: boolean;
   abortController: AbortController;
   usage: UsageSummary;
-  auditLogs: ToolAuditLog[];
-  createdAt: number;
-  completedAt?: number;
+  /** ADR-0048 D8（第四轮修订）：转后台命令元数据——句柄在 shell-tracker backgroundTasks 索引，此处只存 backgroundId→pid 供审计/可见性 */
+  backgroundTasks?: Array<{ backgroundId: string; pid: number }>;
 }
 
 // ── 存储（ADR-0032 #34：状态移入 SubagentContext）──
@@ -73,17 +64,12 @@ export function createSubagent(
   const record: SubagentRecord = {
     id,
     status: 'running',
-    tasks: [{
-      id: `task_${Date.now().toString(36)}`,
-      subject: fields.subject,
-      description: fields.description ?? '',
-      status: 'pending',
-    }],
+    // A48-W1 M1（#145）：不注入主任务——tasks 仅由 task_create 写入，杜绝幻影 pending
+    //（生产路径永不转移该任务 → allDone 恒 false、STATE_SNAPSHOT/status 带幻影）。
+    tasks: [],
     origin: fields.origin,
     abortController: new AbortController(),
-    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
-    auditLogs: [],
-    createdAt: Date.now(),
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
   };
   ctx.subagents.set(id, record);
   return record;
@@ -115,55 +101,51 @@ export function updateSubagentStatus(
   if (extra?.result !== undefined) record.result = extra.result;
   if (extra?.error !== undefined) record.error = extra.error;
 
-  // 终态时写 completedAt 并启动清理定时器
+  // 终态时启动清理定时器
   if (status === 'completed' || status === 'failed' || status === 'aborted') {
-    record.completedAt = Date.now();
-
-    // 1 小时兜底清理（决策 7），timer 必须 unref()
-    setTimeout(() => {
-      ctx.subagents.delete(id);
-    }, cleanupDelayMs).unref();
+    // 1 小时兜底清理（决策 7），timer 必须 unref()。
+    // ADR-0048 D5 中（#153）：到点仍未验收（父未取过终态 result）→ 豁免清理并重武装——
+    // 完成闸门依赖本记录拦「熬过 1h 收工」旁路；已验收才按兜底删除。
+    // #173-3：重挂有界——永未验收的弃管子最多重挂 24 次（24h 上限）后强制清理，
+    // 防定时器无界累积。
+    let rearms = 0;
+    const scheduleCleanup = (): void => {
+      setTimeout(() => {
+        const current = ctx.subagents.get(id);
+        if (!current || current.resultFetched === true || ++rearms > 24) {
+          ctx.subagents.delete(id);
+        } else {
+          scheduleCleanup();
+        }
+      }, cleanupDelayMs).unref();
+    };
+    scheduleCleanup();
   }
 
   return record;
 }
 
-export function collectSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
-  const record = ctx.subagents.get(id);
-  if (!record) return undefined;
-  ctx.subagents.delete(id);
-  return record;
-}
-
-export function getSubagentResult(id: string, ctx: SubagentContext = defaultContext): SubagentRecord | undefined {
-  return ctx.subagents.get(id);
-}
-
-export function addAuditLog(id: string, log: ToolAuditLog, ctx: SubagentContext = defaultContext): void {
+/** ADR-0048 D5（#136）：置「已验收」标记——父首次取终态 result 时调用（幂等，重复置位无副作用）。
+ *  仅内存标记，不参与 1 小时兜底清理与结果保留语义（ADR-0007 决策 7）。 */
+export function markResultFetched(id: string, ctx: SubagentContext = defaultContext): void {
   const record = ctx.subagents.get(id);
   if (!record) return;
-
-  // 截断输入到 1000 字符
-  if (log.input.length > 1000) {
-    log.input = log.input.slice(0, 1000);
-  }
-  // 截断错误消息到 500 字符
-  if (log.errorMessage && log.errorMessage.length > 500) {
-    log.errorMessage = log.errorMessage.slice(0, 500);
-  }
-
-  record.auditLogs.push(log);
-
-  // 只保留最近 50 条（决策 39）
-  if (record.auditLogs.length > 50) {
-    record.auditLogs = record.auditLogs.slice(-50);
-  }
+  record.resultFetched = true;
 }
 
-export function updateUsage(id: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number }, ctx: SubagentContext = defaultContext): void {
-  const record = ctx.subagents.get(id);
-  if (!record) return;
-  record.usage = { ...usage };
+
+/** ADR-0048 #143（A48-W2 F2）：subagent 记录收口清理——agent 终结（disposeAgent）时经
+ *  sessionId 反查对应 session 的 record。清理闸门：仅「终态且父已验收（resultFetched）」即清；
+ *  running 在世不误删（Home.tsx:160 / store.ts 完成闸门的在世读取），未验收按决策 7 保留给
+ *  1h 兜底；无 sessionId 的 record（executor 决策 5/25 自建路径）无反查目标，留给 1h 兜底。 */
+export function cleanupSubagentRecord(agentId: string, ctx: SubagentContext = defaultContext): void {
+  const record = ctx.subagents.get(agentId);
+  if (!record?.sessionId) return;
+  const bySession = getSubagentBySessionId(record.sessionId, ctx);
+  if (!bySession) return;
+  if (bySession.status === 'running') return;
+  if (bySession.resultFetched !== true) return;
+  ctx.subagents.delete(bySession.id);
 }
 
 export function countRunning(ctx: SubagentContext = defaultContext): number {
@@ -172,13 +154,6 @@ export function countRunning(ctx: SubagentContext = defaultContext): number {
     if (record.status === 'running') count++;
   }
   return count;
-}
-
-/** 查询时返回最近 20 条 auditLogs（决策 39） */
-export function getRecentAuditLogs(id: string, ctx: SubagentContext = defaultContext): ToolAuditLog[] {
-  const record = ctx.subagents.get(id);
-  if (!record) return [];
-  return record.auditLogs.slice(-20);
 }
 
 /** M8：列出所有 subagent（TUI 列表页数据源） */

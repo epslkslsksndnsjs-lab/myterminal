@@ -49,6 +49,8 @@ Get a user from "nothing installed" to "MyTerminal running with a working subage
 - **Base config** — the first-run setup screen, which mints the connector credentials
 - **Subagent LLM** — a user decision: configure (base URL + model + API key written into
   `config.json`) or skip, with the impact of skipping stated plainly
+- **L3 local model** — an optional install decision with a size- and machine-based
+  recommendation
 - **Connectivity** — a keyless probe of the endpoint, never touching the key
 
 This is a prompt-driven skill, not a deterministic script. Explore, present what you found,
@@ -275,9 +277,41 @@ Expect `✓ REACHABLE` with an honest note that this validates connectivity only
 a real endpoint is the expected, healthy answer. Report the result verbatim to the user,
 including the "connectivity only" caveat.
 
-### 5. Done
+**Stage 5 — L3 local model (a decision).** The L3 local model is a small on-device model
+(Qwen3.5-2B-Q4_K_M, GGUF, about 1.2 GB) that shapes the small, noisy outputs of a few tools
+on the machine itself. It is not the main model and not the subagent model — those stay
+cloud-side. It is fail-open: if it is missing, those few tools return their raw output
+unshaped, and everything else keeps working.
 
-Verify the service is actually up (not just "started without crashing"):
+The facts are already in the probe report — report them, do not re-judge:
+`l3.modelPresent` (whether the model file already sits in the checkout's `models/` dir) and
+`l3.recommend` (the deterministic verdict, always with a reason, computed from the machine's
+disk and memory). If you re-run the probe here, declare the read-only scan first with the
+Stage 1 wording ("I'm now doing a read-only check of this machine's disk and memory — nothing
+is modified, deleted or written.").
+
+If `l3.modelPresent` is `true`, the model is already installed — state that and move on to
+Stage 6. Otherwise ask one decision, presenting the three answers in this order:
+
+1. **Recommended** — relay the probe's verdict (`l3.recommend.verdict`) with its reasons
+   (e.g. "install: disk 335.9 GB ≥ 2 GB and memory 32.0 GB ≥ 8 GB — the local model fits").
+   The user may override it.
+2. **Skip** — impact: the few tools that shape small dirty outputs locally keep returning
+   them unshaped (fail-open); nothing else is affected. Nothing is downloaded.
+3. **Install** — you run the app's own fetch CLI (idempotent, sha256-pinned, concurrency-safe
+   via `.part`/`.lock` — never re-implement downloads):
+
+```bash
+cd <install-dir> && bun run dist/cli.js l3-model fetch
+```
+
+The model lands in `<install-dir>/models/` (git-ignored). If the file already exists with the
+matching checksum, the command reports `ready` and downloads nothing.
+
+### 6. Done
+
+Ask the user whether to start MyTerminal now or later. If now, verify the service is
+actually up (not just "started without crashing"):
 
 ```bash
 cd <install-dir> && bun start
@@ -289,13 +323,16 @@ The `--healthcheck` makes a real `GET /health` call and requires `200 + product:
 isn't listening — usually a wrong port or a crashed `bun start`; re-check before telling them it works.
 Custom host/port: `node scripts/onboard.mjs --healthcheck --host <h> --port <p>`.
 
+There is no warm-up verification in this skill: warm-up runs automatically when the system
+starts, and the keep-alive lifecycle is out of scope.
+
 Mention that they can change endpoint or model later by re-running
 `node scripts/onboard.mjs --write-config --base-url <url> --model <m> --key -` (the key can be
 omitted when the config already has one), and that the key lives in `config.json` under
 `subagent.apiKey` if they ever need to rotate it (re-write with a new key via stdin, or edit the
 file — it is `0600`).
 
-### 6. Keep the copy current (self-check)
+### 7. Keep the copy current (self-check)
 
 This skill is a *copy* of the one in the MyTerminal repo. A stale copy won't error at import —
 it just lacks a flag you expect, or still carries the retired provider machinery. After install
@@ -324,7 +361,9 @@ checkout* — read them only once you know where that checkout is (the detector 
 | `src/config.ts` | `settingsPath`, `createDefaultSettings`, `validateSettings`, `applySubagentDefaults` — the three-required contract and the optional-field defaults |
 | `src/types.ts` | `SubagentSettings` — the authoritative field list (no provider enum) |
 | `src/l3/registry.ts` | `DEFAULT_L3_MODEL_PATH` — the local model's file name under `<installRoot>/models/` |
+| `src/l3/model-fetch.ts` | The `l3-model fetch` CLI (Stage 5) — idempotent download, sha256-pinned, `.part`/`.lock` concurrency, atomic land |
 | `test/adr43-onboarding-skill.test.mjs` | The locks on this skill's own logic; read it if you suspect a behaviour changed |
+| `test/issue-W302-fetch.test.mjs` | The locks on the fetch CLI — idempotency, checksum, atomic land (AC1–AC8) |
 
 If the user has no checkout yet, the online copy of the setup document is at
 <https://github.com/epslkslsksndnsjs-lab/myterminal/blob/main/docs/SUBAGENT_SETUP.md>.

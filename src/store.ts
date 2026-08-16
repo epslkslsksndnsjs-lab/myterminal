@@ -10,11 +10,15 @@ import type {
 import { AuditLog } from './audit-log.js';
 import type { AuditFact, AuditFactsPage } from './audit-log.js';
 import { projectContext } from './context-projector.js';
+import type { SubagentStatus } from './subagent/store.js';
+import { getSubagentBySessionId } from './subagent/store.js';
 
 const EMPTY_STATE: StoredState = {
   schemaVersion: 2, revision: 0, sessions: [], messages: [], events: [], subscriptions: [], appBindings: [], extensions: [],
 };
 const TERMINAL_PHASES = new Set<SessionPhase>(['completed', 'cancelled']);
+/** ADR-0048 D5（#136）：subagent 终态集合——完成闸门判定「未验收子结果」用 */
+const TERMINAL_SUBAGENT_STATUSES = new Set<SubagentStatus>(['completed', 'failed', 'aborted']);
 const CHECKPOINT_REMINDER_MS = 2 * 60_000;
 const CHECKPOINT_BLOCK_MS = 5 * 60_000;
 const STALE_MS = 15 * 60_000;
@@ -320,6 +324,7 @@ export class MyTerminalStore {
     this.mcpBindings.delete(mcpSessionId);
   }
 
+  /** 测试专用断言（A48-W1 标注）：生产路径请用 resolveMcpBinding（含时空态刷新）。 */
   hasMcpBinding(mcpSessionId: string): boolean {
     return this.mcpBindings.has(mcpSessionId);
   }
@@ -371,6 +376,49 @@ export class MyTerminalStore {
     if (phase === 'completed' && !session.parentSessionId) {
       const now = this.iso();
       const directChildren = this.state.sessions.filter((item) => item.parentSessionId === session.id);
+      // ADR-0048 D5（#136）完成闸门：存在未验收子结果（子进终态后父从未调 subagent_status 取到 result）→ 拦收工。
+      // 扩展 CHILD_REVIEW_REQUIRED 同机制（同一点拦截、错误文本「先查子结果再收工」、taskId 进 details）。
+      const unreviewedSubagentResults = directChildren
+        .map((child) => ({ child, record: getSubagentBySessionId(child.id) }))
+        .filter(({ record }) => record && TERMINAL_SUBAGENT_STATUSES.has(record.status) && !record.resultFetched);
+      if (unreviewedSubagentResults.length) {
+        const first = unreviewedSubagentResults[0].record!;
+        // #173-2：details 补模型面契约字段——未读消息/待确认事件计数（与下方
+        // CHILD_REVIEW_REQUIRED 的 requiresReview 同口径），父可据此定位补救路径。
+        const unreadMessages = unreviewedSubagentResults.reduce(
+          (n, { child }) => n + this.state.messages.filter((m) => m.from === child.id && m.to === session.id && !m.readAt).length, 0);
+        const pendingEvents = unreviewedSubagentResults.reduce(
+          (n, { child }) => n + this.state.events.filter((e) => e.recipientSessionId === session.id && e.sourceSessionId === child.id && !e.acknowledgedAt).length, 0);
+        // A1（#157）：抛错前落审计痕迹——镜像下方 CHILD_REVIEW_REQUIRED 同机制
+        // （checkpoint + completion_blocked + save），拦截事件进审计链可查。
+        const unreviewedCheckpoint: SessionCheckpoint = {
+          at: now,
+          phase: 'working',
+          summary: `Completion blocked: ${unreviewedSubagentResults.length} child subagent result(s) unretrieved. Fetch each child's final result with subagent_status and review it before retrying root completion.`,
+          nextSteps: ['Retrieve each unretrieved child result with subagent_status.', 'Review the returned result, then retry root completion.'],
+          blockers: [], artifacts: [], tags: ['child-result-unreviewed'],
+        };
+        session.phase = 'working';
+        session.latestCheckpoint = unreviewedCheckpoint;
+        delete session.continuationPlan;
+        session.updatedAt = now;
+        delete session.checkpointStartedAt;
+        delete session.checkpointReminderEmittedAt;
+        this.appendHistory(session.id, 'checkpoint', unreviewedCheckpoint as unknown as JsonObject);
+        this.appendHistory(session.id, 'completion_blocked', { at: now, children: unreviewedSubagentResults.map(({ record }) => ({ sessionId: record!.sessionId, requiresReview: true })) });
+        if (session.controller) session.controller.lastActivityAt = now;
+        this.save();
+        throw new MyTerminalError('CHILD_RESULT_UNREVIEWED', '先查子结果再收工', {
+          taskId: first.id,
+          childSessionId: first.sessionId,
+          unreadMessages,
+          pendingEvents,
+          unreviewedCount: unreviewedSubagentResults.length,
+          mustContinue: true,
+          userFacingFinalProhibited: true,
+          currentTime: now,
+        });
+      }
       const reviews = directChildren.map((child) => {
         const unreadMessages = this.state.messages.filter((message) => message.from === child.id && message.to === session.id && !message.readAt);
         const pendingEvents = this.state.events.filter((event) => event.recipientSessionId === session.id && event.sourceSessionId === child.id && !event.acknowledgedAt);

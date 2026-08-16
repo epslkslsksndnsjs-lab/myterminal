@@ -604,7 +604,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 `createSubagentRunner(deps)` 返回 `{start, status, abort, listSubagents}`。
 
 - **start**：并发检查 → `assembleTask`/`toTaskPackage` → `registerAndClaimChild` → `createSubagent` → IIFE 后台执行 `runSubagentImpl` → 立即返回 `{sessionId, taskId, status:'running'}` → `finalize`（checkpoint + notify + store 更新）。
-- **status**：`getSubagent` → 幂等返回 `{status, sessionId, tasks, usage, error, result?（仅 completed 回填）, origin, auditLogs}`。
+- **status**：`getSubagent` → 幂等返回 `{status, sessionId, tasks, usage, error, result?（仅 completed 回填）, origin}`（ADR-0048 D11：auditLogs 已从 status 返回体移除，流水账走 store 层直查）。
 - **abort**：已终态幂等返回；否则 `abortController.abort()` → `{status:'aborting'}`。
 
 ##### 执行核心 — [executor.ts](./src/subagent/executor.ts)
@@ -613,7 +613,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 - 三层 compact：`microCompact`（零成本，保留最近 5 个 tool_result，更早的替换为占位）→ `autoCompact`（调 LLM 摘要，`MAX_COMPACT_FAILURES=3` 熔断）→ `normalizeMessages`。
 - `AbortSignal.any([abortController.signal, timeoutSignal])`；`collectStream`（含 Circuit Breaker）→ 决策 24 content 退出检测 → `executeToolCalls` → 追加 tool_result。
 - `finally`：`sessionResourceManager.disposeAgent(agentId)`。三态完成函数 `finishCompleted`/`finishFailed`/`finishAborted`。
-- `getSubagentSystemPrompt`：硬编码 system prompt（8 工具集 + 会话/交付物/退出语义）。
+- `getSubagentSystemPrompt`：硬编码 system prompt（8 工具集 + 会话/交付物/退出语义 + D12 fail-fast 纪律：干不了立即置 blocked + 最终报告 ≤2000 tokens 报告帽 + 三处零成本加固）。
 
 ##### 工具层 — [tools.ts](./src/subagent/tools.ts) / [tool-executor.ts](./src/subagent/tool-executor.ts)
 
@@ -628,7 +628,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 | `glob` | true | true | `walkFiles`+globToRegex，MAX_GLOB_RESULTS=200 |
 | `grep` | true | true | `createGrep`，MAX_GREP_MATCHES=200 |
 | `task_create` | true | true | 进度跟踪任务 |
-| `task_update` | true | true | 状态机更新（pending→in_progress→completed） |
+| `task_update` | true | true | 状态机更新（pending/in_progress→blocked 允许、blocked→completed 允许、blocked→in_progress 禁止；blocked 必填 blockedReason≤1000） |
 
 - `buildTool(config)` 工厂；`toolRegistry: Map`；`getTool`/`getAllToolSchemas`/`getToolNames({readOnly})`。
 - `resolvePath`：cwd 限制 + ADR-0015 realpath 防 symlink 逃逸。
@@ -684,7 +684,7 @@ interface SkillForkOptions { maxTurns?, timeoutSec?, readOnly? }
 `shared.tsx`：`Heading`/`Line`/`SessionStatus`。
 
 ##### 组件（components/）
-`InputBar`（Normal/Editing 双模式，priority 350）、`MessageBubble`、`ToolCallRow`（Claude Code 风，惰性 stringify）、`FormDialog`（声明式多步表单引擎，priority 400）、`Modal`、`HelpOverlay`（priority 300）、`Mascot`（9 字符宽 ASCII，5 种 mood，独立眨眼定时器）、`BlinkingDot`；`chrome/`：`TopBar`（`processTopology`）、`BottomNav`（9 pill）、`StatusLine`（`hints`）。
+`InputBar`（Normal/Editing 双模式，priority 350）、`MessageBubble`、`ToolCallRow`（惰性 stringify）、`FormDialog`（声明式多步表单引擎，priority 400）、`Modal`、`HelpOverlay`（priority 300）、`Mascot`（9 字符宽 ASCII，5 种 mood，独立眨眼定时器）、`BlinkingDot`；`chrome/`：`TopBar`（`processTopology`）、`BottomNav`（9 pill）、`StatusLine`（`hints`）。
 
 ##### 模型层（model/）
 全部纯函数：`command-router.ts`（`routeCommand`/`commandCompletions`/`COMMANDS`）、`diff-groups.ts`（`groupDiffLines`）、`history-entry.ts`（`viewForHistoryEntry` 11 种类型）、`mascot-mood.ts`（`mascotMoodFor`）、`relative-time.ts`（`relativeTime`）、`timeline-merge.ts`（`mergeActivity`/`memoizedMergeActivity` 单槽 memoize）。
@@ -1117,3 +1117,86 @@ TUI 启动时检查 GitHub release；Settings 页按 `U` 安装。更新器下�
 - 验收标准 3 ✅（ADR 清单逐项勾选，仅 D4 45s 实测遗留 → #96）
 - 验收标准 4 ✅（本报告即汇总）
 - 验收标准 5 ⏳（#96 承接，链接位 TODO）
+
+## 12. ADR-0048 T5 — 完成信号两处微改造执行报告（票 #136，2026-08-16）
+
+- 基线：`wk-136 @ 4d9ff45`（adr-0048-parent-child-handoff = main）
+- 性质：D5 第四轮微改造两处 ≤10 字（红线：通信机制不改不删）——①subagent_status 文本块动态句 ②store 收工完成闸门
+- 调度：调度3 派单（myterminal-34）→ 本窗（ghostty pid 35200）接单；MCP 查库结论已贴 #136 评论（5304210184）
+
+### 一、改动文件（4 src + 1 测试）
+
+| 文件 | 改动 |
+|---|---|
+| `src/mcp.ts` | registerDirect 加可选末参 `summaryFor?: (response) => string`（0044 N3 summary 函数化）；subagent_status 传 `(r) => r.data?.result?.status === 'completed' ? '子已完成，请验收' : '运行中'`；其余工具不传 → 默认 `${title} completed.` 逐字不变 |
+| `src/subagent/store.ts` | SubagentRecord 补可选字段 `resultFetched?: boolean`（「已验收」标记，不破坏 #62 序列化）+ 导出 `markResultFetched(id)`（幂等置位） |
+| `src/subagent/runner.ts` | `status()`：record 非 running 且未置位 → `markResultFetched`（父首次取终态结果即验收；failed/aborted 看过 error 即验收；幂等保留重复轮询） |
+| `src/store.ts` | checkpoint 完成路径（`phase==='completed' && !parentSessionId`）在 CHILD_REVIEW_REQUIRED 前加新闸门：directChildren 反查 `getSubagentBySessionId`，存在终态（completed/failed/aborted）且 `!resultFetched` → 抛 `CHILD_RESULT_UNREVIEWED` + message「先查子结果再收工」+ details{taskId, childSessionId, mustContinue, userFacingFinalProhibited, currentTime}；文件级常量 `TERMINAL_SUBAGENT_STATUSES` |
+| `test/issue-136-completion-signals.test.mjs` | 7 用例：s1 running→运行中 / s2 completed→子已完成，请验收（InMemoryTransport + Client.callTool 断言 content[0].text）/ s3 其余工具文本块逐字不变锚点（session_list/workspace_info/session_context/message_list）/ s4 终态取 result 置位+幂等 / s5 running 不置位、failed 置位 / s6 闸门拦+放行（AC2+AC3）/ s7 running 不触发新闸门回落旧 CHILD_REVIEW_REQUIRED |
+
+### 二、验证结果
+
+| 门 | 结果 |
+|---|---|
+| 单文件 | `bun test test/issue-136-completion-signals.test.mjs` **7 pass / 0 fail**（273ms） |
+| 全量回归 | `bun test` **1230 pass / 0 fail**（108 文件，59.47s）——与基线一致零回归 |
+| 变异体 | 新逻辑 8/8 全杀（M1 summaryFor 判定反转 / M2 默认分支破坏 / M3 置位无条件化 / M4 置位整行删除 / M5 闸门忽略验收标记 / M6 错误文本 / M7 错误码 / M8 details.taskId；M2/M6 脚本匹配误报经手动复验 KILLED） |
+
+### 三、纪律记录（教训）
+
+1. **全项目 mutation-test.mjs 在隔离检出目录上跑有污染风险**：后台运行被 timeout 挪后台后继续变异 core-tools.ts（maxOutputChars→maxOutputCharsDisabled 11 处）、config.ts 且未还原 → 手动 git checkout 还原 + kill 进程。教训：跑变异脚本须前台限时 + 事后 `git status` 核对；本票变异验证改用针对性变异（临时备份→变异→单文件测试→还原）。
+2. 测试基建：`cleanTask` 五项全必填非空（background/deliverables/acceptanceCriteria/constraints 不能给空）；child checkpoint completed 会向 parent 发 event，s6 放行前须 `acknowledgeEvents`（否则落旧 CHILD_REVIEW_REQUIRED）。
+3. MCP InMemoryTransport 双端 connect 须 `Promise.all`（顺序 await 会挂起超时）。
+
+## 13. ADR-0048 #154 — backgroundize 抽取 + 反向依赖认领（2026-08-16）
+
+- 基线：wk-154 @ 266d371（adr-0048-parent-child-handoff = main）
+- 性质：低危两件——execute_cli 后台化单函数抽取（纯重构，行为零变化）+ src/store.ts 反向依赖认领记录
+- 调度：调度3 派单（myterminal-34）→ 本窗（pid 87973，myterminal-7c）接单；MCP 查库结论已贴 #154 评论（5304459895）
+
+### 一、backgroundize 单函数抽取
+
+| 文件 | 改动 |
+|---|---|
+| `src/subagent/tools.ts` | execute_cli call() 内新增局部函数 `backgroundize(child)`——显式后台分支（run_in_background=true）与超时自动转后台分支的 `createOutputFile(bgId).then(...).catch(failBackground)` 链逐字相同，合并为单函数两处共用。纯抽取：settled/backgrounded/childExited/outputPath/fileHandle/out 捕获关系不变，行为零变化，全量回归与抽取前一致为硬验收 |
+
+### 二、反向依赖认领：src/store.ts → src/subagent/store.ts
+
+- **现状**：`src/store.ts:13-14`（核心会话存储 MyTerminalStore）反向 import 子系统运行时内存态——`SubagentStatus`（type）+ `getSubagentBySessionId`（runtime）。核心 store 内用法仅一处：checkpoint 完成闸门（D5 #136）在 directChildren 上反查 SubagentRecord 的 status/resultFetched；`getSubagentBySessionId` 对 `ctx.subagents` Map 做 O(n) 线性扫描。
+- **为何可接受**：①闸门判据（终态+未验收）本质是运行时会话事实，落盘到 StoredState 会复制运行时真值并引入同步复杂度；②n = 进程内活跃 subagent 数，量级小，O(n) 扫描开销可忽略；③只读方向（store 不修改 subagent 态），无循环写依赖。
+- **演进方向**：若 SubagentRecord 持久化为第一类状态（schema v3+），将闸门数据源下沉——runner finalize 时把 resultFetched/终态写进 session 状态，store 自持判据，取消反向依赖；或经注册表/事件接口倒置，核心 store 不直达子系统。
+
+## 14. ADR-0048 #164 — subagent_status 报后台任务存活（getBackgroundTask 接线，2026-08-16）
+
+- 基线：wk-164 @ 31cec15（adr-0048-parent-child-handoff = main，fetch+rebase 后）
+- 性质：主理人批准新增接线——getBackgroundTask 死线获得生产消费方；D8 未定义该状态面，本票即授权（与 D8「子侧无 kill」零冲突：只报存活、不引入 kill 能力）
+- 调度：调度3 派单（myterminal-34）→ 本窗（pid 87973，myterminal-7c）接单；查库结论已贴 #164 评论（5304904395）
+
+### 一、改动文件（2 src + 1 测试）
+
+| 文件 | 改动 |
+|---|---|
+| `src/subagent/runner.ts` | `SubagentStatusResult` 增可选键 `backgroundTasks?: Array<{backgroundId, alive, pid?}>`；`status()` 用 `getBackgroundTask(backgroundId)`（shell-tracker 句柄）判活：`child 存在 && !killed && exitCode===null && signalCode===null`；仅 record.backgroundTasks 非空时附键。getBackgroundTask 自此有生产消费方（此前仅 issue-134/160 测试断言保活） |
+| `test/issue-164-background-liveness.test.mjs` | 4 用例：s1 真实链路转后台→alive=true（backgroundId/pid 齐全）/ s2 退出后 alive=false（索引保留至收尸）/ s3 无后台任务键缺失 / s4 收尸清索引→alive=false。全 MCP 链（issue-136 手法）+ 直调 execute_cli（issue-134 手法） |
+
+> 注：曾试改 subagent_status 描述（T8 描述照实现），撞 LOCK-3 展示层逐字锁 + #144-F5 描述幂等锁 → 撤回。描述锁优先，描述照实现约束在本票不适用（工具描述由锁票统一治理）。
+
+### 二、语义要点
+
+- 存活判据：shell-tracker 索引条目保留至 agent 收尸（收尸后 alive=false）；命令自行退出后 exitCode/signalCode 非 null → alive=false
+- shaper（reduceSubagentStatusResult）：非 completed 原样透传；completed 只剥 4 记账字段——backgroundTasks 两路径均可达父侧
+- 无持久化承诺：与 SubagentRecord 同生命周期（决策 6/7 内存态），重启后键自然消失（#163 R3 同源语义）
+
+### 三、验证结果
+
+| 门 | 结果 |
+|---|---|
+| 单文件 | `bun test test/issue-164-background-liveness.test.mjs` **4 pass / 0 fail**（1.94s） |
+| 定向 | issue-134/136/160 34/0 + status 6 套件（subagent-m8/status-color-issue54/issue-130/issue-45/W207/issue-90）60/0 + 锁套件（issue-144/tool-schema-contract/fatal-error-boundary/extension-tool-input-baseline）27/0 |
+| 全量回归 | `bun test` **1381 pass / 0 fail**（130 文件，90.09s） |
+
+### 四、纪律记录（教训）
+
+1. **描述锁优先**：曾按 T8「描述照实现」改 subagent_status 描述，撞 LOCK-3 展示层逐字锁 + #144-F5 描述幂等锁（全量 2 fail）→ 撤回。工具描述由锁票统一治理，功能票不得动描述。
+2. **MCP 嵌套**：subagent_status 真数据在 `structuredContent.data.result`，`content[0].text` 是 summary 句——解析要下钻两层。
+3. **全量 flake 甄别**：首轮全量 2 fail 中 workspace registry 为并行资源争用 flake（单跑 78/0），确定性与非确定性失败分开处理。

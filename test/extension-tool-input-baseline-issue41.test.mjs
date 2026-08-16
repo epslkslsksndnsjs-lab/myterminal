@@ -45,17 +45,18 @@ test('PROTO-LOCK-2: 合法输入与未声明字段必须放行（catchall 语义
   }
 });
 
-test('PROTO-LOCK-3: 基线 44 个已声明字段一个不少（防字段清单腐烂/漂移）', () => {
+// A48-W1 低危B-4：note/patch 死字段（37 工具零消费、additionalProperties:false 必拒）已删 → 44→42
+test('PROTO-LOCK-3: 基线 42 个已声明字段一个不少（防字段清单腐烂/漂移）', () => {
   const shape = extensionToolInput._def?.shape ?? extensionToolInput.shape;
   const keys = Object.keys(typeof shape === 'function' ? shape() : shape).sort();
-  const BASELINE_44 = [
+  const BASELINE_42 = [
     'acceptanceCriteria', 'artifacts', 'background', 'blockers', 'body', 'claimCode',
     'command', 'constraints', 'content', 'continuesSessionId', 'createParents', 'cwd',
     'deliverables', 'encoding', 'eventIds', 'includeAncestors', 'limit', 'markRead',
-    'milestone', 'mode', 'name', 'nextCalls', 'nextSteps', 'note', 'objective', 'offset',
-    'patch', 'path', 'phase', 'replanReason', 'role', 'session', 'sessionId', 'sessionToken',
+    'milestone', 'mode', 'name', 'nextCalls', 'nextSteps', 'objective', 'offset',
+    'path', 'phase', 'replanReason', 'role', 'session', 'sessionId', 'sessionToken',
     'sha256', 'summary', 'tags', 'targetSessionId', 'task', 'taskId', 'timeoutSec', 'to',
     'with', 'workspaceId',
   ];
-  assert.deepEqual(keys, BASELINE_44, '协议层字段清单偏离 main 09f2246 基线');
+  assert.deepEqual(keys, BASELINE_42, '协议层字段清单偏离 A48-W1 修订基线（44 删 note/patch = 42）');
 });

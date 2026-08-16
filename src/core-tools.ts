@@ -677,7 +677,13 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
 
   add({
     name: 'subagent_start', title: 'Start subagent',
-    description: 'Start a subagent to work on a sub-task asynchronously. Returns taskId immediately; poll with subagent_status for progress. Completion arrives as a message notification.',
+    // ADR-0048 D2（T9 #140）：与 docs/GPT_INSTRUCTIONS.md SUBAGENT 段同文本复用
+    // （四段引导：何时用/怎么拆/怎么配/怎么救，含收尾纪律与 D3 边界明示）。
+    // 编辑任一处须同步另一处；字符数净零约束由 issue-140 测试锁定。
+    description: `- When: use subagent_start for a complex, long-running task that benefits from isolation. A subagent has its own context and token budget; the parent gets only the final result, not internal tool calls. Delegate by domain and workload; never assign a large objective wholesale to one subagent.
+- How to split: write the objective like a handoff to a new teammate: background, deliverables, and acceptance criteria in one paragraph. Keep each sub-task focused; small tasks get smaller budgets.
+- How to configure: subagent_start({objective, maxTurns?, timeoutSec?, readOnly?}) returns {taskId, status:"running"} immediately. Defaults: maxTurns 700 (cap 1600), timeoutSec 7200s (cap 86400s). Pass smaller values for small tasks. readOnly=true restricts to read-only tools.
+- How to recover: poll subagent_status until completed/failed/aborted. A completion notification carries only a short summary; poll for the full result and verify before accepting. Result stays readable for 1 hour (NOT_FOUND means cleaned up). subagent_abort stops a running subagent. maxParallel caps concurrency; FORBIDDEN means at capacity; wait and retry. Subagents cannot start sub-subagents.`,
     inputSchema: BUILTIN_INPUT_SCHEMAS.subagent_start,
     annotations: SUBAGENT_ANNOTATIONS,
     invoke: async (input, context) => {
@@ -687,12 +693,9 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       }
       const session = actor(context);
       const runner = getSubagentRunner();
+      // D3：外部契约只留 objective + 三覆盖；内部四字段由 skills fork 等内部路径直供（SubagentStartInput 保留可选）
       return runner.start(session.id, {
         objective: asString(input.objective, 'objective'),
-        background: asOptionalString(input.background),
-        deliverables: Array.isArray(input.deliverables) ? (input.deliverables as string[]) : undefined,
-        acceptanceCriteria: Array.isArray(input.acceptanceCriteria) ? (input.acceptanceCriteria as string[]) : undefined,
-        constraints: Array.isArray(input.constraints) ? (input.constraints as string[]) : undefined,
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
         readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,
@@ -708,7 +711,10 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     invoke: async (input) => {
       const runner = getSubagentRunner();
       try {
-        return runner.status(asString(input.taskId, 'taskId')) as unknown as JsonObject;
+        // 票B（#130）：offset/limit 透传（schema 已校验 integer 边界，直达 runner 切片）
+        const offset = typeof input.offset === 'number' ? input.offset : undefined;
+        const limit = typeof input.limit === 'number' ? input.limit : undefined;
+        return runner.status(asString(input.taskId, 'taskId'), offset, limit) as unknown as JsonObject;
       } catch (err) {
         const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
         throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);

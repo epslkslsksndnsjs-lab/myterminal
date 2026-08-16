@@ -5,6 +5,8 @@
 // ── 常量正则（决策 17 + 32）──
 
 // 放行名单——前缀匹配，\b 边界防止 warm 误伤 rm（决策 17）
+// #169（P3-2）认账：npm run 系形状判断而非语义判断——任意 package.json script 都算
+// 「安全」（执行内容由脚本定义、不在本名单管辖）；若未来收紧需按语义白名单另议。
 const SAFE_PATTERNS = /^\s*(ls|cat|echo|pwd|grep|rg|head|tail|wc|find|git\s+(status|log|diff|show|branch)|npm\s+(test|run|ls)|bun\s+(test|run)|node\s+--version|tsc)\b/;
 
 // 拦截名单——命中即 deny，无论模式（决策 17 + 32 + ADR-0013 加固）
@@ -49,7 +51,12 @@ export function splitCommands(command: string): string[] {
     }
 
     // 不在引号内——检查分隔符
-    if (ch === "'") {
+    if (ch === '\\' && next) {
+      // #169（P3-1）：引号外反斜杠转义——与 hasCommandSubstitution 语义统一
+      // （shell 视 \x 为字面量，被转义的分隔符不拆）。此前缺此分支=过度拆分（保守方向）。
+      current += ch + next;
+      i++;
+    } else if (ch === "'") {
       current += ch;
       inSingle = true;
     } else if (ch === '"') {
@@ -178,7 +185,10 @@ function checkInterpreterInner(command: string, readOnly: boolean, depth: number
  */
 export function checkCommandSafety(command: string, readOnly: boolean, _depth = 0): 'allow' | 'deny' {
   // ADR-0013: 递归深度限制（防无限循环）
-  if (_depth > 3) return readOnly ? 'deny' : 'allow';
+  // #167（P1 修复）：深度耗尽一律 deny（fail-closed）——写模式下放行会被
+  // 「4 层嵌套解释器壳 + 引号遮蔽」组合拳绕过三层防线；合法命令不存在需要
+  // 4 层壳的场景，误杀成本约 0。
+  if (_depth > 3) return 'deny';
 
   // ADR-0013: 解释器壳递归检查——提取内层命令独立判断
   if (checkInterpreterInner(command, readOnly, _depth) === 'deny') return 'deny';
@@ -241,8 +251,11 @@ export function isCommandConcurrencySafe(command: string): boolean {
  * - 其余命令：exit 0 = 成功，非 0 = 错误
  */
 export function interpretExitCode(command: string, exitCode: number): { isError: boolean; message?: string } {
-  // 取第一个主命令名
-  const mainCommand = extractMainCommand(command);
+  // #174-4：取末命令名解释（shell 报链末命令退出码）——grep -q M f && mv f f.bak
+  // （mv 失败 1）不再误报「无匹配」；cd missing && important 同理按末命令解释。
+  const segments = splitCommands(command);
+  const last = segments.length > 0 ? segments[segments.length - 1] : command;
+  const mainCommand = extractMainCommand(last);
 
   // grep / rg：exit 1 = 无匹配，exit ≥ 2 = 错误
   if (mainCommand === 'grep' || mainCommand === 'rg') {

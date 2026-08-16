@@ -509,8 +509,8 @@ describe('[LOCK-53-6] recommendL3 阈值边界（注入测试）', () => {
 
 describe('[LOCK-53-7] 可选字段默认值口径抄 applySubagentDefaults', () => {
   const TRUTH = [
-    { field: 'maxTurns', default: 50, min: 1, max: 200 },
-    { field: 'timeoutSec', default: 300, min: 30, max: 3600 },
+    { field: 'maxTurns', default: 700, min: 1, max: 1600 },
+    { field: 'timeoutSec', default: 7200, min: 30, max: 86400 },
     { field: 'maxParallel', default: 2, min: 1, max: 4 },
     { field: 'contextWindow', default: 120_000, min: 1_000, max: 1_000_000 },
     { field: 'maxOutput', default: 32_000, min: 1_000, max: 200_000 },
@@ -1349,7 +1349,7 @@ describe('[LOCK-53-17] doWriteConfig 端到端', () => {
       });
       assert.match(out, /maxTurns/);
       assert.match(out, /compactThreshold/);
-      assert.match(out, /default\s+50/);   // 对齐列是多空格分隔
+      assert.match(out, /default\s+700/);   // 对齐列是多空格分隔（D3 默认值 700）
       assert.match(out, /80000/);
     } finally {
       rmSync(dir, { recursive: true, force: true });

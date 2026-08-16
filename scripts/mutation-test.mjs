@@ -2,9 +2,14 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 
 // ═══════════════════════════════════════════════════════════
-// 全项目变异测试：36 个变异点覆盖 12 个核心模块
+// 全项目变异测试：变异点覆盖 13 个核心模块（计数见下方条目实测）
 // ═══════════════════════════════════════════════════════════
 const mutations = [
+  // ── src/openapi.ts (3) ──
+  { name: 'OPEN-1: pool aggregation skips subagent_start', file: 'src/openapi.ts', find: 'for (const schema of Object.values(BUILTIN_INPUT_SCHEMAS)) {', replace: 'for (const schema of Object.values(BUILTIN_INPUT_SCHEMAS)) { if ((schema as { properties?: Record<string, unknown> }).properties?.objective) continue;' },
+  { name: 'OPEN-2: union drops maxLength merge', file: 'src/openapi.ts', find: "minKeyword('minLength'); maxKeyword('maxLength');", replace: "minKeyword('minLength');" },
+  { name: 'OPEN-3: TaskPackage not derived', file: 'src/openapi.ts', find: 'const taskPackage = objectSchema(taskSource.properties, taskSource.required ?? [], taskSource.additionalProperties);', replace: 'const taskPackage = objectSchema({});' },
+
   // ── src/extensions.ts (3) ──
   { name: 'EXT-1: policy classification removed', file: 'src/extensions.ts', find: "isPolicyRejection ? 'policy_rejected' : 'failed'", replace: "'failed'" },
   { name: 'EXT-2: alias key not deleted', file: 'src/extensions.ts', find: '      delete normalized[alias];\n', replace: '' },
@@ -49,6 +54,9 @@ const mutations = [
   // EQUIVALENT: 子命令检查与全命令检查(line 150)完全冗余，无法构造差异用例
   { name: 'PER-3: sub-command DANGEROUS check skipped', file: 'src/subagent/permissions.ts', find: 'if (DANGEROUS_PATTERNS.test(stripped)) return \'deny\';', replace: 'if (false) return \'deny\';', equivalent: true },
 
+  // ── src/subagent/tools.ts (1) ──
+  { name: 'TC-1: subject maxLength 120 enforcement disabled', file: 'src/subagent/tools.ts', find: 'if (subject.length > 120) {', replace: 'if (false) {' },
+
   // ── src/subagent/tool-executor.ts (3) ──
   { name: 'TEX-1: MAX_PARALLEL unlimited', file: 'src/subagent/tool-executor.ts', find: 'const MAX_PARALLEL = 5;', replace: 'const MAX_PARALLEL = 9999;' },
   { name: 'TEX-2: schema validation always passes', file: 'src/subagent/tool-executor.ts', find: 'const schemaResult = validateSchema(call.input, tool.inputSchema);', replace: 'const schemaResult = { ok: true, errors: [] };' },
@@ -63,6 +71,40 @@ const mutations = [
   { name: 'LLM-1: 429 classified as system (not rate_limit)', file: 'src/subagent/llm-adapter.ts', find: "return new LlmError('rate_limit', 'Rate limit exceeded. Please wait before retrying.', status, retryAfterMs);", replace: "return new LlmError('system', 'Rate limit exceeded. Please wait before retrying.', status, retryAfterMs);" },
   { name: 'LLM-2: auth errors classified as rate_limit (would retry)', file: 'src/subagent/llm-adapter.ts', find: "return new LlmError('auth', 'API key is invalid or expired. Please check your environment variable.', status);", replace: "return new LlmError('rate_limit', 'API key is invalid or expired. Please check your environment variable.', status);" },
   { name: 'LLM-3: 529 not classified as server_overload', file: 'src/subagent/llm-adapter.ts', find: "return new LlmError('server_overload', 'Server is overloaded. Consider switching to a fallback model.', status);", replace: "return new LlmError('system', 'Server is overloaded. Consider switching to a fallback model.', status);" },
+
+  // ── src/subagent/output-dir.ts (4) ──
+  { name: 'OPD-1: running gate removed', file: 'src/subagent/output-dir.ts', find: "if (record && record.status === 'running') return;", replace: 'if (false) return;' },
+  { name: 'OPD-2: output dir removal disabled', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: '/* mutation: skip removal */' },
+  { name: 'OPD-3: output dir registration not cleared', file: 'src/subagent/output-dir.ts', find: 'ctx.outputDirs.delete(agentId);', replace: '/* mutation: skip delete */', all: true },
+  { name: 'OPD-4: ENOENT force removed (throws on missing dir)', file: 'src/subagent/output-dir.ts', find: 'rmSync(dir, { recursive: true, force: true });', replace: 'rmSync(dir, { recursive: true, force: false });', all: true },
+  // ── src/subagent/tools.ts + shell-tracker.ts（#156 R4，8）──
+  { name: 'TLS-1: backgroundize 守卫失效', file: 'src/subagent/tools.ts', find: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();', replace: 'if (false) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();' },
+  { name: 'TLS-2: backgroundize 守卫 unlink 移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();', replace: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              return;\n            }\n            registerBackground(bgId, child);\n            if (childExited) closeOutputHandle();' },
+  { name: 'TLS-3: spawnFailed 置位移除（error handler）', file: 'src/subagent/tools.ts', find: 'spawnFailed = true;', replace: 'spawnFailed = false;' },
+  { name: 'TLS-9: pid 闸门移除（post-spawn abort 误回滚，#160）', file: 'src/subagent/tools.ts', find: 'if (child.pid === undefined) {', replace: 'if (true) {' },
+  // 实测 KILLED (build)：if(false) 破坏 TS 窄化 → unlink(undefined)/string|undefined 参数类型错误
+  { name: 'TLS-5: error handler 回滚 unlink 移除', file: 'src/subagent/tools.ts', find: 'if (outputPath) void unlink(outputPath).catch(() => {});', replace: 'if (false) void unlink(outputPath).catch(() => {});' },
+  { name: 'TLS-6: error handler 索引删除移除', file: 'src/subagent/tools.ts', find: 'if (backgroundId) unregisterBackgroundTask(ctx.agentId, backgroundId);', replace: 'if (false) unregisterBackgroundTask(ctx.agentId, backgroundId);' },
+  // EQUIVALENT（实测 survive 后标注：TLS-7 fd 无测试观测口径（bun getActiveResourcesInfo 不列
+  // FileHandle）；TLS-8 跨 agent 同名 backgroundId 碰撞无覆盖；TLS-10 建文件窗口内 abort 时序不可测）
+  { name: 'TLS-7: 守卫 closeOutputHandle 移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed || child.killed) {\n              closeOutputHandle();\n              await unlink(file).catch(() => {});\n              return;', replace: 'if (spawnFailed || child.killed) {\n              await unlink(file).catch(() => {});\n              return;', equivalent: true },
+  { name: 'TLS-8: unregisterBackgroundTask agentId 校验移除', file: 'src/subagent/shell-tracker.ts', find: 'if (entry && entry.agentId === agentId) ctx.backgroundTasks.delete(backgroundId);', replace: 'if (entry) ctx.backgroundTasks.delete(backgroundId);', equivalent: true },
+  { name: 'TLS-10: 守卫 child.killed 项移除', file: 'src/subagent/tools.ts', find: 'if (spawnFailed || child.killed) {', replace: 'if (spawnFailed) {', equivalent: true },
+  // ── src/subagent/store.ts #143（A48-W2 F2）cleanupSubagentRecord (6) ──
+  { name: 'SR-1: sessionId gate removed (orphan cleanup)', file: 'src/subagent/store.ts', find: '  if (!record?.sessionId) return;', replace: '  if (false) return;' },
+  // EQUIVALENT: running + resultFetched=true 不可达（验收只能在终态后），running 闸门由 resultFetched 闸门功能覆盖
+  { name: 'SR-2: running gate removed', file: 'src/subagent/store.ts', find: "  if (bySession.status === 'running') return;", replace: '  if (false) return;', equivalent: true },
+  { name: 'SR-3: resultFetched gate removed (unreviewed cleanup)', file: 'src/subagent/store.ts', find: '  if (bySession.resultFetched !== true) return;', replace: '  if (false) return;' },
+  { name: 'SR-4: resultFetched gate inverted', file: 'src/subagent/store.ts', find: '  if (bySession.resultFetched !== true) return;', replace: '  if (bySession.resultFetched === true) return;' },
+  { name: 'SR-5: record delete removed', file: 'src/subagent/store.ts', find: '  ctx.subagents.delete(bySession.id);', replace: '' },
+  { name: 'SR-6: reverse-lookup guard removed', file: 'src/subagent/store.ts', find: '  if (!bySession) return;', replace: '  if (false) return;' },
+  { name: 'SR-7: subagent-records registration removed', file: 'src/session-resource-manager.ts', find: "sessionResourceManager.registerAgentResource('subagent-records', (agentId) => cleanupSubagentRecord(agentId));\n", replace: '' },
+  // ── src/subagent/store.ts (2) — ADR-0048 D5 中（#153）未验收清理豁免 ──
+  { name: 'SUB-1: reviewed-check removed (unconditional cleanup bypass)', file: 'src/subagent/store.ts', find: 'if (!current || current.resultFetched === true || ++rearms > 24) {', replace: 'if (!current || ++rearms > 24) {' },
+  { name: 'SUB-2: re-arm removed (late-reviewed record never cleaned)', file: 'src/subagent/store.ts', find: '          scheduleCleanup();', replace: '          /* mutation: no re-arm */' },
+  // ── src/tool-parse.ts / src/extensions.ts (#147) ──
+  { name: 'TBP-1: builtin-target reduce fallback removed', file: 'src/tool-parse.ts', find: '(TOOL_SHAPES.get(targetName)?.reduce ?? denoiseCommandResult)', replace: '(TOOL_SHAPES.get(targetName)?.reduce)' },
+  { name: 'TBP-2: builtin-target inner shaping bypassed', file: 'src/extensions.ts', find: 'return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };', replace: 'return { target: target.name, result: await target.invoke(merged, context) };' },
 ];
 
 let killedByTest = 0;
@@ -75,8 +117,31 @@ const results = [];
 const TEST_GLOB = 'test/*.test.mjs';
 const EXCLUDE_TESTS = ['test/cli-regression.test.mjs'];
 
+// 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，
+// 防止突变体残留污染工作树（事故：套件被误杀致 STO-1 残留在 audit-log.ts，污染后续测量数字）。
+let activeMutation = null; // { file, orig }
+function restoreActiveMutation() {
+  if (activeMutation) {
+    try {
+      writeFileSync(activeMutation.file, activeMutation.orig);
+      console.log(`\n[interrupt] restored ${activeMutation.file}`);
+    } catch { /* 还原尽力而为，绝不掩盖退出信号 */ }
+    activeMutation = null;
+  }
+}
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    restoreActiveMutation();
+    process.exit(128 + (sig === 'SIGINT' ? 2 : 15));
+  });
+}
+
+// #177：单点重跑过滤（ONLY=SUB-1,OPD-3,OPD-4）——按点名前缀子串匹配
+const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+
 for (let i = 0; i < mutations.length; i++) {
   const m = mutations[i];
+  if (ONLY.length && !ONLY.some((p) => m.name.includes(p))) continue;
   if (m.equivalent) {
     equivalent++;
     results.push({ name: m.name, status: 'EQUIVALENT (skipped)' });
@@ -92,17 +157,21 @@ for (let i = 0; i < mutations.length; i++) {
     continue;
   }
   writeFileSync(m.file, mutated);
+  activeMutation = { file: m.file, orig };
   try {
-    execSync('bun run build 2>&1', { stdio: 'pipe' });
-  } catch {
+    // 每点超时加固（#171 会话教训：无 timeout 的 execSync 遇挂起测试会永久阻塞——2026-08-16
+    // 首跑在 SKL 点挂死 77 分钟）：build 120s、全量测试 480s，超时即 KILLED（挂起=可观测行为破坏）。
+    execSync('bun run build 2>&1', { stdio: 'pipe', timeout: 120_000 });
+  } catch (e) {
     killedByBuild++;
-    results.push({ name: m.name, status: 'KILLED (build error)' });
-    console.log('KILLED (build)');
+    results.push({ name: m.name, status: e.killed ? 'KILLED (build timeout)' : 'KILLED (build error)' });
+    console.log(e.killed ? 'KILLED (build timeout)' : 'KILLED (build)');
     writeFileSync(m.file, orig);
+    activeMutation = null;
     continue;
   }
   try {
-    const out = execSync(`bun test --timeout 120000 ${TEST_GLOB} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' } });
+    const out = execSync(`bun test --timeout 120000 ${TEST_GLOB} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 480_000 });
     const passMatch = out.match(/(\d+) pass/);
     const failMatch = out.match(/(\d+) fail/);
     const passes = passMatch ? parseInt(passMatch[1]) : 0;
@@ -118,12 +187,18 @@ for (let i = 0; i < mutations.length; i++) {
     }
   } catch (e) {
     killedByTest++;
-    const out = e.stdout?.toString() || '';
-    const failMatch = out.match(/(\d+) fail/);
-    results.push({ name: m.name, status: `KILLED (test exited: ${failMatch ? failMatch[1] + ' fail' : 'nonzero'})` });
-    console.log(`KILLED (${failMatch ? failMatch[1] + ' fail' : 'nonzero exit'})`);
+    if (e.killed) {
+      results.push({ name: m.name, status: 'KILLED (test timeout 480s)' });
+      console.log('KILLED (test timeout)');
+    } else {
+      const out = e.stdout?.toString() || '';
+      const failMatch = out.match(/(\d+) fail/);
+      results.push({ name: m.name, status: `KILLED (test exited: ${failMatch ? failMatch[1] + ' fail' : 'nonzero'})` });
+      console.log(`KILLED (${failMatch ? failMatch[1] + ' fail' : 'nonzero exit'})`);
+    }
   }
   writeFileSync(m.file, orig);
+  activeMutation = null;
 }
 
 // 恢复正确状态

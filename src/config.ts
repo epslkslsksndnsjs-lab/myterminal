@@ -110,8 +110,8 @@ export function createDefaultSettings(workspaceDir = defaultWorkspaceForCwd()): 
 export function applySubagentDefaults(sub: SubagentSettings): SubagentSettings {
   return {
     ...sub,
-    maxTurns: boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 50, 1, 200),
-    timeoutSec: boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 300, 30, 3600),
+    maxTurns: boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 700, 1, 1600),
+    timeoutSec: boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 7200, 30, 86400),
     maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4),
     contextWindow: boundedInteger(sub.contextWindow != null ? String(sub.contextWindow) : undefined, 120_000, 1_000, 1_000_000),
     maxOutput: boundedInteger(sub.maxOutput != null ? String(sub.maxOutput) : undefined, 32_000, 1_000, 200_000),

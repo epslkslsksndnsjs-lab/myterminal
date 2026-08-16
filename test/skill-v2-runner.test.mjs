@@ -3,7 +3,7 @@
 // 目标：runner.ts 改动函数（start/status/finalize）行覆盖率 ≥ 90%；变异体 4/4 被杀死
 //
 // 变异体清单：
-//   M1 status() 仍调 collectSubagentResult（旧行为复活） → 用例 01 杀
+//   M1 status() 读到终态 result 后删除记录（旧行为复活） → 用例 01 杀
 //   M2 finalize 的 notify 忘带 taskId                    → 用例 02/03 杀
 //   M3 origin 判断反转（skill 消息发给直接启动）         → 用例 03 杀
 //   M4 failed 分支忘带 origin 前缀                       → 用例 04 杀

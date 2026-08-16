@@ -871,7 +871,8 @@
           "enum": [
             "root",
             "delegate"
-          ]
+          ],
+          "default": "root"
         },
         "name": {
           "type": "string",
@@ -987,10 +988,12 @@
           "minLength": 1
         },
         "claimCode": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "sessionToken": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "identity": {
           "anyOf": [
@@ -1120,6 +1123,7 @@
         },
         "replanReason": {
           "type": "string",
+          "minLength": 1,
           "maxLength": 1000
         },
         "identity": {
@@ -1170,6 +1174,17 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 20
+        },
         "identity": {
           "anyOf": [
             {
@@ -1269,7 +1284,8 @@
           "maximum": 500
         },
         "includeAncestors": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "identity": {
           "anyOf": [
@@ -1472,7 +1488,8 @@
       "type": "object",
       "properties": {
         "markRead": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "offset": {
           "type": "integer",
@@ -1482,7 +1499,8 @@
         "limit": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 200
+          "maximum": 200,
+          "default": 50
         },
         "identity": {
           "anyOf": [
@@ -1528,6 +1546,11 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
         "limit": {
           "type": "integer",
           "minimum": 1,
@@ -1580,6 +1603,11 @@
         "with": {
           "type": "string",
           "minLength": 1
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "limit": {
           "type": "integer",
@@ -1678,7 +1706,19 @@
       "type": "object",
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "default": "."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "default": 500
         },
         "identity": {
           "anyOf": [
@@ -1729,7 +1769,8 @@
           "minLength": 1
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "default": "."
         },
         "limit": {
           "type": "integer",
@@ -1788,10 +1829,12 @@
           "minLength": 1
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "default": "."
         },
         "regex": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "limit": {
           "type": "integer",
@@ -1914,6 +1957,11 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
         },
         "identity": {
           "anyOf": [
@@ -2168,7 +2216,8 @@
           "enum": [
             "utf-8",
             "base64"
-          ]
+          ],
+          "default": "utf-8"
         },
         "identity": {
           "anyOf": [
@@ -2227,7 +2276,8 @@
           "enum": [
             "utf-8",
             "base64"
-          ]
+          ],
+          "default": "utf-8"
         },
         "maxBytes": {
           "type": "integer",
@@ -2291,7 +2341,8 @@
           "minLength": 1
         },
         "createParents": {
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "identity": {
           "anyOf": [
@@ -2394,38 +2445,18 @@
       "properties": {
         "objective": {
           "type": "string",
-          "minLength": 1
-        },
-        "background": {
-          "type": "string"
-        },
-        "deliverables": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "acceptanceCriteria": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "constraints": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "minLength": 1,
+          "maxLength": 4000
         },
         "maxTurns": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 200
+          "maximum": 1600
         },
         "timeoutSec": {
           "type": "integer",
           "minimum": 30,
-          "maximum": 3600
+          "maximum": 86400
         },
         "readOnly": {
           "type": "boolean"
@@ -2463,7 +2494,7 @@
   },
   "subagent_status": {
     "title": "Subagent Status",
-    "description": "Query subagent progress, tasks, token usage, and result. On first call after completion, returns the result and cleans up.",
+    "description": "Query subagent progress, tasks, token usage, and result. Idempotent: after completion the result stays available for repeated queries until the one-hour cleanup.",
     "annotations": {
       "readOnlyHint": true,
       "destructiveHint": false,

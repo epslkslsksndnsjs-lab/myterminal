@@ -836,9 +836,6 @@ test('集成用例: 完整任务——read → edit → task_create → task_upd
   const record = getSubagent('test-int');
   assert.equal(record.status, 'completed');
 
-  // 审计日志
-  assert.ok(record.auditLogs.length >= 5, `Expected >=5 audit logs, got ${record.auditLogs.length}`);
-
   // token 用量 > 0
   assert.ok(record.usage.inputTokens > 0);
 

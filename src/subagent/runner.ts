@@ -6,11 +6,13 @@ import type { MyTerminalSession, SubagentSettings, TaskPackage } from '../types.
 import type { runSubagent as RunSubagentFn } from './executor.js';
 import type { SubagentRunResult } from './executor.js';
 import {
-  createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost,
-  countRunning, getRecentAuditLogs, listAllSubagents,
+  createSubagent, getSubagent, updateSubagentStatus, updateSubagentCost, markResultFetched,
+  countRunning, listAllSubagents,
 } from './store.js';
+import { getBackgroundTask } from './shell-tracker.js';
 import { MyTerminalError } from '../store.js';
 import type { SubagentRecord, SubagentTask } from './store.js';
+import { SUBAGENT_STATUS_PAGE_CHARS, SUBAGENT_STATUS_PAGE_MAX_CHARS } from '../tool-schemas.js';
 import { defaultContext, type SubagentContext } from './context.js';
 import type { UsageSummary } from './cost-tracker.js';
 
@@ -55,7 +57,15 @@ export type SubagentStatusResult = {
   result?: string;
   /** ADR-0042 #78 选项 A：来源（skill fork 时标注 skillName；direct start 为 undefined） */
   origin?: SubagentOrigin;
-  auditLogs: unknown[];
+  /** ADR-0048 票B（#130）：分页内部记账字段——仅 completed + string result 时附；
+   *  shaper 层（reduceSubagentStatusResult）按契约剥除/保留，store 全量不动。 */
+  taskId?: string;
+  resultOffset?: number;
+  resultTotalChars?: number;
+  truncated?: boolean;
+  /** ADR-0048 #164：后台任务存活状态——getBackgroundTask 生产消费方。
+   *  仅 record.backgroundTasks 非空时附；退出后条目保留（收尸才清）但 alive=false。 */
+  backgroundTasks?: Array<{ backgroundId: string; alive: boolean; pid?: number }>;
 };
 
 export type SubagentStartResult = {
@@ -76,15 +86,14 @@ function assembleTask(input: SubagentStartInput): string {
   return parts.join('\n\n');
 }
 
-/** 组装 TaskPackage（用于 registerDelegate）。background 不能为空，缺失时用 objective 前 100 字充填 */
+/** 组装 TaskPackage（用于 registerDelegate）。D3/重拷 Q2：四字段兜底统一 objective 派生（background 用完整 objective，三数组兜底同源），机器代填路径无硬编码文案 */
 function toTaskPackage(input: SubagentStartInput): TaskPackage {
-  const bg = input.background?.trim() || input.objective.slice(0, 100);
   return {
     objective: input.objective,
-    background: bg,
-    deliverables: input.deliverables?.length ? input.deliverables : ['Complete the assigned task'],
-    acceptanceCriteria: input.acceptanceCriteria?.length ? input.acceptanceCriteria : ['Task is complete'],
-    constraints: input.constraints?.length ? input.constraints : ['Stay within scope'],
+    background: input.background?.trim() || input.objective,
+    deliverables: input.deliverables?.length ? input.deliverables : [input.objective],
+    acceptanceCriteria: input.acceptanceCriteria?.length ? input.acceptanceCriteria : [input.objective],
+    constraints: input.constraints?.length ? input.constraints : [input.objective],
   };
 }
 
@@ -207,11 +216,26 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     },
 
     /** 查询 subagent 状态（决策 9；ADR-0010 决策 13 修订：idempotent——completed 后可多次查，清理只靠 1 小时超时定时器 store.ts） */
-    status(taskId: string): SubagentStatusResult {
+    status(taskId: string, offset?: number, limit?: number): SubagentStatusResult {
       const record = getSubagent(taskId);
       if (!record) throw Object.assign(new Error(`Subagent not found: ${taskId}`), { code: 'NOT_FOUND' });
 
-      return {
+      // ADR-0048 D5（#136）：父首次取终态结果即置「已验收」标记（completed 取 result；failed/aborted 看过 error 即验收）。
+      // 幂等：重复轮询不删记录、不重置标记（ADR-0007 决策 7/13，读完即删违 D5 红线）。
+      // #173-1：先组装后置位——组装/切片抛错不烧闸门（置位统一在各 return 前）。
+      const markIfUnreviewed = (): void => {
+        if (record.status !== 'running' && !record.resultFetched) markResultFetched(taskId);
+      };
+
+      // ADR-0048 #164：后台任务存活——record 元数据（backgroundId→pid）+ shell-tracker 句柄判活。
+      // getBackgroundTask 自此获得生产消费方（此前仅测试断言保活）。
+      const backgroundTasks = record.backgroundTasks?.map(({ backgroundId, pid }) => {
+        const child = getBackgroundTask(backgroundId);
+        const alive = child !== undefined && !child.killed && child.exitCode === null && child.signalCode === null;
+        return { backgroundId, pid, alive };
+      });
+
+      const base: SubagentStatusResult = {
         status: record.status,
         sessionId: record.sessionId,
         tasks: record.tasks,
@@ -219,8 +243,33 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         error: record.error,
         result: record.status === 'completed' ? record.result : undefined,
         origin: record.origin,
-        auditLogs: getRecentAuditLogs(taskId),
+        ...(backgroundTasks?.length ? { backgroundTasks } : {}),
       };
+
+      // ADR-0048 票B（#130）：completed + string result 才附分页记账字段与切片。
+      // offset 下界钳制（负值/非整数回 0）；显式 offset>0 才切片——首查返回全量
+      // （超门截断由 shaper 层 token 感知完成），store 全量保留不动。
+      if (record.status === 'completed' && typeof record.result === 'string') {
+        const totalChars = record.result.length;
+        const pageOffset = Math.max(0, Math.floor(offset ?? 0));
+        if (pageOffset > 0) {
+          const pageLimit = Math.min(Math.max(1, Math.floor(limit ?? SUBAGENT_STATUS_PAGE_CHARS)), SUBAGENT_STATUS_PAGE_MAX_CHARS);
+          const page = record.result.slice(pageOffset, pageOffset + pageLimit);
+          markIfUnreviewed();
+          return {
+            ...base,
+            result: page,
+            taskId,
+            resultOffset: pageOffset,
+            resultTotalChars: totalChars,
+            truncated: pageOffset + page.length < totalChars,
+          };
+        }
+        markIfUnreviewed();
+        return { ...base, taskId, resultOffset: 0, resultTotalChars: totalChars, truncated: false };
+      }
+      markIfUnreviewed();
+      return base;
     },
 
     /** 中止 subagent（幂等） */
@@ -235,6 +284,9 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
 
       // 发送 abort 信号
       record.abortController.abort();
+      // A48-W1 低危B-1：'aborting' 是瞬时确认值（abort 已发出、终态未落），
+      // 不在 SubagentStatus 联合内（store.ts:13 的 running/completed/failed/aborted）——
+      // 持久状态由终结路径置 'aborted'（本窗测试 subagent-m8/status-color 锁定该值，勿改）。
       return { status: 'aborting' };
     },
 

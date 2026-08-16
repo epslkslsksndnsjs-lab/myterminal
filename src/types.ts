@@ -213,8 +213,8 @@ export type SubagentSettings = {
   model: string;          // 全局唯一模型（必填，零默认、缺配即拒）
   baseUrl: string;        // Anthropic 协议端点（必填，可指向兼容网关）
   apiKey: string;         // API 密钥（必填，落盘换取"填 3 项即用"）
-  maxTurns: number;       // agent loop 轮次上限，默认 50
-  timeoutSec: number;     // 整体超时秒数，默认 300
+  maxTurns: number;       // agent loop 轮次上限，默认 700（1-1600）
+  timeoutSec: number;     // 整体超时秒数，默认 7200（30-86400）
   maxParallel: number;    // 并发 subagent 上限，默认 2
   contextWindow?: number; // 上下文窗口上限（可选，默认 120000；有配置用配置，代码不查表）
   maxOutput?: number;     // 单次最大输出 token（可选，默认 32000）

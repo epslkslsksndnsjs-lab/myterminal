@@ -199,11 +199,16 @@ test('05: e2e——list/inline/fork/status-idempotent 全链路', async () => {
   assert.ok(taskId.startsWith('sa_'));
 
   // Step 4: 等 subagent 完成 → subagent_status 查 result
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  const status1 = await ext.call(
-    { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
-    { transport: 'actions' },
-  );
+  // 有界轮询替代固定 300ms（Windows runner 启动延迟，#176 CI 实测 300ms 不够）
+  let status1;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    status1 = await ext.call(
+      { tool: 'subagent_status', input: { taskId }, identity: rootIdentity },
+      { transport: 'actions' },
+    );
+    if (status1.ok && status1.data.result.status === 'completed') break;
+  }
   assert.equal(status1.ok, true);
   assert.equal(status1.data.result.status, 'completed');
   assert.equal(status1.data.result.result, 'fork e2e result body');
