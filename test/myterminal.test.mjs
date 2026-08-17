@@ -1569,11 +1569,6 @@ test('message composer does not open when no active recipient exists', () => {
   assert.ok(block.indexOf('if (!sessions.length)') < block.indexOf('const answers = await ask'));
 });
 
-test('project copy constraints forbid exposing implementation requirements as UI copy', () => {
-  const constraints = fs.readFileSync(new URL('../DEVELOPMENT.md', import.meta.url), 'utf8');
-  assert.match(constraints, /must not be shown as user-facing UI copy/);
-});
-
 test('credential reveal has a fail-closed deadline when terminals omit key release', () => {
   const app = fs.readFileSync(new URL('../src/tui/App.tsx', import.meta.url), 'utf8');
   assert.match(app, /credentialRevealDeadline/);

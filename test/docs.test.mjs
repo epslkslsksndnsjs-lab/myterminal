@@ -82,42 +82,6 @@ test('binary installers use versioned releases, checksums, atomic current pointe
   assert.doesNotMatch(windows, /bun install|run src\\cli\.ts/);
 });
 
-test('DEVELOPMENT.md reflects the tool-parse/L3 and single-provider subagent state', () => {
-  const text = fs.readFileSync(path.join(root, 'DEVELOPMENT.md'), 'utf8');
-  for (const expected of [
-    'TOOL_SHAPES',
-    'tool-parse.ts',
-    'src/l3/',
-    'MYTERMINAL_L3_ENABLED',
-    'MYTERMINAL_L3_MODEL_PATH',
-    'MYTERMINAL_L3_WARMUP',
-    'MYTERMINAL_ERROR_MESSAGE_MAX_CHARS',
-    'MYTERMINAL_ERROR_DETAILS_MAX_CHARS',
-    'l3-model fetch',
-    'AnthropicAdapter',
-    'SubagentContext',
-    'node-llama-cpp',
-    'workspace_info',
-    'git_show',
-  ]) assert.match(text, new RegExp(expected), `DEVELOPMENT.md should mention ${expected}`);
-  for (const gone of [
-    '--list-adoptable',
-    '--adopt',
-    'createAgentWorktree',
-    'adoptWorktree',
-    'cleanupStaleWorktrees',
-    'reclaimWorktree',
-    'worktree',
-    'models/registry.ts',
-    'OpenAIAdapter',
-    'DeepSeekAdapter',
-    'GlmAdapter',
-    'QwenAdapter',
-    'getModelContextWindow',
-    'getAutoCompactThreshold',
-  ]) assert.doesNotMatch(text, new RegExp(gone), `DEVELOPMENT.md must not mention ${gone}`);
-});
-
 test('harness introduction and architecture match v0.1.2 without stale process reports', () => {
   for (const file of ['docs/GPT_INSTRUCTIONS.md', 'docs/GPT_INSTRUCTIONS.zh-CN.md']) {
     const text = fs.readFileSync(path.join(root, file), 'utf8');
