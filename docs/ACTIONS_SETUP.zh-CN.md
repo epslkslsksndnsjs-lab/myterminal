@@ -2,7 +2,7 @@
 
 [English](ACTIONS_SETUP.md) · [推荐 GPT 预设指令](GPT_INSTRUCTIONS.zh-CN.md) · [短提示词手册](PROMPT_PLAYBOOK.zh-CN.md) · [隐私说明](PRIVACY.zh-CN.md)
 
-本教程从一台没有开发环境的新电脑开始，直到完成一个可测试的私有 GPT。教程基于 MyTerminal 0.1.2 和 ChatGPT 网页编辑器。OpenAI 当前向付费用户提供 GPT 创建功能，具体还受工作区角色、策略和 Actions 域名限制。一个 GPT 只能选择 **Apps 或 Actions，不能同时使用两者**。使用 ChatGPT 的 Pro mode 时不能使用 Actions，因此 Actions GPT 的编辑器会提供兼容的非 Pro 模型。参见 OpenAI 的 [GPT 创建说明](https://help.openai.com/en/articles/8554397-creating-a-gpt)和 [Actions 配置说明](https://help.openai.com/en/articles/9442513)。
+本教程从一台没有开发环境的新电脑开始，直到完成一个可测试的私有 GPT。教程基于 MyTerminal 0.1.3 和 ChatGPT 网页编辑器。OpenAI 当前向付费用户提供 GPT 创建功能，具体还受工作区角色、策略和 Actions 域名限制。一个 GPT 只能选择 **Apps 或 Actions，不能同时使用两者**。使用 ChatGPT 的 Pro mode 时不能使用 Actions，因此 Actions GPT 的编辑器会提供兼容的非 Pro 模型。参见 OpenAI 的 [GPT 创建说明](https://help.openai.com/en/articles/8554397-creating-a-gpt)和 [Actions 配置说明](https://help.openai.com/en/articles/9442513)。
 
 > ChatGPT 截图来自本地 HTML 存档的隐私安全裁剪，只保留通用配置界面；不含聊天正文、账户身份、真实地址或真实凭据。ChatGPT 的具体标签以后可能调整。
 
@@ -26,19 +26,19 @@ flowchart LR
 ### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.3/scripts/install-macos.sh)"
 ```
 
 ### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.3/scripts/install-linux.sh)"
 ```
 
 ### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.3/scripts/install-windows.ps1 | iex"
 ```
 
 安装脚本会下载与当前平台匹配的独立可执行文件和 SHA-256 文件，完成校验后写入版本化 release 目录，把 `myterminal` 注册到当前用户的 PATH，然后打开 TUI。它不会安装 Git、Node.js、Bun 或包依赖。如果组织不允许直接运行远端脚本，请先打开仓库中的脚本检查内容。第二次及以后只需重新打开终端并输入：
@@ -223,7 +223,7 @@ MyTerminal 日志页会把每次调用显示为一条持续更新的记录：来
 | 现象 | 处理方法 |
 | --- | --- |
 | `Input should be '3.1.1' or '3.1.0'` | 更新 MyTerminal，导入准确的 `/openapi.json` URL，并删除旧的手工 schema。 |
-| `components.schemas ... is not an object` | 使用了旧版或被修改的 schema。MyTerminal 0.1.2 返回具体对象；从运行中的服务重新导入。 |
+| `components.schemas ... is not an object` | 使用了旧版或被修改的 schema。MyTerminal 0.1.3 返回具体对象；从运行中的服务重新导入。 |
 | `ApiTypeError: Expected identity to be a dict` | 重新导入 `/openapi.json` 并粘贴当前 GPT 指令。bootstrap 调用应省略 `identity` 键，不能发送 `identity:null` 或 `identity:{}`；更新到包含本兼容修复的构建后，显式 null 也会被视为未提供 bootstrap identity。 |
 | `spec must be an object` | `extensionRegister` 需要顶层 `spec:{...}`。创建 session 应使用 `extensionCall` + `tool:"session_register"`。 |
 | `input.name is required`、`input.to is required` 或 `input.body is required` | 把参数放入 `extensionCall.input`，例如 `{tool:"message_send", input:{to:"reviewer", body:"Ready"}, identity:{...}}`。 |

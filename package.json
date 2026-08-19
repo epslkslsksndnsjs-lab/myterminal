@@ -1,6 +1,6 @@
 {
   "name": "myterminal",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "description": "MyTerminal：连接 ChatGPT 聊天模式与本地开发环境的终端桥梁。支持 Actions/MCP 双通道、多会话协作、Skill 工作流、Subagent 委派，全程可审计。",
   "author": "epslkslsksndnsjs-lab",

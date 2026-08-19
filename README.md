@@ -4,7 +4,7 @@
 
 MyTerminal gives **ChatGPT's normal chat mode a controlled way to work on your local computer**. After you connect MyTerminal through a custom GPT Action or a ChatGPT App, a regular ChatGPT conversation can inspect and edit the authorized local project, run bounded tools, coordinate multiple work sessions, and report progress while you retain control in a local TUI. MyTerminal is the bridge between ChatGPT chat and your computer; it is not a replacement chat client.
 
-MyTerminal 0.1.2 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with Anthropic-protocol LLM support.
+MyTerminal 0.1.3 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with Anthropic-protocol LLM support.
 
 ![MyTerminal session hierarchy](docs/assets/tui/sessions-en.svg)
 
@@ -36,24 +36,24 @@ The AI guide starts with a read-only probe, then walks you through: Bun environm
 
 ### First installation
 
-You do not need Git, Node.js, Bun, or another programming environment beforehand. The installers download the standalone `v0.1.2` executable for the current operating system and CPU architecture, verify its SHA-256 checksum, register the global `myterminal` command, and start the TUI. Release installations no longer download a source archive or runtime dependencies.
+You do not need Git, Node.js, Bun, or another programming environment beforehand. The installers download the standalone `v0.1.3` executable for the current operating system and CPU architecture, verify its SHA-256 checksum, register the global `myterminal` command, and start the TUI. Release installations no longer download a source archive or runtime dependencies.
 
 #### macOS
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-macos.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.3/scripts/install-macos.sh)"
 ```
 
 #### Linux
 
 ```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-linux.sh)"
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.3/scripts/install-linux.sh)"
 ```
 
 #### Windows PowerShell
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.2/scripts/install-windows.ps1 | iex"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/epslkslsksndnsjs-lab/myterminal/v0.1.3/scripts/install-windows.ps1 | iex"
 ```
 
 > [!IMPORTANT]
@@ -67,7 +67,7 @@ The first-run TUI configures everything: language, theme, authorized workspace, 
 
 ### Start it again later
 
-Open a new Terminal, PowerShell, or Command Prompt window and use the global command installed for your user account. The launcher resolves the current executable through a versioned `releases/<version>` directory and an atomic `current` pointer. Users of the GitHub `v1.0.1` source-archive installation, an intermediate development installation, or an earlier binary release may run the `v0.1.2` installer directly for a lossless migration. Settings, credentials, workspaces, sessions, messages, and history are preserved.
+Open a new Terminal, PowerShell, or Command Prompt window and use the global command installed for your user account. The launcher resolves the current executable through a versioned `releases/<version>` directory and an atomic `current` pointer. Users of the GitHub `v1.0.1` source-archive installation, an intermediate development installation, or an earlier binary release may run the `v0.1.3` installer directly for a lossless migration. Settings, credentials, workspaces, sessions, messages, and history are preserved.
 
 ```text
 myterminal
@@ -214,7 +214,7 @@ bun run start -- --headless
 
 ## Updates
 
-MyTerminal checks the latest GitHub release when the TUI starts. The Settings tab shows the installed and latest versions; press `U` to install an available release. The updater downloads the precompiled executable and SHA-256 file for the current platform, installs it into a new version directory, and atomically switches the `current` pointer. The old version remains available for rollback. Git source checkouts are never overwritten by one-click update. See the [v0.1.2 release notes](https://github.com/epslkslsksndnsjs-lab/myterminal/releases) for migration and future-update details.
+MyTerminal checks the latest GitHub release when the TUI starts. The Settings tab shows the installed and latest versions; press `U` to install an available release. The updater downloads the precompiled executable and SHA-256 file for the current platform, installs it into a new version directory, and atomically switches the `current` pointer. The old version remains available for rollback. Git source checkouts are never overwritten by one-click update. See the [v0.1.3 release notes](https://github.com/epslkslsksndnsjs-lab/myterminal/releases) for migration and future-update details.
 
 Workspace state migration is additive and idempotent: existing target state, legacy global state, `state.migrated`, and the workspace `.myterminal` directory are merged by stable IDs, while session history files are deduplicated and retained.
 ## Shared ports and workspace routing

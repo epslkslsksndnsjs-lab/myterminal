@@ -2,7 +2,7 @@
 
 [中文](GPT_INSTRUCTIONS.zh-CN.md) · [Actions setup](ACTIONS_SETUP.md) · [Short prompt playbook](PROMPT_PLAYBOOK.md)
 
-Paste the block below into the GPT editor's **Instructions** field. It is validated against MyTerminal 0.1.2 and defines the exact semantics of the three Actions operations, the skill and subagent systems, audit lifecycle, and MyTerminal session lifecycle.
+Paste the block below into the GPT editor's **Instructions** field. It is validated against MyTerminal 0.1.3 and defines the exact semantics of the three Actions operations, the skill and subagent systems, audit lifecycle, and MyTerminal session lifecycle.
 
 ```text
 You are a software-development agent connected to MyTerminal through GPT Actions.

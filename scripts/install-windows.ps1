@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$Version = if ($env:MYTERMINAL_VERSION) { $env:MYTERMINAL_VERSION } else { "v0.1.2" }
+$Version = if ($env:MYTERMINAL_VERSION) { $env:MYTERMINAL_VERSION } else { "v0.1.3" }
 $Repository = "epslkslsksndnsjs-lab/myterminal"
 $InstallDir = if ($env:MYTERMINAL_HOME) { $env:MYTERMINAL_HOME } else { Join-Path $HOME "MyTerminal" }
 $LauncherDir = if ($env:MYTERMINAL_BIN_DIR) { $env:MYTERMINAL_BIN_DIR } else { Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "MyTerminal\bin" }

@@ -41,7 +41,7 @@ myterminal --version
 myterminal
 ```
 
-Use an absolute path without `..`. The installer verifies SHA-256, writes `~/MyTerminal/releases/v0.1.2`, atomically updates `~/MyTerminal/current`, and registers the launcher in the current user's PATH. Set `MYTERMINAL_HOME` or `MYTERMINAL_BIN_DIR` before running the command if you need different locations.
+Use an absolute path without `..`. The installer verifies SHA-256, writes `~/MyTerminal/releases/v0.1.3`, atomically updates `~/MyTerminal/current`, and registers the launcher in the current user's PATH. Set `MYTERMINAL_HOME` or `MYTERMINAL_BIN_DIR` before running the command if you need different locations.
 
 ## Install a local candidate on Windows
 
@@ -61,7 +61,7 @@ myterminal --version
 myterminal
 ```
 
-The installer verifies SHA-256, writes `%USERPROFILE%\MyTerminal\releases\v0.1.2`, atomically updates `current`, and adds its command-launcher directory to the user PATH. Open a new terminal if the current PowerShell process does not yet see `myterminal`.
+The installer verifies SHA-256, writes `%USERPROFILE%\MyTerminal\releases\v0.1.3`, atomically updates `current`, and adds its command-launcher directory to the user PATH. Open a new terminal if the current PowerShell process does not yet see `myterminal`.
 
 ## Verify without installing
 
@@ -155,7 +155,7 @@ myterminal --version
 myterminal
 ```
 
-请使用不含 `..` 的绝对路径。安装器会校验 SHA-256，把程序写入 `~/MyTerminal/releases/v0.1.2`，原子更新 `~/MyTerminal/current`，并注册当前用户的命令启动器。如需改变目录，请在运行前设置 `MYTERMINAL_HOME` 或 `MYTERMINAL_BIN_DIR`。
+请使用不含 `..` 的绝对路径。安装器会校验 SHA-256，把程序写入 `~/MyTerminal/releases/v0.1.3`，原子更新 `~/MyTerminal/current`，并注册当前用户的命令启动器。如需改变目录，请在运行前设置 `MYTERMINAL_HOME` 或 `MYTERMINAL_BIN_DIR`。
 
 ## 在 Windows 安装本地候选包
 
@@ -175,7 +175,7 @@ myterminal --version
 myterminal
 ```
 
-安装器会校验 SHA-256，把程序写入 `%USERPROFILE%\MyTerminal\releases\v0.1.2`，原子更新 `current`，并把命令启动器目录加入用户 PATH。如果当前 PowerShell 尚未识别新命令，请重新打开终端。
+安装器会校验 SHA-256，把程序写入 `%USERPROFILE%\MyTerminal\releases\v0.1.3`，原子更新 `current`，并把命令启动器目录加入用户 PATH。如果当前 PowerShell 尚未识别新命令，请重新打开终端。
 
 ## 可选：L3 本地模型
 
