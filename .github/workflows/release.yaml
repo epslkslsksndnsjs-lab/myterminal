@@ -58,11 +58,11 @@ jobs:
         shell: bash
       - name: Build standalone executable
         if: runner.os != 'Windows'
-        run: bun build --compile --minify --target=${{ matrix.target }} src/cli.ts --outfile release/${{ matrix.executable }}
+        run: bun build --compile --minify --external '@node-llama-cpp/*' --target=${{ matrix.target }} src/cli.ts --outfile release/${{ matrix.executable }}
         shell: bash
       - name: Build standalone executable with baseline Bun
         if: runner.os == 'Windows'
-        run: bun build --compile --minify src/cli.ts --outfile release/${{ matrix.executable }}
+        run: bun build --compile --minify --external '@node-llama-cpp/*' src/cli.ts --outfile release/${{ matrix.executable }}
         shell: bash
       - name: Smoke test executable
         run: |

@@ -140,7 +140,7 @@ test('T02-E: 失败长任务响应 operation.error.details 为对象含 continua
   try {
     const identity = await registerRoot(server);
     // 慢命令强制 detach 成后台长任务，并以非 0 退出 → 失败长任务
-    const exec = await actionsCall(server, 'execute_cli', { command: 'sleep 0.3; exit 3' }, identity);
+    const exec = await actionsCall(server, 'execute_cli', { command: 'node -e "setTimeout(()=>process.exit(3),300)"' }, identity);
     assert.equal(exec.body.data.result.status, 'running', 'nonBlocking 慢命令应 detach 为 running');
     const taskId = exec.body.data.result.taskId;
 
