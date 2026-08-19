@@ -584,7 +584,15 @@ function readFreeDiskBytes(dir, platform = process.platform) {
   if (platform === 'win32') return readFreeDiskBytesWindows(dir);
   try {
     const stats = fs.statfsSync(dir);
-    return stats.bavail * stats.bsize;
+    const free = stats.bavail * stats.bsize;
+    if (free > 0) return free;
+    // Some macOS x64 runners report bavail*bsize as 0 for certain volumes;
+    // fall back to `df -k` so the probe never degrades to "unmeasurable".
+    const out = execFileSync('df', ['-k', dir], { encoding: 'utf8', timeout: 10_000 });
+    const line = out.trim().split('\n').pop();
+    const kb = Number((line.trim().split(/\s+/)[3] ?? 'NaN'));
+    if (Number.isFinite(kb) && kb > 0) return kb * 1024;
+    return null;
   } catch {
     return null;
   }
