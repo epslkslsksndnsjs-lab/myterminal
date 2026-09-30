@@ -108,9 +108,11 @@ describe('#31 i18n seam', () => {
     for (const file of Object.keys(baseline)) {
       assert.ok(fs.existsSync(path.join(ROOT, file)), `基线文件被删除：${file}`);
     }
-    assert.equal(Object.keys(baseline).length, 55, '基线文件数变化，行为锁作用域被改动');
+    // #231 显式重锁：Worktrees 面板随 T8 交付 → 作用域多一个文件（src/tui/screens/Worktrees.tsx），
+    // 字面量总数 1879 → 1936。逐文件比对过差异：全部为本票新增，零删除、零改写既有文案。
+    assert.equal(Object.keys(baseline).length, 56, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 1879, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 1936, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───

@@ -38,6 +38,7 @@ function asDispatch(value: unknown): DispatchRecord | undefined {
     ...(raw.error && typeof raw.error === 'object' ? { error: raw.error as DispatchRecord['error'] } : {}),
     ...('result' in raw ? { result: raw.result } : {}),
     ...(typeof raw.isolation === 'string' ? { isolation: raw.isolation } : {}),
+    ...(raw.worktree && typeof raw.worktree === 'object' ? { worktree: raw.worktree as DispatchRecord['worktree'] } : {}),
     ...(typeof raw.phase === 'string' ? { phase: raw.phase } : {}),
     ...(typeof raw.model === 'string' ? { model: raw.model } : {}),
     ...(typeof raw.effort === 'string' ? { effort: raw.effort } : {}),

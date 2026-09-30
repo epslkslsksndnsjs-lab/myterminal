@@ -15,6 +15,7 @@ import { FormDialog } from './components/FormDialog.js';
 import { routeCommand, commandCompletions, type CommandAction } from './model/command-router.js';
 import { i18nFor } from './copy/i18n.js';
 import { I18nProvider } from './copy/context.js';
+import { worktreePanelRows, type WorktreePanelRow, type WorktreeQuotaSummary } from './controller-logic.js';
 import { Home } from './screens/Home.js';
 import { Sessions, SessionDetail } from './screens/Sessions.js';
 import { Messages, ConversationDetail } from './screens/Messages.js';
@@ -24,6 +25,7 @@ import { Extensions } from './screens/Extensions.js';
 import { Settings } from './screens/Settings.js';
 import { Logs } from './screens/Logs.js';
 import { SubagentList } from './screens/Subagents.js';
+import { Worktrees } from './screens/Worktrees.js';
 import { SubagentDetail } from './screens/Subagent.js';
 
 type FormState = {
@@ -48,6 +50,9 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const [timelineExpandRev, setTimelineExpandRev] = useState(0);
   const [form, setForm] = useState<FormState>();
   const [notice, setNotice] = useState<string>();
+  // #231 Worktrees 面板：读的是模块的登记簿（异步、冷启动也成立），所以按秒轮询而不是搭进程内事件。
+  const [worktreeRows, setWorktreeRows] = useState<WorktreePanelRow[]>([]);
+  const [worktreeQuota, setWorktreeQuota] = useState<WorktreeQuotaSummary | null>(null);
   const [fatalError, setFatalError] = useState<Error>();
   const [, setRevision] = useState(0);
   const [inputEditing, setInputEditing] = useState(false);
@@ -126,7 +131,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const groups = logicalSessionGroups(state.sessions);
   const conversations = conversationGroups(state.messages);
-  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : 0;
+  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : tab === 9 ? worktreeRows.length : 0;
   const activeSelection = Math.max(0, Math.min(Math.max(0, itemCount - 1), selected[tab] || 0));
 
   const moveSelection = useCallback((delta: number) => {
@@ -135,19 +140,20 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
       const count = tab === 1 ? logicalSessionGroups(controller.runtime.store.listSessions()).length
         : tab === 2 ? conversationGroups(controller.runtime.store.listMessages(1000)).length
           : tab === 5 ? controller.runtime.store.listExtensions().length
-            : tab === 8 ? controller.runtime.listSubagents().length : 0;
+              : tab === 8 ? controller.runtime.listSubagents().length
+                : tab === 9 ? worktreeRows.length : 0;
       next[tab] = Math.max(0, Math.min(Math.max(0, count - 1), (next[tab] || 0) + delta));
       return next;
     });
-  }, [controller, tab]);
+  }, [controller, tab, worktreeRows.length]);
 
   const selectItem = useCallback((index: number) => setSelected((values) => { const next = [...values]; next[tab] = index; return next; }), [tab]);
 
-  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : undefined;
+  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : tab === 9 ? worktreeRows[activeSelection]?.id : undefined;
   useEffect(() => {
     if (detail) return;
     if (!selectedTargetId) return;
-    const prefix = tab === 1 ? 'session' : tab === 2 ? 'conversation' : 'extension';
+    const prefix = tab === 1 ? 'session' : tab === 2 ? 'conversation' : tab === 9 ? 'worktree' : 'extension';
     scrollRef.current?.scrollChildIntoView(`${prefix}-${selectedTargetId}`);
   }, [tab, detail, activeSelection, selectedTargetId]);
 
@@ -171,6 +177,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const refreshDiffAction = useCallback(() => runAction(() => controller.refreshDiff()), [runAction, controller]);
   const addExtensionAction = useCallback(() => runAction(() => controller.addExtension(ask)), [runAction, controller, ask]);
   const removeExtensionAction = useCallback(() => runAction(() => controller.removeExtension(controller.runtime.store.listExtensions()[selected[5] || 0]?.name, ask)), [runAction, controller, selected, ask]);
+  const discardWorktreeAction = useCallback(() => runAction(() => controller.discardWorktree(worktreeRows[selected[9] || 0]?.id, ask)), [runAction, controller, selected, worktreeRows, ask]);
   const configureAction = useCallback(() => runAction(() => controller.editSettings(ask)), [runAction, controller, ask]);
   const rotateCredentialsAction = useCallback(() => runAction(async () => { await controller.rotateCredentials(ask); }), [runAction, controller, ask]);
   const updateApplicationAction = useCallback(() => runAction(() => controller.updateApplication(ask)), [runAction, controller, ask]);
@@ -229,13 +236,14 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     refreshDiff: refreshDiffAction,
     addExtension: addExtensionAction,
     removeExtension: removeExtensionAction,
+    discardWorktree: discardWorktreeAction,
     configure: configureAction,
     rotateCredentials: rotateCredentialsAction,
     updateApplication: updateApplicationAction,
     toggleAudit,
     enterInput: handleStartCommand,
     openHelp: () => setShowHelp(true),
-  }), [form, tab, detail, inputEditing, switchTab, nextTab, back, quit, moveSelection, open, createSessionAction, sessionAction, sendMessageAction, refreshDiffAction, addExtensionAction, removeExtensionAction, configureAction, rotateCredentialsAction, updateApplicationAction, toggleAudit, handleStartCommand]);
+  }), [form, tab, detail, inputEditing, switchTab, nextTab, back, quit, moveSelection, open, createSessionAction, sessionAction, sendMessageAction, refreshDiffAction, addExtensionAction, removeExtensionAction, discardWorktreeAction, configureAction, rotateCredentialsAction, updateApplicationAction, toggleAudit, handleStartCommand]);
   useAppKeymap(pageActions);
 
   useEffect(() => {
@@ -245,6 +253,21 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     }, 50);
     return () => clearInterval(timer);
   }, [revealCredentials]);
+
+  // Worktrees 面板（#231）：只在停在第九页时轮询登记簿——读盘、异步，且冷启动后也要有真相。
+  useEffect(() => {
+    if (tab !== 9) return;
+    let alive = true;
+    const poll = async () => {
+      const [entries, quota] = await Promise.all([controller.runtime.listWorktrees(), controller.runtime.worktreeQuota()]);
+      if (!alive) return;
+      setWorktreeRows(worktreePanelRows(entries));
+      setWorktreeQuota(quota);
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 2_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [tab, controller]);
 
   useKeyboard((event) => {
     if (fatalError && (event.name === 'q' || event.name === 'escape')) { void quit(); return; }
@@ -305,7 +328,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
                 : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} />
                   : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
                     : tab === 6 ? <Settings runtime={runtime} theme={theme} reveal={revealCredentials} update={update} />
-                      : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
+                        : tab === 9 ? <Worktrees rows={worktreeRows} quota={worktreeQuota} selected={activeSelection} theme={theme} onSelect={selectItem} />
+                          : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
                         : <Logs runtime={runtime} logs={logs} theme={theme} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
   const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;

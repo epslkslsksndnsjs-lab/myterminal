@@ -17,6 +17,8 @@ import { resolveCrashPlan, type CrashPlan, type CrashPoint } from './crash.js';
 import { createDispatchWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
 import { DEFAULT_GATES, HARD_AGENT_CAP_CEILING, describeClockNesting, validateClockNesting, type WorkflowGates } from './gates.js';
 import { canonicalAgentOpts, gateAgentOpts, type GatedAgentOpts } from './agent-opts.js';
+import { requestedWriteToolNames, resolveToolFace, type ToolContext, type ToolMode } from './tool-face.js';
+import { WorktreeService, type Released, type WorktreeAuditEvent } from './worktree-service.js';
 import { deriveAgentKey } from './keys.js';
 import { buildReplayCache, replayChainSeed, type ReplayCache } from './cache.js';
 import { acquireResumeLock, releaseResumeLock, type LockProbe } from './lock.js';
@@ -33,7 +35,6 @@ import {
 } from './failures.js';
 import type { AdapterFactory } from './adapter.js';
 import { resolveStallMs, runStallResilient } from './stall.js';
-import { resolveToolFace, type ToolContext, type ToolMode } from './tool-face.js';
 import { runAgentPath } from './agent-loop.js';
 import { buildAgentSystemPrompt } from './agent-prompt.js';
 import { collectOwnerCommands, collectRunCommands, resumeAcceptingCommands } from './command-tree.js';
@@ -54,9 +55,38 @@ import { collectOwnerCommands, collectRunCommands, resumeAcceptingCommands } fro
 /** 单路一次调用的输出上限（本票不表达为脚本可传的旋钮）。 */
 export const DEFAULT_OUTPUT_TOKENS = 32_000;
 
+/** 一路结算的原料：settlePath 的唯一入参形状（成功带值，失败带具名归类）。 */
+type SettledOutcome = { ok: true; value: unknown; outputTokens: number } | { ok: false; failure: SettledFailure };
+
+/** 这一路的边界从哪来：worktree = 模块新建并负责收；pinned = 借一块已注册的现成件，不建不删。 */
+type PathBoundary = 'worktree' | 'pinned';
+
+type OpenedBoundary = { cwd: string; managedId?: string } | { failure: SettledFailure };
+
+/**
+ * 声明 isolation:'worktree' 走新建，声明 workingDir 走 pin（两者由选项闸互斥）。
+ * 都没声明即共享工作区——那一跑只能读，写工具不在面上、工具自己也再拒一遍。
+ */
+function dispatchBoundary(gated: GatedAgentOpts): PathBoundary | undefined {
+  if (gated.isolation === 'worktree') return 'worktree';
+  if (gated.workingDir !== undefined) return 'pinned';
+  return undefined;
+}
+
 export type WorkflowAuditEntry = {
   runId: string;
-  action: 'workflow_start' | 'workflow_settle' | 'workflow_cancel' | 'workflow_pause' | 'workflow_resume' | 'workflow_paused_resume';
+  action:
+    | 'workflow_start'
+    | 'workflow_settle'
+    | 'workflow_cancel'
+    | 'workflow_pause'
+    | 'workflow_resume'
+    | 'workflow_paused_resume'
+    // 隔离面的三条（#231）：配额两档由 ADR §12 I17 点名，丢弃与归档是"唯一减法 = 人"的留痕。
+    | 'worktree-quota-warn'
+    | 'worktree-quota-blocked'
+    | 'worktree_discard'
+    | 'worktree_archive';
   actor: string;
   status: string;
   reason?: string;
@@ -87,6 +117,11 @@ export type EngineDeps = {
   crashKill?: (pid: number, signal: 'SIGKILL') => void;
   /** resume 排他锁的本机身份探针：pid + epoch + 存活判定 + 时钟；缺省走本进程，测试整体替换。 */
   lockProbe?: LockProbe;
+  /**
+   * 写必隔离的执行体（ADR-0052 §11）。缺省由本引擎按 managed 根 + 配额闸自建；
+   * 注入它即可整体假化 git 调用——引擎级用例不必真起 git。
+   */
+  worktrees?: WorktreeService;
 };
 
 export type StartRequest = {
@@ -207,6 +242,7 @@ export class WorkflowEngine {
   private readonly crash: CrashPlan;
   private readonly lockProbe: LockProbe;
   private readonly runs = new Map<string, RunContext>();
+  private worktreeService?: WorktreeService;
 
   constructor(private readonly deps: EngineDeps) {
     this.clock = deps.clock ?? systemClock();
@@ -573,15 +609,16 @@ export class WorkflowEngine {
     // 形状错在这一刻就拒：不占键位、不计数、不进失败清单。
     const gated = gateAgentOpts(rawOpts);
 
-    // 工具面在派发之前算完：这一跑能用哪些工具、模式合不合闸，全在烧 token 前定死。
-    // 不合面即形状错（脚本写错了，不是那一跑失败），且不消耗缓存键。
-    // 模式口径：命令闸与写工具的可见性跟着**边界**走，而边界要等隔离交付（#231）才独立出去；
-    // 本票所有路都跑在共享工作区里，所以一律按只读执法——写必隔离不因声明而提前放开。
-    // 声明了 isolation:'worktree' 的那一路仍拿到"回报 path + branch"的义务（提示词面），
-    // 因为那是它对人的交代，不是权限。
-    const gatedMode: ToolMode = 'read-only';
+    // 这一路的边界从哪来，决定它能不能写：声明隔离 = 新建一件；pin 到已注册 worktree = 借那件；
+    // 两者皆无 = 跑在共享工作区里，工具面按只读执法（ADR-0052 §11 写必隔离）。
+    const boundary = dispatchBoundary(gated);
+    const gatedMode: ToolMode = boundary ? 'worktree' : 'read-only';
+    // 请求写而不标隔离排在工具面之前：这一路判败（记入索引、零 token、run 继续），不是形状错——
+    // 脚本没写错到不可执行，是它要的能力这一路没有。面按写模式解析只为让请求的写工具不被
+    // 认成"面上没有"而抛出去；解析结果不会派发任何东西。
+    const unisolatedWrite = boundary === undefined && requestedWriteToolNames(gated.tools).length > 0;
     const face = resolveToolFace({
-      mode: gatedMode,
+      mode: unisolatedWrite ? 'worktree' : gatedMode,
       tools: gated.tools,
       disallowedTools: gated.disallowedTools,
       agentType: gated.agentType,
@@ -644,8 +681,17 @@ export class WorkflowEngine {
     queueIndexWrite(context);
     void context.journal.append({ type: 'started', seq: sequence, key, label, at: startedAt }).catch(() => undefined);
 
+    // 写必隔离在这里落地：账已记（该路具名判败），模型调用一次都没发起。
+    if (unisolatedWrite) {
+      const asked = requestedWriteToolNames(gated.tools).join(', ');
+      return await this.settlePath(context, record, {
+        ok: false,
+        failure: { kind: 'error', message: `agent() asked for a write tool (${asked}) without isolation: "worktree" — this path was never started and spent no tokens.`, reason: 'isolation-required' },
+      });
+    }
+
     try {
-      return await this.runPath(context, record, prompt, gated, toolNames, gatedMode);
+      return await this.runPath(context, record, prompt, gated, toolNames, gatedMode, boundary);
     } catch (error) {
       // run 级终结把排队与在飞的等待打断：那不是这一路自己失败，
       // 绝不许在批里被降成 null（那会让非法扇出静默"完成"）。
@@ -655,7 +701,7 @@ export class WorkflowEngine {
   }
 
   /** 叶子任务才进窗口：排队不占键位，取槽时再过一次预算门。 */
-  private runPath(context: RunContext, record: DispatchRecord, prompt: string, gated: GatedAgentOpts, toolNames: readonly string[], mode: ToolMode): Promise<unknown> {
+  private runPath(context: RunContext, record: DispatchRecord, prompt: string, gated: GatedAgentOpts, toolNames: readonly string[], mode: ToolMode, boundary: PathBoundary | undefined): Promise<unknown> {
     return context.window.run(async () => {
       this.assertOpen(context);
       this.assertBudget(context);
@@ -663,90 +709,132 @@ export class WorkflowEngine {
       if (!factory) {
         return await this.settlePath(context, record, { ok: false, failure: { kind: 'error', message: 'No model adapter is wired for this run.', reason: 'no-adapter' } });
       }
+      // 边界先行：建不出隔离件就没有这一路——连模型通道都不必开，拒绝落在任何资源副作用之前。
+      const opened = boundary ? await this.openBoundary(context, record, gated, boundary) : { cwd: this.deps.workspaceDir } as OpenedBoundary;
+      if ('failure' in opened) {
+        return await this.settlePath(context, record, { ok: false, failure: opened.failure });
+      }
       // 每路独立实例：缓存断点是实例态，共享实例会让一路撞到的 4xx 关掉全部并发路的断点。
       // 把本引擎的注入时钟交给工厂：传输层瞬态 backoff 与 stall 看门狗共用一只钟（§16）。
       const adapter = factory({ runId: context.runId, dispatchId: record.id, clock: this.clock });
-      const stallMs = resolveStallMs(gated.stallMs, this.gates.stallMs);
-      // 重试次数随每次尝试起跑即时落到 record（成功或耗尽判败都进该路终态记账）。
-      const reportAttempt = (n: number): void => { record.attempts = n; };
-      const run = runPaths(this.paths, context.runId);
-      const cwd = this.deps.workspaceDir;
-      const system = buildAgentSystemPrompt({
-        label: record.label,
-        cwd,
-        platform: process.platform,
-        toolNames,
-        mode,
-        isolated: gated.isolation === 'worktree',
-        schema: gated.schema !== undefined,
-      });
-      let result;
+      let outcome: SettledOutcome;
+      let kept: Released | undefined;
       try {
-        // dispatch 层：无进展 → 换控制器重试（≤3）；非 stall 失败不重试，直接抛回归类。
-        const outcome = await runStallResilient(
-          {
-            clock: this.clock,
-            stallMs,
-            dispatchWindowMs: this.gates.dispatchWindowMs,
-            dispatchTurns: this.gates.dispatchTurns,
-            parentSignal: context.controller.signal,
-            label: record.label,
-            onAttempt: reportAttempt,
-          },
-          async (signal, progress) => {
-            const toolContext: ToolContext = {
-              runId: context.runId,
-              dispatchId: record.id,
-              cwd,
-              mode,
-              signal,
-              run,
-              progress,
-            };
-            try {
-              // 这一跑的循环在模块自己手里：一轮一次模型往返，工具在飞挂起无进展计时。
-              return await runAgentPath({
-                adapter,
-                system,
-                prompt,
-                maxTokens: DEFAULT_OUTPUT_TOKENS,
-                ...(gated.model ? { model: gated.model } : {}),
-                signal,
-                progress,
-                toolNames,
-                context: toolContext,
-                maxRounds: this.gates.dispatchTurns,
-                ...(gated.schema ? { schema: gated.schema } : {}),
-              });
-            } finally {
-              // 随路收尸：这一路起出去的命令树（含后台）不许活过这一路。
-              await collectOwnerCommands({ runId: context.runId, dispatchId: record.id });
-            }
-          },
-        );
-        result = outcome.value;
-      } catch (error) {
-        // run 级终结打断在飞的等待：那不是这一路自己失败，绝不许在批里被降成 null。
-        if (isRunLevelError(error)) throw error;
-        return await this.settlePath(context, record, { ok: false, failure: classifyAdapterError(error) });
+        outcome = await this.attemptPath(context, record, adapter, prompt, gated, toolNames, mode, opened.cwd);
+      } finally {
+        // 有改动的件在这里定性：保留就把 path + branch 报出去，clean 才自动删。
+        if (opened.managedId) kept = await this.worktrees().release(opened.managedId).catch(() => undefined);
       }
-      context.spent += result.outputTokens;
-      if (gated.schema) {
-        // 结构化出口优先：经 structured_output 交回的对象就是该路结果。
-        if (result.hasStructured) {
-          return await this.settlePath(context, record, { ok: true, value: result.structured, outputTokens: result.outputTokens });
-        }
-        const structured = parseStructured(result.text);
-        if (!structured.ok) {
-          return await this.settlePath(context, record, { ok: false, failure: { kind: 'no_structured_output', message: structured.message } });
-        }
-        return await this.settlePath(context, record, { ok: true, value: structured.value, outputTokens: result.outputTokens });
-      }
-      if (!result.text || !result.text.trim()) {
-        return await this.settlePath(context, record, { ok: false, failure: silenceFailure('this agent') });
-      }
-      return await this.settlePath(context, record, { ok: true, value: result.text, outputTokens: result.outputTokens });
+      return await this.settlePath(context, record, this.withWorktreeNote(record, outcome, kept));
     });
+  }
+
+  /**
+   * 拿到这一路的边界。worktree = 模块新建并负责收；pinned = 借一块已注册的现成件，
+   * 只 rebind 不建不删（它的归属权在借出它的人手里，不在这里）。
+   */
+  private async openBoundary(context: RunContext, record: DispatchRecord, gated: GatedAgentOpts, boundary: PathBoundary): Promise<OpenedBoundary> {
+    const service = this.worktrees();
+    if (boundary === 'pinned') {
+      const pinned = await service.pin({ runId: context.runId, dispatchId: record.id, workingDir: gated.workingDir as string });
+      if (!pinned.ok) return { failure: { kind: 'error', message: pinned.message, reason: pinned.reason } };
+      return { cwd: pinned.path };
+    }
+    const made = await service.provision({ runId: context.runId, dispatchId: record.id, label: record.label });
+    if (!made.ok) return { failure: { kind: 'error', message: made.message, reason: made.reason } };
+    return { cwd: made.path, managedId: made.id };
+  }
+
+  /**
+   * 一路的执行段：看门狗与重试 → 结果归类。返回结算原料，不动任何机器件，
+   * 结算唯一出口在 settlePath（隔离回报要先于结算定下来）。
+   */
+  private async attemptPath(context: RunContext, record: DispatchRecord, adapter: ReturnType<AdapterFactory>, prompt: string, gated: GatedAgentOpts, toolNames: readonly string[], mode: ToolMode, cwd: string): Promise<SettledOutcome> {
+    const stallMs = resolveStallMs(gated.stallMs, this.gates.stallMs);
+    // 重试次数随每次尝试起跑即时落到 record（成功或耗尽判败都进该路终态记账）。
+    const reportAttempt = (n: number): void => { record.attempts = n; };
+    const run = runPaths(this.paths, context.runId);
+    const system = buildAgentSystemPrompt({
+      label: record.label,
+      cwd,
+      platform: process.platform,
+      toolNames,
+      mode,
+      isolated: mode === 'worktree',
+      schema: gated.schema !== undefined,
+    });
+    let result;
+    try {
+      // dispatch 层：无进展 → 换控制器重试（≤3）；非 stall 失败不重试，直接抛回归类。
+      const outcome = await runStallResilient(
+        {
+          clock: this.clock,
+          stallMs,
+          dispatchWindowMs: this.gates.dispatchWindowMs,
+          dispatchTurns: this.gates.dispatchTurns,
+          parentSignal: context.controller.signal,
+          label: record.label,
+          onAttempt: reportAttempt,
+        },
+        async (signal, progress) => {
+          const toolContext: ToolContext = {
+            runId: context.runId,
+            dispatchId: record.id,
+            cwd,
+            mode,
+            signal,
+            run,
+            progress,
+          };
+          try {
+            // 这一跑的循环在模块自己手里：一轮一次模型往返，工具在飞挂起无进展计时。
+            return await runAgentPath({
+              adapter,
+              system,
+              prompt,
+              maxTokens: DEFAULT_OUTPUT_TOKENS,
+              ...(gated.model ? { model: gated.model } : {}),
+              signal,
+              progress,
+              toolNames,
+              context: toolContext,
+              maxRounds: this.gates.dispatchTurns,
+              ...(gated.schema ? { schema: gated.schema } : {}),
+            });
+          } finally {
+            // 随路收尸：这一路起出去的命令树（含后台）不许活过这一路。
+            await collectOwnerCommands({ runId: context.runId, dispatchId: record.id });
+          }
+        },
+      );
+      result = outcome.value;
+    } catch (error) {
+      // run 级终结打断在飞的等待：那不是这一路自己失败，绝不许在批里被降成 null。
+      if (isRunLevelError(error)) throw error;
+      return { ok: false, failure: classifyAdapterError(error) };
+    }
+    context.spent += result.outputTokens;
+    if (gated.schema) {
+      // 结构化出口优先：经 structured_output 交回的对象就是该路结果。
+      if (result.hasStructured) return { ok: true, value: result.structured, outputTokens: result.outputTokens };
+      const structured = parseStructured(result.text);
+      if (!structured.ok) return { ok: false, failure: { kind: 'no_structured_output', message: structured.message } };
+      return { ok: true, value: structured.value, outputTokens: result.outputTokens };
+    }
+    if (!result.text || !result.text.trim()) return { ok: false, failure: silenceFailure('this agent') };
+    return { ok: true, value: result.text, outputTokens: result.outputTokens };
+  }
+
+  /**
+   * 有改动保留时把 path + branch 报出去：机器件逐字段记（索引与该路文件都读得到），
+   * 文本结果再补一行让脚本与汇总体看得见。schema 模式的对象一个字节都不动——
+   * 往结构化结果里塞宿主侧的尾巴会造出第二个真相源。
+   */
+  private withWorktreeNote(record: DispatchRecord, outcome: SettledOutcome, kept?: Released): SettledOutcome {
+    if (!kept) return outcome;
+    record.worktree = { path: kept.path, branch: kept.branch, preserved: kept.kept, ...(kept.branchPreserved ? { branchPreserved: true } : {}) };
+    if (!kept.kept || !outcome.ok || typeof outcome.value !== 'string') return outcome;
+    return { ...outcome, value: `${outcome.value}\n[worktree preserved: ${kept.path} (branch ${kept.branch})]` };
   }
 
   /**
@@ -756,7 +844,7 @@ export class WorkflowEngine {
   private async settlePath(
     context: RunContext,
     record: DispatchRecord,
-    outcome: { ok: true; value: unknown; outputTokens: number } | { ok: false; failure: SettledFailure },
+    outcome: SettledOutcome,
   ): Promise<unknown> {
     // 终态已宣告（或 run 级已封口）：迟归的那一路不再动任何机器件——
     // 索引 / 快照 / 终态标记必须彼此一致，"此后任何证据不再改动终态"。
@@ -808,6 +896,71 @@ export class WorkflowEngine {
    */
   private ownsRun(ownerSessionId: string, ownerCandidates: readonly string[]): boolean {
     return ownerCandidates.includes(ownerSessionId);
+  }
+
+  /**
+   * 写必隔离的执行体——首次用到才建：全程只读的 run 不该碰一次 git。
+   * 配额两档取本机设置面（§8-I4），审计走引擎同一条汇，actor 换成这条 run 的归属会话。
+   */
+  private worktrees(): WorktreeService {
+    if (this.deps.worktrees) return this.deps.worktrees;
+    if (!this.worktreeService) {
+      this.worktreeService = new WorktreeService({
+        worktreesRoot: this.paths.worktreesRoot,
+        workspaceDir: this.deps.workspaceDir,
+        gates: { keepQuotaCount: this.gates.keepQuotaCount, keepQuotaBytes: this.gates.keepQuotaBytes },
+        clock: this.clock,
+        audit: (event) => this.auditWorktree(event),
+      });
+    }
+    return this.worktreeService;
+  }
+
+  private auditWorktree(event: WorktreeAuditEvent): void {
+    const failed = event.result === 'blocked' || event.result === 'failed' || event.result === 'not-found';
+    this.deps.audit?.({
+      runId: event.runId,
+      action: event.action,
+      actor: this.runs.get(event.runId)?.index.ownerSessionId ?? event.actor,
+      status: failed ? 'failed' : 'completed',
+      reason: [...(event.reasons ?? []), event.result].filter(Boolean).join(':'),
+      at: this.clock.iso(),
+      ...(event.detail ? { detail: event.detail } : {}),
+    });
+  }
+
+  /**
+   * Worktrees 面板的读面（#231 AC8）：保留项清单。
+   * 每次从登记簿重读——冷启动与重启后同一份真相，不看进程内存。
+   */
+  async preservedWorktrees() {
+    const service = this.worktrees();
+    await service.load();
+    return service.preserved();
+  }
+
+  /** 配额档位：面板那一行告警与审计事件出自同一次判定。 */
+  async worktreeQuota() {
+    const service = this.worktrees();
+    return await service.quotaSummary();
+  }
+
+  /**
+   * 唯一减法 = 人：面板上的丢弃（合并是 git 的活，人在那儿做；这里只给显式删除，审计留痕）。
+   * actor 是按下按钮的那个人（会话 id / 'tui'），不是 run 的归属。
+   */
+  async discardWorktree(id: string, actor: string): Promise<{ ok: true; path: string; branch: string } | { ok: false; reason: string; message: string }> {
+    const service = this.worktrees();
+    await service.load();
+    return await service.discard(id, actor);
+  }
+
+  /** 可选自动归档（默认关）：接线方（定时器 / 面板）按设置调用；关着就一条都不动。 */
+  async archiveWorktreesDue(): Promise<{ id: string; ok: boolean; message?: string }[]> {
+    if (!this.gates.autoArchive) return [];
+    const service = this.worktrees();
+    await service.load();
+    return await service.archiveDue({ autoArchive: true, archiveAfterDays: this.gates.archiveAfterDays });
   }
 
   /** 协作式暂停的等待闸：非暂停即空过；暂停则挂起，直到 resume 释放。 */
@@ -978,6 +1131,9 @@ export class WorkflowEngine {
     await this.deliverSettledNotice(context, notice);
     // 终态即让位：续跑取到的排他锁在此释放；崩溃留下的锁文件（进程已死）由下次 resume 依 pid+epoch 接管。
     if (context.lock) await releaseResumeLock(context.run.lockFile, context.lock).catch(() => undefined);
+    // 可选自动归档（默认关）的触发位：结算之后、绝不影响终态。开着且确有超期保留项时才动 git，
+    // 关着时这是一条空转；任何故障都只留审计痕，不改判、不阻塞结算（§12 执行者节律：结算路径实时那一档）。
+    if (this.gates.autoArchive) void this.archiveWorktreesDue().catch(() => undefined);
     return context.index;
   }
 

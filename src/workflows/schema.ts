@@ -62,8 +62,13 @@ export type DispatchRecord = {
   outputTokens: number;
   error?: { kind: string; message: string; reason?: string };
   result?: unknown;
-  /** 该路声明的隔离形态（标记而已，隔离执行属 T8）。 */
+  /** 该路声明的隔离形态（worktree 路与 pin 路都记在这里，与键同源）。 */
   isolation?: string;
+  /**
+   * 这一路的边界账：件在哪、落在哪个分支、收场时留下了没有。
+   * preserved = 有改动待人处置（合并或丢弃），路径与分支就是回报的两项。
+   */
+  worktree?: { path: string; branch: string; preserved: boolean; branchPreserved?: boolean };
   phase?: string;
   model?: string;
   effort?: string;

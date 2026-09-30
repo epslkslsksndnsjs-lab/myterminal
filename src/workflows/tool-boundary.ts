@@ -8,8 +8,8 @@ import { realpathSync } from 'node:fs';
  *   词法段（拼路径 + 相对化判越界）挡得住 `../` 与绝对路径直书；
  *   但界内的 symlink 可以指向界外，词法看完全干净、真身已经在外面——所以 realpath 段
  *   必须把两端都求次实路径再相对化比一次。
- * 目标尚不存在时 realpath 无从求起（新文件是正当写入目标），此时退回词法判定；
- * 词法已经过关才允许这么退，绝不反过来放越界。
+ * 目标尚不存在（写新文件是正当动作）时不代表没得查：realpath 段查的是它**最深的那个已存在祖先**，
+ * 祖先在界外即拒。只有整条链都不存在（含边界本身未落盘）才退回词法判定——那不是放行，是第二段无从可比。
  *
  * 归属边界 = 这一跑的 cwd（只读面是工作区，隔离面是那一跑的 worktree），不是宿主进程目录。
  */
@@ -43,18 +43,36 @@ export function resolveToolPath(value: unknown, cwd: string, field = 'path'): st
   if (escapes(cwd, resolved)) {
     throw new ToolBoundaryError(`${field} "${value}" is outside the working directory "${cwd}".`);
   }
-  let realTarget: string;
   let realCwd: string;
   try {
-    realTarget = realpathSync(resolved);
     realCwd = realpathSync(cwd);
   } catch {
-    // 至少一端还没有真身（新建文件是正当的写入目标，realpath 无从求起）：
-    // 此时词法段就是唯一可做的判定，放过它——不是静默，是没有第二段可比。
+    // 连边界自己都没有真身（尚未落盘的目录）：第二段无从可比，词法段就是全部判定。
     return resolved;
   }
+  // 求次实的对象是"最深的那个已存在环节"：写新文件时目标本身还不存在，但它的父目录在不在界外
+  // 是可以问磁盘的。只问目标存不存在就会放过"界内 symlink 目录 / 界外真身 / 新文件"这条逃逸路。
+  const deepest = deepestExisting(resolved);
+  if (deepest === undefined) return resolved;
+  const realTarget = realpathSync(deepest);
   if (escapes(realCwd, realTarget)) {
-    throw new ToolBoundaryError(`${field} "${value}" reaches outside the working directory through a symlink (real path "${realTarget}").`);
+    const via = deepest === resolved ? 'a symlink' : `a symlink or mount point at "${deepest}"`;
+    throw new ToolBoundaryError(`${field} "${value}" reaches outside the working directory through ${via} (real path "${realTarget}").`);
   }
   return resolved;
+}
+
+/** 从目标往上找到第一个真实存在的环节；整条链都不存在时返回 undefined。 */
+function deepestExisting(target: string): string | undefined {
+  let probe = target;
+  for (;;) {
+    try {
+      realpathSync(probe);
+      return probe;
+    } catch {
+      const parent = path.dirname(probe);
+      if (parent === probe) return undefined;
+      probe = parent;
+    }
+  }
 }

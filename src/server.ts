@@ -338,6 +338,28 @@ export class MyTerminalRuntime {
     return listAllSubagents();
   }
 
+  /**
+   * #231：TUI Worktrees tab 数据源——保留项清单与配额档位。
+   * 引擎此刻可能还没建（端点未配即无引擎），所以与 reducer 两侧一样惰性查找；
+   * 档位与审计事件出自同一次判定，屏上说的和账上记的是同一把尺。
+   */
+  listWorktrees() {
+    const engine = getWorkflowEngine();
+    return engine ? engine.preservedWorktrees() : Promise.resolve([]);
+  }
+
+  worktreeQuota() {
+    const engine = getWorkflowEngine();
+    return engine ? engine.worktreeQuota() : Promise.resolve(null);
+  }
+
+  /** 唯一减法 = 人：面板上的显式丢弃（审计留痕在模块侧出）。 */
+  discardWorktree(id: string, actor: string) {
+    const engine = getWorkflowEngine();
+    if (!engine) return Promise.resolve({ ok: false as const, reason: 'workflow-not-wired', message: 'The workflows module is not wired, so no worktree can be disposed.' });
+    return engine.discardWorktree(id, actor);
+  }
+
   runtimeLogRevision(): number { return this.runtimeLogRevisionValue; }
 
   private logAuditEvent(event: ToolAuditEvent): void {

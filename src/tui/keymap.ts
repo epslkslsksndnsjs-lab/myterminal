@@ -19,6 +19,7 @@ type Actions = {
   refreshDiff: () => void | Promise<void>;
   addExtension: () => void | Promise<void>;
   removeExtension: () => void | Promise<void>;
+  discardWorktree: () => void | Promise<void>;
   configure: () => void | Promise<void>;
   rotateCredentials: () => void | Promise<void>;
   updateApplication: () => void | Promise<void>;
@@ -60,7 +61,7 @@ export function useAppKeymap(actions: Actions): void {
     priority: 200,
     enabled: enabled && !detail && !inputEditing,
     bindings: [
-      ...([1, 2, 5].includes(tab) ? [
+      ...([1, 2, 5, 9].includes(tab) ? [
         { key: 'down', cmd: command(() => actions.moveSelection(1)) },
         { key: 'up', cmd: command(() => actions.moveSelection(-1)) },
         { key: 'j', cmd: command(() => actions.moveSelection(1)) },
@@ -89,8 +90,10 @@ export function useAppKeymap(actions: Actions): void {
       ] : []),
       ...(tab === 6 ? [{ key: 'k', cmd: command(actions.rotateCredentials) }, { key: 'u', cmd: command(actions.updateApplication) }] : []),
       ...(tab === 7 ? [{ key: 'a', cmd: command(actions.toggleAudit) }] : []),
+      // #231 Worktrees 面板：唯一减法 = 人 —— x 显式丢弃所选保留项
+      ...(tab === 9 ? [{ key: 'x', cmd: command(actions.discardWorktree) }] : []),
     ],
-  }), [enabled, detail, tab, inputEditing, actions.moveSelection, actions.open, actions.createSession, actions.sessionAction, actions.sendMessage, actions.refreshDiff, actions.addExtension, actions.removeExtension, actions.configure, actions.rotateCredentials, actions.updateApplication, actions.toggleAudit]);
+  }), [enabled, detail, tab, inputEditing, actions.moveSelection, actions.open, actions.createSession, actions.sessionAction, actions.sendMessage, actions.refreshDiff, actions.addExtension, actions.removeExtension, actions.discardWorktree, actions.configure, actions.rotateCredentials, actions.updateApplication, actions.toggleAudit]);
 
   // layer 100: global shortcuts (disabled when inputEditing)
   useBindings(() => ({

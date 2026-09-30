@@ -289,6 +289,41 @@ const mutations = [
   { name: 'WF-205: pause 不把 paused 落 index.status（T6 读侧冻结等待预算失去依据）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: "context.index = { ...context.index, status: 'paused' };", replace: "context.index = { ...context.index, status: 'running' };" },
   { name: 'WF-206: cancel 不以 cancelled 终结（在飞按墙钟归因，取消语义失真）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: "this.terminate(context, 'cancelled', 'Workflow run cancelled by its owner.');", replace: "this.terminate(context, 'run-gate', 'x');" },
   { name: 'WF-207: 汇总体用量第三档不累加（reducer 账永远为 0）', file: 'src/workflows/reducer.ts', tests: 'test/issue-230-*.test.mjs', find: 'reducerTokens: { spent: (index.reducerTokens?.spent ?? 0) + Math.floor(outputTokens) }', replace: 'reducerTokens: { spent: (index.reducerTokens?.spent ?? 0) + 0 }' },
+
+  // ── src/workflows/ + tui 面板 (T8 #231) — 写必隔离：工具面随边界变 / 闸门在任何副作用之前 / 竞态纪律 / 四层配额 / 保留与处置 ──
+  // 每条对应票面一条钉死语义，全部由 test/issue-231-*.test.mjs 行为杀（非仅编译杀）。
+  { name: 'WF-300: 未标隔离的写请求不再被拦（直接烧 token）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: 'const unisolatedWrite = boundary === undefined && requestedWriteToolNames(gated.tools).length > 0;', replace: 'const unisolatedWrite = false;' },
+  { name: 'WF-301: 工具面不跟边界走（写工具在只读面也可见）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: "const gatedMode: ToolMode = boundary ? 'worktree' : 'read-only';", replace: "const gatedMode: ToolMode = 'read-only';" },
+  { name: 'WF-302: 写工具自身的模式硬闸移除（不靠提示词那句失效）', file: 'src/workflows/tool-write.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (context.mode === \'worktree\') return undefined;', replace: '    return undefined;' },
+  { name: 'WF-303: apply_patch 多处命中不再拒（改错地方还自称成功）', file: 'src/workflows/tool-write.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (matches > 1) {', replace: '    if (false) {' },
+  { name: 'WF-304: realpath 段只看目标不看祖先（symlink 目录下的新文件成逃逸口）', file: 'src/workflows/tool-boundary.ts', tests: 'test/issue-231-*.test.mjs', find: '  const deepest = deepestExisting(resolved);', replace: '  const deepest = realpathSync(resolved);' },
+  { name: 'WF-305: 脏树闸门移除（在有人未提交的工作上 branching）', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (await hasUncommittedChanges(this.git, repoRoot)) {', replace: '    if (false) {' },
+  { name: 'WF-306: worktree 套 worktree 闸门移除', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (isWithinBoundary(repoRoot, this.worktreesRoot)) {', replace: '    if (false) {' },
+  { name: 'WF-307: 硬上限判据放宽一格（第 51 件仍照建）', file: 'src/workflows/worktree-quota.ts', tests: 'test/issue-231-*.test.mjs', find: '  if (input.preservedCount >= input.gates.keepQuotaCount) blocked.push(\'keep-quota-count\');', replace: "  if (input.preservedCount > input.gates.keepQuotaCount) blocked.push('keep-quota-count');" },
+  { name: 'WF-308: 磁盘可用下界归零（只剩 0 字节也敢建）', file: 'src/workflows/worktree-quota.ts', tests: 'test/issue-231-*.test.mjs', find: 'export const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;', replace: 'export const MIN_FREE_BYTES = 0;' },
+  { name: 'WF-309: 软阈值比例改成 1（配额告警永远不响）', file: 'src/workflows/worktree-quota.ts', tests: 'test/issue-231-*.test.mjs', find: 'export const QUOTA_SOFT_THRESHOLD_RATIO = 0.8;', replace: 'export const QUOTA_SOFT_THRESHOLD_RATIO = 1.6;' },
+  { name: 'WF-310: 计数口径把在建的也算进去（自己把自己拒掉）', file: 'src/workflows/worktree-quota.ts', tests: 'test/issue-231-*.test.mjs', find: "  const kept = entries.filter((entry) => entry.state === 'preserved');", replace: "  const kept = entries.filter((entry) => entry.state !== 'removed');" },
+  { name: 'WF-311: 删除不走 fence（clean 检查与删除之间留窗口）', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '      fs.renameSync(worktreePath, path.join(this.worktreesRoot, WORKTREE_TRASH_DIR, id));\n      return true;', replace: '      fs.rmSync(worktreePath, { recursive: true, force: true });\n      return true;' },
+  { name: 'WF-312: 派生检查抛错按"删除"处理（丢工作）', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '    } catch {\n      return true;\n    }\n    try {\n      if (!fs.existsSync(entry.path)) return false;', replace: '    } catch {\n      return false;\n    }\n    try {\n      if (!fs.existsSync(entry.path)) return false;' },
+  { name: 'WF-313: 销毁谓词不再把 stderr 当成有活', file: 'src/workflows/worktree-git.ts', tests: 'test/issue-231-*.test.mjs', find: "  if (result.stderr.trim() !== '') return true;\n  for (const line of result.stdout.split('\n')) {\n    if (line.trim() === '') continue;\n    const status = line.slice(0, 2);", replace: "  for (const line of result.stdout.split('\n')) {\n    if (line.trim() === '') continue;\n    const status = line.slice(0, 2);" },
+  { name: 'WF-314: 公共前缀丢掉 gc.auto=0（并发 gc 互踩对象库）', file: 'src/workflows/worktree-git.ts', tests: 'test/issue-231-*.test.mjs', find: "export const GIT_NO_GC_ARGS: readonly string[] = ['-c', 'gc.auto=0', '--no-optional-locks'];", replace: 'export const GIT_NO_GC_ARGS: readonly string[] = [];' },
+  { name: 'WF-315: 重试不再共享同一件（per-dispatch 退化成 per-attempt）', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: "      if (existing && (existing.state === 'starting' || existing.state === 'active')) {", replace: '      if (false) {' },
+  { name: 'WF-316: 同 id 重复登记静默覆盖（两件活记成一件）', file: 'src/workflows/worktree-registry.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (this.items.has(input.id)) throw new Error(', replace: '    if (false) throw new Error(' },
+  { name: 'WF-317: 登记簿未 load 就给空账（配额与面板看到零保留）', file: 'src/workflows/worktree-registry.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (!this.loaded) throw new Error(', replace: '    if (false) throw new Error(' },
+  { name: 'WF-318: 隔离路的 cwd 不挪到那块件（写回共享工作区）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: '        outcome = await this.attemptPath(context, record, adapter, prompt, gated, toolNames, mode, opened.cwd);', replace: '        outcome = await this.attemptPath(context, record, adapter, prompt, gated, toolNames, mode, this.deps.workspaceDir);' },
+  { name: 'WF-319: 交付不出隔离件仍照跑这一路（fail-open）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: "      if ('failure' in opened) {", replace: '      if (false) {' },
+  { name: 'WF-320: 结算前不收场（worktree 永不删也永不保留定性）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: '        if (opened.managedId) kept = await this.worktrees().release(opened.managedId).catch(() => undefined);', replace: '        void opened.managedId;' },
+  { name: 'WF-321: 有改动不回报 path + branch（机器件里丢掉边界账）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (!kept) return outcome;', replace: '    if (true) return outcome;' },
+  { name: 'WF-322: 归档校验不过也删目录（把"无损可恢复"删掉了)', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '        if (!bundled.ok) {', replace: '        if (false) {' },
+  { name: 'WF-323: 自动归档不再默认关', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (!options.autoArchive) return [];', replace: '    if (false) return [];' },
+  { name: 'WF-324: pin 不查 git 注册表（目录存在就当 worktree）', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: '      if (!(await isRegisteredLinkedWorktree(this.git, repoRoot, pinned))) {', replace: '      if (false) {' },
+  { name: 'WF-325: 配额拒建的审计不落账', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: "      this.recordQuota('worktree-quota-blocked', runId, 'blocked', quota);", replace: '      void quota;' },
+  { name: 'WF-326: 审计 actor 不再换成 run 归属（谁起的查不出来）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: '      actor: this.runs.get(event.runId)?.index.ownerSessionId ?? event.actor,', replace: '      actor: event.actor,' },
+  { name: 'WF-327: 人工丢弃不留审计痕', file: 'src/workflows/worktree-service.ts', tests: 'test/issue-231-*.test.mjs', find: "      this.audit?.({ action: 'worktree_discard', runId: entry.runId, actor, result: 'discarded',", replace: '      void entry;' },
+  { name: 'WF-328: 面板字节口径不做单位换算（1536 显示成 1536 B）', file: 'src/tui/controller-logic.ts', tests: 'test/issue-231-*.test.mjs', find: '  while (scaled >= 1024 && index < SIZE_UNITS.length - 1) {', replace: '  while (false && scaled >= 1024 && index < SIZE_UNITS.length - 1) {' },
+  { name: 'WF-330: 结算后的自动归档接线移除（开了设置也不归档）', file: 'src/workflows/engine.ts', tests: 'test/issue-231-*.test.mjs', find: '    if (this.gates.autoArchive) void this.archiveWorktreesDue().catch(() => undefined);', replace: '    void this.gates.autoArchive;' },
+  { name: 'WF-329: 软阈值告警在 TUI 侧不可见（只留审计一条腿）', file: 'src/tui/controller-logic.ts', tests: 'test/issue-231-*.test.mjs', find: "  return level === 'warn' || level === 'blocked';", replace: '  return false;' },
+
 ];
 
 let killedByTest = 0;
@@ -307,7 +342,7 @@ const TEST_GLOB = 'test/*.test.mjs';
  *     自动回退到 workflows 测试（issue-224..228），其余回退全量。
  * 不做"全局排除 e2e"——cluster/mcp 类变异的杀手测试恰是集成测试，排掉会漏杀。
  */
-const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs test/issue-228-*.test.mjs';
+const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs test/issue-228-*.test.mjs test/issue-229-*.test.mjs test/issue-230-*.test.mjs test/issue-231-*.test.mjs';
 const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，

@@ -8,13 +8,15 @@ describe('TUI state pure functions', () => {
   const dark = themeFor('dark');
   const light = themeFor('light');
 
-  test('TABS contains all 9 pages', () => {
-    assert.equal(TABS.length, 9);
+  // #231 显式漂移更新：Worktrees 面板随 T8 交付，页签从 9 张变 10 张（数字键绑定跟着 TABS.length 走）。
+  test('TABS contains all 10 pages', () => {
+    assert.equal(TABS.length, 10);
     assert.ok(TABS.includes('Overview'));
     assert.ok(TABS.includes('Sessions'));
     assert.ok(TABS.includes('Settings'));
     assert.ok(TABS.includes('Logs'));
     assert.ok(TABS.includes('Subagents'));
+    assert.ok(TABS.includes('Worktrees'));
   });
 
   test('phaseColor: completed → good', () => {

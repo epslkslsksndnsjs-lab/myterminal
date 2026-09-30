@@ -1,6 +1,7 @@
 import { MODULE_FLOOR_TOOLS, canonicalAgentToolName } from './agent-opts.js';
 import { READ_ONLY_TOOLS } from './tool-readonly.js';
 import { EXECUTE_TOOLS } from './tool-execute.js';
+import { WRITE_TOOLS } from './tool-write.js';
 import type { RunPaths } from './paths.js';
 import type { StallProgress } from './stall.js';
 import type { ToolMode } from './tool-command.js';
@@ -45,8 +46,8 @@ export type AgentTool = {
   run(input: Record<string, unknown>, context: ToolContext): Promise<ToolPayload>;
 };
 
-/** 本票交付的可执行面：只读文件工具 + 执行工具。写类随隔离票接入同一张表。 */
-export const TOOL_CATALOGUE: readonly AgentTool[] = [...READ_ONLY_TOOLS, ...EXECUTE_TOOLS];
+/** 全部可执行面：只读集 + 执行集 + 写集。表只有一张，面随模式收窄。 */
+export const TOOL_CATALOGUE: readonly AgentTool[] = [...READ_ONLY_TOOLS, ...EXECUTE_TOOLS, ...WRITE_TOOLS];
 
 /** 名字 → 工具；面与表同源，查不到即"面与表不一致"的程序错，不是运行期形态。 */
 const CATALOGUE_BY_NAME = new Map(TOOL_CATALOGUE.map((tool) => [tool.name, tool]));
@@ -54,10 +55,18 @@ const CATALOGUE_BY_NAME = new Map(TOOL_CATALOGUE.map((tool) => [tool.name, tool]
 /** 结构化出口的出口名（schema 模式由工具面自动补上，脚本不能点名要它）。 */
 export const STRUCTURED_OUTPUT_TOOL = 'structured_output';
 
-/** 写类工具名：默认只读面上一条都不许出现，隔离面才可见。 */
-export const WRITE_ONLY_TOOL_NAMES: readonly string[] = MODULE_FLOOR_TOOLS
-  .filter((tool) => tool.name === 'write_file' || tool.name === 'apply_patch')
-  .map((tool) => tool.name);
+/** 写类工具名：默认只读面上一条都不许出现，隔离面才可见（与表同源，按 write 标记派生）。 */
+export const WRITE_ONLY_TOOL_NAMES: readonly string[] = TOOL_CATALOGUE.filter((tool) => tool.write).map((tool) => tool.name);
+
+/**
+ * 脚本这次请求里点名要了哪些写工具（展示名 / 拼写名互认，与缓存键同一口径）。
+ * 写必隔离的判定吃这个：请求写而不标 isolation:'worktree' 的路在烧 token 前就该判败。
+ */
+export function requestedWriteToolNames(tools: readonly string[] | undefined): string[] {
+  if (!tools) return [];
+  const writes = new Set(WRITE_ONLY_TOOL_NAMES);
+  return [...new Set(tools.map((name) => canonicalAgentToolName(name)).filter((name) => writes.has(name)))];
+}
 
 /** floor 禁令：这些名字出现在工具面上即结构性违规。 */
 export const FLOOR_FORBIDDEN_TOOL_NAMES: readonly string[] = [
@@ -99,10 +108,14 @@ export const ATOMIC_VERBS: readonly string[] = ['read', 'list', 'find', 'search'
 export type FaceRefusal = { reason: string; message: string };
 export type FaceResolution = { names: string[]; refusal?: undefined } | { names?: undefined; refusal: FaceRefusal };
 
-/** 模块自有的 agent 形态表：agentType 只能选这里登记过的名字，它给的是上界。 */
+/**
+ * 模块自有的 agent 形态表：agentType 只能选这里登记过的名字，它给的是上界。
+ * 上界含写工具不等于写工具可见——写类工具随模式收窄（只读面一条都不露），
+ * 所以 reader 那份不含写工具的档案即使声明隔离也照样拿不到写权限。
+ */
 export const DEFAULT_AGENT_TYPE = 'workflow-agent';
 export const AGENT_PROFILES: Readonly<Record<string, readonly string[]>> = {
-  [DEFAULT_AGENT_TYPE]: ['read_file', 'read_file_range', 'list_dir', 'find_files', 'search_text', 'execute_cli'],
+  [DEFAULT_AGENT_TYPE]: ['read_file', 'read_file_range', 'list_dir', 'find_files', 'search_text', 'execute_cli', 'write_file', 'apply_patch'],
   reader: ['read_file', 'read_file_range', 'list_dir', 'find_files', 'search_text'],
 };
 

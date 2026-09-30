@@ -252,3 +252,79 @@ export function sessionActionOptions(session: Pick<MyTerminalSession, 'phase'>):
   const terminal = ['completed', 'cancelled'].includes(session.phase);
   return { terminal, actions: terminal ? ['context', 'delete', 'continue'] : ['copy', 'revoke', 'cancel', 'context', 'delete'] };
 }
+
+/**
+ * Worktrees 面板（#231 / ADR-0052 §11④d）——保留项列表的装配与配额告警文案。
+ *
+ * 面板只做两件人才能做的事：看（runId / 路径 / 分支 / 大小 / 时间）与减（合并或丢弃）。
+ * 这里刻意不产生任何动作，纯排版与判定——有改动的件永不自动删，删除的按钮在屏幕上，
+ * 按下它的人是人。
+ */
+
+export type WorktreePanelEntry = {
+  id: string;
+  runId: string;
+  path: string;
+  branch: string;
+  bytes?: number;
+  at: string;
+};
+
+export type WorktreePanelRow = { id: string; runId: string; path: string; branch: string; size: string; at: string };
+
+const SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const;
+
+/** 字节的人类可读口径：1024 进制逐级降档，最多一位小数，整数不带".0"。 */
+export function formatWorktreeBytes(bytes: number | undefined): string {
+  let scaled = Math.max(0, Math.floor(bytes ?? 0));
+  let index = 0;
+  while (scaled >= 1024 && index < SIZE_UNITS.length - 1) {
+    scaled = Math.round((scaled / 1024) * 10) / 10;
+    index += 1;
+  }
+  return `${Number.isInteger(scaled) ? scaled : scaled.toFixed(1)} ${SIZE_UNITS[index]}`;
+}
+
+export function worktreePanelRows(entries: readonly WorktreePanelEntry[]): WorktreePanelRow[] {
+  return entries.map((entry) => ({
+    id: entry.id,
+    runId: entry.runId,
+    path: entry.path,
+    branch: entry.branch,
+    size: formatWorktreeBytes(entry.bytes),
+    at: entry.at,
+  }));
+}
+
+/** 配额档位是否需要在屏幕上说一句（ok 之外都说）。 */
+export function isWorktreeQuotaWarning(level: string): boolean {
+  return level === 'warn' || level === 'blocked';
+}
+
+export type WorktreeQuotaSummary = {
+  level: 'ok' | 'warn' | 'blocked';
+  reasons: readonly string[];
+  preservedCount: number;
+  preservedBytes: number;
+  keepQuotaCount: number;
+  keepQuotaBytes: number;
+};
+
+/**
+ * 软阈值告警与硬上限拒建的屏上一句：带配额两个读数与具名理由，
+ * 并且把"旧的绝不自动删、减由人来"这句写在同一行——看见告警的人要同时知道下一步做什么。
+ */
+export function describeQuotaWarning(summary: WorktreeQuotaSummary, t: Translate): string {
+  const reasons = summary.reasons.join(', ');
+  const counts = `${summary.preservedCount}/${summary.keepQuotaCount} · ${formatWorktreeBytes(summary.preservedBytes)}/${formatWorktreeBytes(summary.keepQuotaBytes)}`;
+  if (summary.level === 'blocked') {
+    return t(
+      `Worktree quota reached (${reasons}) · ${counts} — new isolated paths are refused and nothing old is deleted automatically. Merge or discard a kept worktree in this panel.`,
+      `worktree 配额到线（${reasons}）· ${counts} — 拒绝新建，且拒绝新建绝不删旧。请在本面板合并或丢弃保留项。`,
+    );
+  }
+  return t(
+    `Worktree quota approaching its ceiling (${reasons}) · ${counts} — new paths still open, but nothing old is ever deleted automatically: merge or discard in this panel.`,
+    `worktree 配额接近上限（${reasons}）· ${counts} — 仍可新建，但旧的绝不自动删：请在本面板合并或丢弃保留项。`,
+  );
+}

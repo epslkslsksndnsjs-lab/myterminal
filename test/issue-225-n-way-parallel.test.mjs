@@ -829,7 +829,7 @@ test('AC7 终态只有机器三态：终态标记与索引状态一致', async (
 // AC8 isolation 标记透传与记账（隔离实现属 T8）
 // ═══════════════════════════════════════════════════════════════
 
-test('AC8 isolation:worktree 透传到派发记账并进键，但不建 worktree', async () => {
+test('AC8 isolation:worktree 透传到派发记账并进键（#231 起还要真交付隔离件）', async () => {
   const temp = tempWorkspace();
   const model = scripted();
   const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 2 });
@@ -847,7 +847,10 @@ return 1;`,
   assert.notEqual(keys[0], keys[1], 'isolation 是行为相关项：进键');
   const perPath = JSON.parse(await fs.promises.readFile(path.join(runPaths(temp.paths, started.runId).agentsDir, 'd0001.json'), 'utf8'));
   assert.equal(perPath.isolation, 'worktree');
-  assert.equal(fs.existsSync(path.join(temp.managedRoot, 'worktrees')), false, 'T2 只做透传与记账，隔离创建属 T8');
+  // #231 起这一路真走隔离闸门：这个临时工作区不是 git 仓库，闸门在任何资源副作用之前拒掉，
+  // 所以隔离区既不落地、这一路也具名判败（T2 当时锁的是"尚未实现"，实现后按闸门口径重锁）。
+  assert.equal(fs.existsSync(path.join(temp.managedRoot, 'worktrees')), false, '被拒的创建不落地任何目录');
+  assert.ok(['worktree-not-a-repository', 'worktree-git-unavailable'].includes(index.dispatches[0].error.reason), index.dispatches[0].error.message);
 });
 
 // ═══════════════════════════════════════════════════════════════

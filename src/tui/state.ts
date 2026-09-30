@@ -17,7 +17,7 @@ import { CURRENT_VERSION } from '../version.js';
 import { commandPassiveLock, passiveLockStatus } from '../session-resources.js';
 import { runtimeSettingsSnapshot } from '../runtime-settings.js';
 
-export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents'] as const;
+export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents', 'Worktrees'] as const;
 export type Tab = (typeof TABS)[number];
 export type { Ask, Detail, FormQuestion, RuntimeReconfigure, RuntimeReconfigureResult } from './contracts.js';
 import type { Ask, Detail, RuntimeReconfigure } from './contracts.js';
@@ -268,6 +268,24 @@ export class TuiController {
     if (!answers?.[0]) return;
     const result = await this.currentRuntime.extensions.registerFromTui({ action: 'remove', name: answers[0] });
     this.currentRuntime.log(result.ok ? `Removed extension ${answers[0]}` : result.error?.message || 'Extension removal failed', result.ok ? 'info' : 'error');
+  }
+
+  /**
+   * Worktrees 面板的丢弃（#231：唯一减法 = 人）。
+   * 显式二次确认——有改动的件是别人留下的工作，误删不可逆（分支没合并时 git 会拒删分支，
+   * 那条留下的分支是唯一的恢复线索，所以确认文案里把它说清楚）。
+   */
+  async discardWorktree(id: string | undefined, ask: Ask): Promise<void> {
+    if (!id) return;
+    const answers = await ask([
+      { label: this.text(`Discard ${id}? Unmerged work in it is deleted. The branch stays if it holds commits.`, `丢弃 ${id}？其中未合并的改动会被删除；若分支上有提交，分支保留。`), fallback: 'no', options: ['yes', 'no'] },
+    ]);
+    if (!answers?.[0] || answers[0].toLowerCase() !== 'yes') return;
+    const result = await this.currentRuntime.discardWorktree(id, 'tui');
+    this.currentRuntime.log(
+      result.ok ? `Discarded worktree ${id}` : ('message' in result ? result.message : `Worktree discard failed for ${id}`),
+      result.ok ? 'info' : 'error',
+    );
   }
 
   async editSettings(ask: Ask): Promise<void> {

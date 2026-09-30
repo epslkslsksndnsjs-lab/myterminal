@@ -82,6 +82,7 @@ function engineFor(temp, options = {}) {
     audit: () => { /* 本票不重述审计契约 */ },
     adapterFactory: options.adapterFactory,
     gates: options.gates,
+    ...(options.worktrees ? { worktrees: options.worktrees } : {}),
     concurrencyWindow: options.concurrencyWindow ?? 2,
   });
   return { engine, clock };
@@ -227,16 +228,20 @@ test('AC2 模型硬要扇出即被当面拒：错误载荷回给模型，这一�
   assert.match(refused.available, /read_file/);
 });
 
-test('AC2 只读面点名要写工具 = 形状错：零 token、不占缓存键位、不进失败清单', async () => {
+test('AC2 只读面点名要写工具 = 该路判败（#231 钉下的承载态）：零 token、进索引与失败清单、run 继续', async () => {
   const temp = tempWorkspace();
   const model = scriptedModel(() => done('only the clean path ran'));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates() });
-  const { index } = await settle(temp, engine, `let why = 'no-throw';\ntry { await agent('wanting writes', { tools: ['write_file'], label: 'W' }); } catch (error) { why = String(error.message); }\nconst a = await agent('caught ' + why.slice(0, 60), { label: 'C' });\nreturn { a, why };`);
+  const { index } = await settle(temp, engine, `const a = await agent('wanting writes', { tools: ['write_file'], label: 'W' });\nconst b = await agent('reads', { label: 'C' });\nreturn { a, b };`);
   assert.equal(model.sawPrompt('wanting writes'), false, '烧 token 之前就拒了');
   assert.equal(model.calls.length, 1, '只有合规的那一路跑了');
-  assert.deepEqual(index.dispatches.map((record) => record.label), ['C'], '被拒的形状错不占键位');
-  assert.deepEqual(index.failures, [], '形状错不进失败清单');
-  assert.match(model.calls[0].prompt, /caught agent\(\): write_file cannot run/, '拒因走得到脚本侧');
+  // #231 之前的口径是"形状错、不占键位、不进清单"；票面把承载态钉成了该路失败记账（null 语义）。
+  assert.deepEqual(index.dispatches.map((record) => record.label), ['W', 'C'], '判败那一路照样占位记入索引');
+  assert.equal(index.dispatches[0].status, 'failed');
+  assert.equal(index.dispatches[0].error.reason, 'isolation-required');
+  assert.deepEqual(index.failures.map((entry) => entry.label), ['W'], '该路失败进失败清单');
+  assert.equal(index.status, 'completed', '一路判败不升成 run 级终结');
+  assert.equal(index.tokens.spent, 3, 'W 那一路一个 token 都没烧');
 });
 
 test('AC2 收窄只减不增：tools / disallowedTools / agentType 都落到派发面，越上界即拒', async () => {
@@ -327,8 +332,10 @@ test('AC4 每路 system 消息各自成文：角色 / 工具用法 / 环境 / �
 test('AC4 schema 路与隔离路各拿到自己的追加项', async () => {
   const temp = tempWorkspace();
   const model = scriptedModel((request, n) => (request.prompt === 'schema path' && n === 1 ? toolUse('u1', 'structured_output', { verdict: 'ok' }) : done('plain')));
-  const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates() });
-  const { index } = await settle(temp, engine, `const out = await parallel([() => agent('schema path', { schema: ${JSON.stringify(SCHEMA)}, label: 'S' }), () => agent('write path', { isolation: 'worktree', label: 'W' })]);\nreturn out.length;`);
+  // #231 起，隔离路要先交付出一块 worktree 才起跑；这里注入替身，把"提示词追加项"这一维单独锁住。
+  const worktrees = { async load() {}, async provision() { return { ok: true, id: 'wf_0123456789abcdef-d0002', path: '/fake/worktrees/w', branch: 'worktree-w', reused: false }; }, async pin() { return { ok: false, reason: 'not-used', message: 'no pin' }; }, async release() { return { kept: false, id: '', path: '', branch: '' }; }, preserved: () => [] };
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates(), worktrees });
+  const { index } = await settle(temp, engine, `const out = await parallel([() => agent('schema path', { schema: ${JSON.stringify(SCHEMA)}, label: 'S' }), () => agent('write path', { isolation: 'worktree', tools: ['write_file'], label: 'W' })]);\nreturn out.length;`);
   assert.equal(index.status, 'completed');
   assert.equal(index.dispatches.find((record) => record.label === 'W').isolation, 'worktree');
   const prompts = model.systemPrompts();
@@ -486,16 +493,18 @@ test('AC8 本票交付的每一路都跑在模块自己的循环与工具面上�
 // 评审补口：写权限的 fail-closed、交付口径的两条腿、关机接线的归属
 // ═══════════════════════════════════════════════════════════════
 
-test('AC2 声明 isolation:worktree 不等于拿到写权限：命令闸仍按只读执法（fail-closed）', async () => {
+test('AC2 声明 isolation:worktree 但交付不出隔离件 = 该路具名判败，命令一条都不跑（fail-closed）', async () => {
   const temp = tempWorkspace();
   const commands = ['touch planted.txt', 'echo hi > planted.txt', 'rm -f keep.txt'];
   const model = scriptedModel((request, n) => (n <= commands.length ? toolUse(`u${n}`, 'execute_cli', { command: commands[n - 1] }) : done('all refused')));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates() });
-  const { started } = await settle(temp, engine, `const a = await agent('try to write', { label: 'ISO', isolation: 'worktree' });\nreturn a;`);
-  const reasons = [1, 2, 3].map((round) => firstToolResult(model, round).payload.reason);
-  assert.deepEqual(reasons, ['not-in-read-only-allowlist', 'not-in-read-only-allowlist', 'dangerous-command']);
-  assert.equal(fs.existsSync(path.join(temp.workspaceDir, 'planted.txt')), false, '声明隔离不是放开写盘的凭据');
-  assert.equal(agentRecord(temp, started.runId).result, 'all refused');
+  const { index } = await settle(temp, engine, `const a = await agent('try to write', { label: 'ISO', isolation: 'worktree' });\nreturn a;`);
+  // #231 起 isolation:'worktree' 确实放开写模式——但前提是那块 worktree 交付得出来。
+  // 这个临时工作区不是 git 仓库，闸门在任何模型调用与任何资源副作用之前就把这一路判败。
+  assert.equal(model.calls.length, 0, '交付不出隔离件就连一轮都不发起');
+  assert.equal(index.dispatches[0].status, 'failed');
+  assert.ok(['worktree-not-a-repository', 'worktree-git-unavailable'].includes(index.dispatches[0].error.reason), index.dispatches[0].error.message);
+  assert.equal(fs.existsSync(path.join(temp.workspaceDir, 'planted.txt')), false, '工作区一个字节都没被染指');
 });
 
 test('AC3 交付口径两条腿都锁住：经出口的提交与纯文本兜底各有其位', async () => {
