@@ -51,6 +51,7 @@ import {
   QUOTA_SOFT_THRESHOLD_RATIO,
   directoryBytes,
   evaluateQuota,
+  preservedTotals,
 } from '../dist/workflows/worktree-quota.js';
 import { WorktreeService, WORKTREE_TRASH_DIR } from '../dist/workflows/worktree-service.js';
 import { worktreesRootFor, worktreePathFor, isInsideWorktreesRoot, workflowPaths } from '../dist/workflows/paths.js';
@@ -551,7 +552,7 @@ describe('磁盘上界四层（双配额 / 软阈值 / 硬上限 / 旧的一律�
       { id: 'd', state: 'removed', bytes: 999 },
       { id: 'e', state: 'starting', bytes: 1 },
     ];
-    assert.deepEqual(countAndBytes(entries), { count: 2, bytes: 30 });
+    assert.deepEqual(preservedTotals(entries), { preservedCount: 2, preservedBytes: 30 });
   });
 
   test('软阈值：达 80% 出一条告警，达硬上限即拒；两者都超只报最硬的一条', () => {
@@ -593,10 +594,6 @@ describe('磁盘上界四层（双配额 / 软阈值 / 硬上限 / 旧的一律�
     assert.equal(directoryBytes(path.join(root, 'missing')), 0, '读不到的目录按 0 计，不抛');
   });
 
-  function countAndBytes(entries) {
-    const kept = entries.filter((entry) => entry.state === 'preserved');
-    return { count: kept.length, bytes: kept.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) };
-  }
 });
 
 // ══════════════════════════════════════════════════════════
@@ -853,15 +850,22 @@ describe('WorktreeService：竞态纪律与保留判定', () => {
     assert.equal(missing.reason, 'worktree-not-found');
   });
 
-  test('归档默认关：开启后超期保留项打成 bundle → 校验 → 删目录（无损可恢复）', async () => {
+  test('归档默认关：开着也只动超期项；未到期的保留项一根手指都不碰', async () => {
     const probe = service();
     const made = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'x' });
     await probe.svc.release(made.id, { hasWork: true });
+    const kept = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0002', label: 'young' });
+    await probe.svc.release(kept.id, { hasWork: true });
+    // 超期先造好，再问"关着会怎样"——关着的正确形状是"什么都不动"，而不是"没东西可动"。
+    await probe.svc.registry.shiftAge(made.id, 31 * DAY_MS);
     const untouched = await probe.svc.archiveDue({ autoArchive: false, archiveAfterDays: 30 });
     assert.equal(untouched.length, 0, 'auto-archive is off by default and archives nothing');
+    assert.equal(fs.existsSync(made.path), true, '关着时超期项也照样留着');
 
-    await probe.svc.registry.shiftAge(made.id, 31 * DAY_MS);
     const archived = await probe.svc.archiveDue({ autoArchive: true, archiveAfterDays: 30 });
+    assert.equal(archived.length, 1, '未到期那件不在归档范围内');
+    assert.equal(archived[0].id, made.id);
+    assert.equal(fs.existsSync(kept.path), true, '未到期的保留项不动');
     assert.equal(archived.length, 1);
     assert.equal(archived[0].ok, true);
     assert.equal(fs.existsSync(made.path), false);
@@ -901,6 +905,24 @@ describe('WorktreeService：竞态纪律与保留判定', () => {
     assert.equal(rows[0].path, kept.path);
     assert.equal(rows[0].branch, kept.branch);
     assert.equal(typeof rows[0].bytes, 'number');
+  });
+
+  test('面板轮询与在飞创建不互踩：refresh 排在串行列里，账目不会被动荡', async () => {
+    const probe = service();
+    const first = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'a' });
+    await probe.svc.release(first.id, { hasWork: true });
+    await Promise.all([
+      probe.svc.refresh(),
+      probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0002', label: 'b' }),
+      probe.svc.refresh(),
+      probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0003', label: 'c' }),
+      probe.svc.refresh(),
+    ]);
+    assert.equal(probe.svc.registry.entries().length, 3, '内存账齐');
+    assert.equal(probe.svc.preserved().length, 1, '保留项没被重读冲掉');
+    const reopened = new WorktreeRegistry({ file: probe.serviceOptions.registryFile });
+    await reopened.load();
+    assert.equal(reopened.entries().length, 3, '盘面账与内存账一致');
   });
 
   test('重启后可从盘面重建：新服务读同一登记簿', async () => {

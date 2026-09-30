@@ -935,7 +935,7 @@ export class WorkflowEngine {
    */
   async preservedWorktrees() {
     const service = this.worktrees();
-    await service.load();
+    await service.refresh();
     return service.preserved();
   }
 
@@ -950,17 +950,13 @@ export class WorkflowEngine {
    * actor 是按下按钮的那个人（会话 id / 'tui'），不是 run 的归属。
    */
   async discardWorktree(id: string, actor: string): Promise<{ ok: true; path: string; branch: string } | { ok: false; reason: string; message: string }> {
-    const service = this.worktrees();
-    await service.load();
-    return await service.discard(id, actor);
+    return await this.worktrees().discard(id, actor);
   }
 
   /** 可选自动归档（默认关）：接线方（定时器 / 面板）按设置调用；关着就一条都不动。 */
   async archiveWorktreesDue(): Promise<{ id: string; ok: boolean; message?: string }[]> {
     if (!this.gates.autoArchive) return [];
-    const service = this.worktrees();
-    await service.load();
-    return await service.archiveDue({ autoArchive: true, archiveAfterDays: this.gates.archiveAfterDays });
+    return await this.worktrees().archiveDue({ autoArchive: true, archiveAfterDays: this.gates.archiveAfterDays });
   }
 
   /** 协作式暂停的等待闸：非暂停即空过；暂停则挂起，直到 resume 释放。 */

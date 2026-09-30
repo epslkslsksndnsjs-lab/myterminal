@@ -123,6 +123,18 @@ export class WorktreeService {
     this.loaded = true;
   }
 
+  /**
+   * 面板轮询用的重读：排进创建 / 清理那条串行列。
+   * 直接 load() 会与在飞的改写交错——register 刚把条目放进内存、落盘尚未完成，
+   * 这一次重读就会从旧盘面把内存账冲掉，下一次改写就成了"未登记的 id"。
+   */
+  async refresh(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.registry.load();
+      this.loaded = true;
+    });
+  }
+
   /** 串行列入口：任何一步都排在上一步之后（并发创建不互踩登记与目录）。 */
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     const next = this.serial.then(task, task);
