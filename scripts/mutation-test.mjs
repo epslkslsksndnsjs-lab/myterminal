@@ -333,6 +333,17 @@ const mutations = [
   { name: "WF-337: 面板轮询不再收死路的件（孤儿停在 active，配额与面板都看不见）", file: "src/workflows/worktree-service.ts", tests: 'test/issue-231-*.test.mjs', find: "      await this.reconcileStale();", replace: "      void 0;" },
   { name: "WF-338: 收尸的保守判据移除（在跑的那一件也被收）", file: "src/workflows/worktree-service.ts", tests: 'test/issue-231-*.test.mjs', find: "      if (!abandoned) continue;", replace: "      if (false) continue;" },
 
+  // ── 文案三面 (T11 #234, 7) — 三份文本各归其主：同文锁 / 边界数值与禁令 / 内建技能注册面 ──
+  // 本票没有新增运行时判定分支，可变异的是"文案归属性"——每份文本都有自己的守护测试，
+  // 改一处漏一处必须当场红。全部由 test/issue-234-*.test.mjs 行为杀（非仅编译杀、非等价豁免）。
+  { name: 'WF-400: canonical 描述的决策段被改写（同文锁两边开始漂移）', file: 'src/core-tools.ts', tests: 'test/issue-234-*.test.mjs', find: '- When: run only when the user asks', replace: '- When: run whenever the task looks broad' },
+  { name: 'WF-401: 描述里的边界数值丢了（模型看不见默认即上限）', file: 'src/core-tools.ts', tests: 'test/issue-234-*.test.mjs', find: '30-minute wall clock; 8,000,000 output tokens', replace: 'wall clock; output tokens' },
+  { name: 'WF-402: 闸门参数漏进模型可见文案（loopMinutes 复活）', file: 'src/core-tools.ts', tests: 'test/issue-234-*.test.mjs', find: 'reduce:{runId}}).', replace: 'reduce:{runId, loopMinutes}}).' },
+  { name: 'WF-403: 内建技能挂错正文（workflow-authoring 读到 adaptive-guard）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: '    content: WORKFLOW_AUTHORING_CONTENT,', replace: '    content: BUILTIN_ADAPTIVE_GUARD_CONTENT,' },
+  { name: 'WF-404: 技能名漂走（列表查不到，且打穿 #235 逐字引用的共享常量）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: "  ['workflow-authoring', {", replace: "  ['workflow-authoring-v2', {" },
+  { name: 'WF-405: 技能 mode 从 inline 漂到 fork（读正文变成起 subagent）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: '    mode: "inline",', replace: '    mode: "fork",' },
+  { name: 'WF-406: WORKFLOWS 段标题被改（双版锚点序与抽取锚失效）', file: 'docs/GPT_INSTRUCTIONS.md', tests: 'test/issue-234-*.test.mjs', find: 'WORKFLOWS\n- When: run only', replace: 'WORKFLOW RUNS\n- When: run only' },
+
 ];
 
 let killedByTest = 0;
