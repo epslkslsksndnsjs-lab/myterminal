@@ -494,6 +494,35 @@ test('atomic 失败出口：临时文件清干净后原样抛出', async () => {
   }
 });
 
+test('adapter：llmBackedFactory 组装请求、拼接文本、透传 output token', async () => {
+  const { llmBackedFactory } = await import('../dist/workflows/adapter.js');
+  const seen = [];
+  const factory = llmBackedFactory(
+    { enabled: true, model: 'test-model', baseUrl: 'http://127.0.0.1:9', apiKey: 'k', maxTurns: 700, timeoutSec: 7200, maxParallel: 2 },
+    () => ({
+      provider: 'fake',
+      stream: async function* () { /* 不走流式 */ },
+      create: async (params) => {
+        seen.push(params);
+        return { message: { role: 'assistant', content: [{ type: 'text', text: '  answer part  ' }, { type: 'text', text: 'more' }] }, usage: { input_tokens: 5, output_tokens: 17 } };
+      },
+    }),
+  );
+  const first = factory({ runId: 'wf_1', dispatchId: 'd0001' });
+  const second = factory({ runId: 'wf_1', dispatchId: 'd0002' });
+  assert.notEqual(first, second, '每路一个独立 adapter 实例（工厂每次新建）');
+  const result = await first.complete({ system: 'sys', prompt: 'do it', maxTokens: 1234, signal: new AbortController().signal });
+  assert.equal(result.text, 'answer part  more', '文本块拼接 + 首尾 trim');
+  assert.equal(result.outputTokens, 17);
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].model, 'test-model');
+  assert.deepEqual(seen[0].system, 'sys');
+  assert.deepEqual(seen[0].tools, [], '格子工具面 v1 不带工具');
+  assert.equal(seen[0].maxTokens, 1234);
+  assert.equal(seen[0].messages.length, 1);
+  assert.equal(seen[0].messages[0].content[0].text, 'do it');
+});
+
 test('paths：managed 根与 run 布局按约定，非法槽位不进路径', () => {
   assert.equal(managedRootFor('/ws'), '/ws/.myterminal');
   const paths = workflowPaths('/ws/.myterminal');

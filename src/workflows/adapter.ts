@@ -1,4 +1,4 @@
-import { createAdapter } from '../subagent/llm-adapter.js';
+import { createAdapter, type LlmAdapter } from '../subagent/llm-adapter.js';
 import type { SubagentSettings } from '../types.js';
 
 /**
@@ -38,10 +38,11 @@ export const AGENT_SYSTEM_PROMPT = [
   'You work in isolation: another agent may be running the same task in a separate directory at the same time.',
 ].join(' ');
 
-export function llmBackedFactory(settings: SubagentSettings): AdapterFactory {
+export function llmBackedFactory(settings: SubagentSettings, make?: () => LlmAdapter): AdapterFactory {
   return () => ({
     complete: async (request) => {
-      const adapter = createAdapter(settings);
+      // 测试注入缝：make 缺省走真实端点适配器（与会话侧同源）。
+      const adapter = make ? make() : createAdapter(settings);
       const { message, usage } = await adapter.create(
         {
           model: request.model ?? settings.model,
