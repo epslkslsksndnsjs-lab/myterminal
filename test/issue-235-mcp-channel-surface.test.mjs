@@ -9,7 +9,7 @@
 // 分区：
 //   CHANNEL-1 instructions 行：唯一、逐字、紧随 skill 行且落在末尾
 //   CHANNEL-2 direct 清单两条就位：title 与 description 逐字定稿
-//   CHANNEL-3 三份互不复制：对外文本与内部 canonical 互不为子串
+//   CHANNEL-3 三份互不同文：对外文本与内部 canonical 互不为子串
 //   CHANNEL-4 inputSchema 自动派生：属性集与约束由 BUILTIN_INPUT_SCHEMAS 供给，且在协议层真生效
 //   CHANNEL-5 extraShape 仅 identity：传输层不加 workflow 专属键
 //   CHANNEL-6 _meta 按 title 自动
@@ -160,16 +160,16 @@ test('CHANNEL-2: workflow_start / workflow_cancel 在 direct 清单，title 与 
 // CHANNEL-3 · 防漂移矩阵三分（对外 ≠ 内部）
 // ═══════════════════════════════════════════════════════════════
 
-test('CHANNEL-3: 对外文本独立成文 —— 与 core canonical 互不为子串、非逐字复制', async () => {
+test('CHANNEL-3: 对外文本独立成文 —— 与 core canonical 互不为子串、非逐字同文', async () => {
   const face = await mcpFace();
   try {
     for (const name of Object.keys(OUTWARD_DESCRIPTIONS)) {
       const internal = face.builtins.get(name)?.description;
       assert.ok(internal, `${name} 的内部 canonical 必须存在`);
       const outward = face.byName[name].description;
-      assert.notEqual(outward, internal.trim(), `${name}：对外版抄了内部版 = 矩阵三分破防`);
-      assert.ok(!outward.includes(internal.trim().slice(0, 60)), `${name}：对外版以内部版开头 = 复制粘贴`);
-      assert.ok(!internal.includes(outward.slice(0, 60)), `${name}：内部版含对外版长段 = 反向复制`);
+      assert.notEqual(outward, internal.trim(), `${name}：对外版与内部版逐字同文 = 矩阵三分破防`);
+      assert.ok(!outward.includes(internal.trim().slice(0, 60)), `${name}：对外版以内部版开头 = 跨份同文`);
+      assert.ok(!internal.includes(outward.slice(0, 60)), `${name}：内部版含对外版长段 = 反向同文`);
       // 两份必须仍谈同一件事：说不同的话，但都指着同一个 run
       for (const token of ['workflow', 'run']) {
         assert.ok(outward.toLowerCase().includes(token), `${name} 对外版丢了 "${token}"`);
@@ -193,7 +193,7 @@ test('CHANNEL-3b: 共享常量只有技能名 —— 指令行引用的技能名
 });
 
 // ═══════════════════════════════════════════════════════════════
-// CHANNEL-4 · inputSchema 自动派生（零手抄）
+// CHANNEL-4 · inputSchema 自动派生（不另写副本）
 // ═══════════════════════════════════════════════════════════════
 
 test('CHANNEL-4a: 对外属性集 = 单源表的属性集 ∪ identity', async () => {
@@ -204,7 +204,7 @@ test('CHANNEL-4a: 对外属性集 = 单源表的属性集 ∪ identity', async (
       assert.ok(table, `${name} 必须先进 BUILTIN_INPUT_SCHEMAS 才能派生`);
       const derived = Object.keys(table.properties).sort();
       const outward = Object.keys(face.byName[name].inputSchema.properties).sort();
-      assert.deepEqual(outward, [...derived, 'identity'].sort(), `${name}：对外面属性与表不一致（手抄即红）`);
+      assert.deepEqual(outward, [...derived, 'identity'].sort(), `${name}：对外面属性与表不一致（另写副本即红）`);
     }
   } finally {
     await face.client.close(); await face.server.close();
@@ -283,6 +283,35 @@ test('CHANNEL-6: _meta invoking / invoked 按 title 自动，不另写一份', a
   }
 });
 
+// 上一例只锁住两个 workflow 工具的值；把同一算式当预期写出来，手写死值也可能凑对。
+// 这一例锁机制：凡走 direct 注册的工具，_meta 必须是 title 的纯函数——任何工具单独特化一份，即红。
+test('CHANNEL-6b: 整张 direct 名单的 _meta 都是 title 的纯函数（机制而非取值）', async () => {
+  const face = await mcpFace();
+  try {
+    // 三个门面工具是 registerTool 直写的，不吃 registerDirect 的 title 算式，列名除外。
+    const FACADE = new Set(['extension_discover', 'extension_register', 'extension_call']);
+    const direct = Object.keys(face.byName).filter((n) => !FACADE.has(n));
+    assert.ok(direct.length >= 30, `direct 名单异常收缩（只剩 ${direct.length} 个），本例失去意义`);
+    assert.ok(direct.includes('workflow_start') && direct.includes('workflow_cancel'), '两个 workflow 工具必须在名单内');
+    for (const name of direct) {
+      const { title, _meta } = face.byName[name];
+      const meta = _meta ?? {};
+      assert.equal(
+        meta['openai/toolInvocation/invoking'],
+        `Running ${title}…`,
+        `${name}：invoking 不再由 title 派生（有人给它单写了一份文案）`,
+      );
+      assert.equal(
+        meta['openai/toolInvocation/invoked'],
+        `${title} ready`,
+        `${name}：invoked 不再由 title 派生`,
+      );
+    }
+  } finally {
+    await face.client.close(); await face.server.close();
+  }
+});
+
 test('CHANNEL-7: 注解集镜像 subagent_abort（幂等语义只在描述里声明）', async () => {
   const face = await mcpFace();
   try {
@@ -308,7 +337,7 @@ function pick(obj, keys) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// CHANNEL-8 · 两份对外文本互不复制
+// CHANNEL-8 · 两份对外文本互不同文
 // ═══════════════════════════════════════════════════════════════
 
 test('CHANNEL-8: instructions 行不复用工具描述原文', async () => {

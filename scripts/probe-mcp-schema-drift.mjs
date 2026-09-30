@@ -35,7 +35,6 @@ for (const name of [...curNames].filter((n) => !baseNames.has(n)).sort()) {
 for (const name of [...baseNames].filter((n) => !curNames.has(n)).sort()) {
   buckets.工具面增减.push(`- ${name}  （基线有、现无）`);
 }
-if (!baseNames.size && !curNames.size) buckets.工具面增减.push('（两侧名单都为空）');
 
 for (const name of baseNames) {
   if (!curNames.has(name)) continue;

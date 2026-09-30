@@ -14,6 +14,11 @@ const TEST_FILES = process.env.TEST_FILES || 'test/*.test.mjs';
 
 /** 核心 = workflows 引擎目录（调度 / 沙箱 / 账本 / 结算 / 注册表 / 路径与版本）。 */
 const CORE_PATTERN = /dist\/workflows\//;
+/**
+ * 边缘 = MCP / 桥接适配面（#235 起接入：本票唯一改动的 src 文件就是 dist/mcp.js）。
+ * 随后续票 additive 追加，不删条目。
+ */
+const EDGE_PATTERNS = [/dist\/mcp\.js$/];
 
 const out = execSync(`bun test --coverage --timeout 120000 ${TEST_FILES} 2>&1`, {
   encoding: 'utf8',
@@ -45,11 +50,28 @@ for (const row of core) {
 }
 const coreLines = core.reduce((sum, row) => sum + row.lines, 0) / core.length;
 
+// 边缘同样是一道真门：只印一行说明而不判，等于把 ② 口径静默豁免（§13"缺一不算完成"）。
+const edge = [];
+for (const pattern of EDGE_PATTERNS) {
+  const matched = rows.filter((row) => pattern.test(row.file));
+  if (matched.length === 0) {
+    failures.push(`边缘文件 ${pattern.source} 没有覆盖率行——门禁不能假绿（测试没跑到它，或报告格式变了）`);
+    continue;
+  }
+  edge.push(...matched);
+}
+for (const row of edge) {
+  if (row.lines < EDGE_LINE_THRESHOLD) failures.push(`${row.file}: 行覆盖 ${row.lines}% < 边缘线 ${EDGE_LINE_THRESHOLD}%`);
+}
+
 console.log(`核心文件 ${core.length} 个，平均行覆盖 ${coreLines.toFixed(2)}%（线 = ${CORE_LINE_THRESHOLD}%）`);
-for (const row of core.sort((a, b) => a.lines - b.lines)) {
+for (const row of [...core].sort((a, b) => a.lines - b.lines)) {
   console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
 }
-console.log(`边缘线 = ${EDGE_LINE_THRESHOLD}%（本票无边缘文件，随后续票接入）`);
+console.log(`边缘文件 ${edge.length} 个（线 = ${EDGE_LINE_THRESHOLD}%）`);
+for (const row of [...edge].sort((a, b) => a.lines - b.lines)) {
+  console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
+}
 
 if (failures.length) {
   console.error('\n覆盖门禁未过：');

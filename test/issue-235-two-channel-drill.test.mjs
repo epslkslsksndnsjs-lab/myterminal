@@ -260,9 +260,17 @@ test('DRILL-C: working checkpoint 的 nextCalls 强制只在 actions 生效，MC
 // DRILL-D · 通道整形超时（transports 自动选）
 // ═══════════════════════════════════════════════════════════════
 
-test('DRILL-D: 整形超时按通道自动取 —— actions 8s / mcp 20s', () => {
-  // K5（Actions 45s 单调用窗）逼出更紧的整形窗；MCP/Apps 无此约束走宽档。
-  assert.equal(l3TimeoutMs('actions'), 8000, 'Actions 通道整形超时 8s');
-  assert.equal(l3TimeoutMs('mcp'), 20000, 'MCP 通道整形超时 20s');
-  assert.ok(l3TimeoutMs('actions') < l3TimeoutMs('mcp'), 'actions 必须比 mcp 紧');
+// 演练确认，不是数值锁：8000/20000 这两个常数由 test/issue-38-l3-engine.test.mjs 锁着。
+// 本票要确认的是"本票这一对通道"是否各自吃到该吃的那一档 —— 于是锁的是配对关系：
+// 紧档只属于 actions（K5 45s 单调用窗逼出来的），其余通道一律宽档。
+test('DRILL-D: 本票这对通道各取一档 —— 紧档只有 actions，mcp 走宽档', () => {
+  const TRANSPORTS = ['actions', 'mcp', 'apps', 'tui', 'test', 'subagent'];
+  const tight = TRANSPORTS.filter((t) => l3TimeoutMs(t) === l3TimeoutMs('actions'));
+  assert.deepEqual(tight, ['actions'], `只有 actions 该吃紧档，实际 ${tight.join(',')}`);
+  assert.equal(l3TimeoutMs('actions'), 8000);
+  for (const t of TRANSPORTS.filter((x) => x !== 'actions')) {
+    assert.equal(l3TimeoutMs(t), 20000, `${t} 必须走宽档（mcp 在内）`);
+  }
+  // 配对方向不能反：Actions 侧更紧，否则 45s 单调用窗被整形自己吃穿
+  assert.ok(l3TimeoutMs('actions') < l3TimeoutMs('mcp'));
 });
