@@ -524,7 +524,10 @@ test('e2e-1: 等待零模型调用 → 结算 → ≤1 个轮询周期醒 → �
 
   const driver = h.driveWait(6_000, { terminalFile: run.terminalFile });   // 第 3 个轮询周期放跑 run 的那一路
   const reducer = await h.startReducer(started.runId);
+  // 汇总体醒得比结算链路快是常态：等结算走完（终态消息投递是链路的最后一步）再对账。
   await until(() => h.notified.length > 0, '摘要交付发生');
+  await h.engine.settled(started.runId);
+  await until(() => h.deliverNotices.length > 0, '终态消息已投递');
   const record = getSubagent(reducer.taskId);
 
   // 等待期零调用：标记出现前，汇总体只发过一次模型请求，run 那一路也只有一次
