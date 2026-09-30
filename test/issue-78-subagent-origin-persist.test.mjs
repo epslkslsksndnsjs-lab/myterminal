@@ -27,7 +27,7 @@ function fakeDeps() {
   };
 }
 
-test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#78 选项 A）', () => {
+test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#78 选项 A）', async () => {
   clearAllSubagents();
   resetSubagentRunner();
   const deps = fakeDeps();
@@ -50,7 +50,7 @@ test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#
   resetSubagentRunner();
 });
 
-test('CP1: 无 origin（direct start）时 record.origin 为 undefined（向后兼容）', () => {
+test('CP1: 无 origin（direct start）时 record.origin 为 undefined（向后兼容）', async () => {
   clearAllSubagents();
   resetSubagentRunner();
   const deps = fakeDeps();

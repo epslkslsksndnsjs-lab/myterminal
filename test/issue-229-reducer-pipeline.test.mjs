@@ -235,7 +235,7 @@ function harness(options = {}) {
   const toolContext = (session = root.session) => ({ transport: 'actions', authenticatedSession: session });
 
   /** 等待驱动器：sleep 即推进虚拟钟；到 releaseAfterMs（相对装机时刻）放跑 run 的那一路并等它真结算完。 */
-  function driveWait(releaseAfterMs) {
+  function driveWait(releaseAfterMs, options = {}) {
     const installedAt = clock.now();
     const ticks = [];
     let settledAt;
@@ -250,8 +250,12 @@ function harness(options = {}) {
         if (releaseAfterMs !== undefined && !releasedAt && clock.now() - installedAt >= releaseAfterMs) {
           releasedAt = clock.now();
           model.state.release?.();
-          // 结算是真 IO：让它在真实时间里跑完，虚拟钟继续按回合走。
-          await new Promise((resolve) => setTimeout(resolve, 20));
+          // 结算是真 IO：等终态标记真落地（有界），虚拟钟不因此前进——否则高负载下会假红。
+          if (options.terminalFile) {
+            for (let i = 0; i < 400 && !fs.existsSync(options.terminalFile); i += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
         }
       },
       lstat: realLstat,
@@ -378,6 +382,17 @@ test('reduce-5: runId 形状闸先于任何路径拼接（.. 形态一律拒，�
   const refused = await h.startReducer('../../etc/passwd').catch((error) => error);
   assert.equal(refused.code, 'EXTENSION_ERROR');
   assert.equal(refused.details.reason, 'run-id-shape');
+});
+
+test('reduce-4b: runId 缺失即形状闸（汇总体场景 reduce 必填）', async () => {
+  const h = harness();
+  const refused = await h.tools.get('subagent_start').invoke(
+    { objective: 'reduce', reduce: {} },
+    h.toolContext(),
+  ).catch((error) => error);
+  assert.equal(refused.code, 'EXTENSION_ERROR');
+  assert.equal(refused.details.reason, 'run-id-shape');
+  assert.equal(await countReducerWaiters(h.paths), 0);
 });
 
 test('reduce-5b: 延续链认亲——换 sessionId 的接任会话仍在"本 root"名下（§3④）', async () => {
@@ -507,7 +522,7 @@ test('e2e-1: 等待零模型调用 → 结算 → ≤1 个轮询周期醒 → �
   script.seen.terminalPath = run.terminalFile;
   script.seen.digestPath = run.digestFile;
 
-  const driver = h.driveWait(6_000);   // 第 3 个轮询周期放跑 run 的那一路
+  const driver = h.driveWait(6_000, { terminalFile: run.terminalFile });   // 第 3 个轮询周期放跑 run 的那一路
   const reducer = await h.startReducer(started.runId);
   await until(() => h.notified.length > 0, '摘要交付发生');
   const record = getSubagent(reducer.taskId);
@@ -546,6 +561,8 @@ test('e2e-1: 等待零模型调用 → 结算 → ≤1 个轮询周期醒 → �
   // 两视图一致：轮询读到的 result 就是收件箱那条消息的正文来源
   const polled = getSubagentRunner().status(reducer.taskId);
   assert.equal(polled.result, record.result);
+  const polledAgain = getSubagentRunner().status(reducer.taskId);
+  assert.deepEqual(polledAgain, polled, '轮询天然幂等：重复调用返回同结果');
   const inbox = h.store.inbox(h.root.session.id);
   assert.ok(inbox.some((message) => message.body.includes(`kind=digest runId=${started.runId} sha256=${digestSha}`)), '摘要在收件箱');
   assert.ok(inbox.some((message) => message.body.startsWith(`[workflow] kind=settled-notice runId=${started.runId}`)), '终态消息在收件箱');
@@ -641,6 +658,8 @@ test('e2e-5: 结算三件套齐发——快照字节哈希即 settled-notice 的
   assert.match(lines[0], /^\[workflow\] kind=settled-notice runId=wf_[0-9a-f]{16} sha256=[0-9a-f]{64}$/);
   assert.ok(lines[1].includes('completed'), '通知体必含 status');
   assert.ok(lines[1].includes('1/1'), '一句话读数（X/Y）');
+  assert.equal(lines.length, 2, '通知体只是指针：首行 KV + 一行读数，失败清单不穿通知体');
+  assert.ok(!/error=|label=/.test(body), '失败清单字段不许挤进通知体');
   assert.deepEqual(fs.readdirSync(run.outboxDir).filter((name) => name.endsWith('.tmp')), [], 'outbox 不留临时文件');
 });
 
