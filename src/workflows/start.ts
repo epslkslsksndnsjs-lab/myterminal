@@ -1,7 +1,7 @@
 import { isRunId } from './ids.js';
 import { WorkflowStartError } from './engine.js';
 import type { MyTerminalStore } from '../store.js';
-import type { JsonObject, ToolAuditEvent } from '../types.js';
+import type { JsonObject, ToolAuditEvent, ToolAuditStatus } from '../types.js';
 import type { WorkflowAuditEntry } from './engine.js';
 
 /**
@@ -63,20 +63,41 @@ export function validateStartArgs(input: StartArgs): StartValidation {
 
 /**
  * 审计缝：模块侧只吐结构化条目，落盘走既有审计通道（签名一字不改）。
+ *
+ * 两条纪律：
+ *   1. 幂等键必须带原因——审计链按 id 合并，同一 run 的"正常结算"与"结算期终止"
+ *      若共用一个 id，后写的那条会把前一条的终态证据直接盖掉；
+ *   2. status 照条目本身映射，不许把 settle 一律写成 completed（失败与终止都得看得出来）。
  */
+const AUDIT_STATUS: Record<string, ToolAuditStatus> = {
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'failed',
+};
+
 export function workflowAuditSink(store: MyTerminalStore, workspaceDir: string): (entry: WorkflowAuditEntry) => void {
   return (entry) => {
     const event: ToolAuditEvent = {
-      id: `workflow-${entry.runId}-${entry.action}`,
+      id: entry.reason ? `workflow-${entry.runId}-${entry.action}-${entry.reason}` : `workflow-${entry.runId}-${entry.action}`,
       timestamp: entry.at,
       source: 'test',
       action: entry.action,
-      status: entry.action === 'workflow_settle' ? 'completed' : 'running',
+      status: AUDIT_STATUS[entry.status] ?? 'failed',
+      // 失败与终止都带上具名错误码（审计链的 errorCode 取自这里），
+      // 否则整条链只会剩下一个 UNKNOWN_ERROR，认不出是哪一闸收的场。
+      ...(AUDIT_STATUS[entry.status] === 'completed' || entry.status === 'running'
+        ? {}
+        : { error: { code: entry.reason ?? 'settle-failed', ...(entry.detail ? { message: entry.detail } : {}) } }),
       durationMs: 0,
       workspace: workspaceDir,
       session: entry.actor,
       args: { runId: entry.runId } as JsonObject,
-      result: { status: entry.status, ...(entry.reason ? { reason: entry.reason } : {}) } as JsonObject,
+      result: {
+        status: entry.status,
+        ...(entry.reason ? { reason: entry.reason } : {}),
+        ...(entry.detail ? { detail: entry.detail } : {}),
+      } as JsonObject,
     };
     try {
       store.auditEvent(entry.actor, event);

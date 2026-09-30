@@ -153,16 +153,13 @@ export function withSchemaVersion<T extends object>(value: T, version: number = 
  */
 export type FieldRename = { readonly field: string; readonly previous: string };
 
-export const RENAMED_FIELDS: {
-  readonly index: readonly FieldRename[];
-  readonly registry: readonly FieldRename[];
-  readonly snapshot: readonly FieldRename[];
-  readonly journal: readonly FieldRename[];
-} = {
+/** 接线名 = 真正走这套窗口的机器件；加一张没有接线读者的表即红（防死表）。 */
+export const WINDOW_WIRED_IN = ['index', 'registry', 'snapshot'] as const;
+
+export const RENAMED_FIELDS: { readonly [K in (typeof WINDOW_WIRED_IN)[number]]: readonly FieldRename[] } = {
   index: [],
   registry: [],
   snapshot: [],
-  journal: [],
 };
 
 /** 写侧：新键有值才带旧键；缺位不造字段，重复条目不叠加，且不改动调用方的对象。 */

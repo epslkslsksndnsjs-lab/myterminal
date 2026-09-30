@@ -401,7 +401,9 @@ test('审计汇：start / settle 两条落进既有审计链（含 runId + actor
   assert.equal(facts.length, 2);
   assert.deepEqual(facts.map((f) => f.action), ['workflow_start', 'workflow_settle']);
   assert.equal(facts[1].sessionId, session.id);
-  assert.equal(facts[1].errorCode, undefined);
+  // #224 补口修正：审计汇以前把所有 settle 一律记成 completed（所以这里曾是 undefined）。
+  // 失败结算必须带具名错误码，否则整条审计链只认得出"成功"，认不出是哪一闸收的场。
+  assert.equal(facts[1].errorCode, 'run-gate');
   // 会话不存在时审计失败不得外溢
   assert.doesNotThrow(() => sink({ runId: 'wf_x', action: 'workflow_start', actor: 'ghost', status: 'running', at: new Date().toISOString() }));
 });

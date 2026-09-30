@@ -13,6 +13,7 @@ import path from 'node:path';
 
 import {
   RENAMED_FIELDS,
+  WINDOW_WIRED_IN,
   SCHEMA_VERSION,
   VersionMismatchError,
   withDualWrite,
@@ -20,6 +21,7 @@ import {
 } from '../dist/workflows/schema.js';
 import { normalizeIndex, readIndex, writeIndex } from '../dist/workflows/run-index.js';
 import { readRegistry, writeRegistry } from '../dist/workflows/registry.js';
+import { readSnapshot, writeSnapshot } from '../dist/workflows/snapshot.js';
 
 let TMP;
 
@@ -109,9 +111,10 @@ test('空表（今天的真实形状）：窗口等于不存在，读写原样�
   assert.deepEqual(read.value, record);
   assert.deepEqual(read.lifted, []);
   assert.deepEqual(read.conflicts, []);
-  for (const table of Object.values(RENAMED_FIELDS)) {
-    assert.deepEqual(table, [], '本票没有需要改名的字段；表若非空就必须有对应的双写测试');
-  }
+  const wired = [...WINDOW_WIRED_IN].sort();
+  const tables = Object.keys(RENAMED_FIELDS).sort();
+  assert.deepEqual(tables, wired, '每张改名表都必须真有接线的读写在用它（防死表）');
+  for (const key of wired) assert.deepEqual(RENAMED_FIELDS[key], [], `${key}：本票没有要改名的字段，表必须是空的`);
 });
 
 test('窗口不削弱 fail-closed：版本超前照旧拒，旧产物照旧可读', () => {
@@ -169,6 +172,19 @@ test('注册表同样接线：双写落盘、旧产物抬升', async () => {
   fs.writeFileSync(file, JSON.stringify({ schemaVersion: SCHEMA_VERSION, runs: [{ runId: 'wf_b', state: 'failed', ownerSessionId: 's', startedAt: 't', endedAt: 'u' }] }), 'utf8');
   const lifted = await readRegistry(file, SCHEMA_VERSION, renames);
   assert.equal(lifted.runs[0].status, 'failed', '旧注册表条目照样读得到');
+});
+
+test('快照同样接线：双写落盘、旧快照抬升、非终态照旧拒', async () => {
+  const file = tempFile('snapshot.json');
+  const renames = [{ field: 'status', previous: 'state' }];
+  await writeSnapshot(file, baseIndex(), renames);
+  const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(raw.state, 'completed', '快照也带旧键，上一版读者读得到');
+  assert.equal((await readSnapshot(file, SCHEMA_VERSION, renames)).status, 'completed');
+
+  fs.writeFileSync(file, JSON.stringify({ ...raw, state: 'cancelled', status: undefined }), 'utf8');
+  assert.equal((await readSnapshot(file, SCHEMA_VERSION, renames)).status, 'cancelled', '旧快照条目照样读得到');
+  await assert.rejects(() => writeSnapshot(tempFile('snap-active.json'), baseIndex({ status: 'running' }), renames), /not terminal/);
 });
 
 test('默认表下注册表读写形状不变（空表等于不存在）', async () => {

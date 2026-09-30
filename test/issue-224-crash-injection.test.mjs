@@ -203,3 +203,48 @@ test('没人接的后台 run 终止：不升级成进程级异常，但留一条
   // 直接 await 的一方仍拿得到原样的拒绝
   await assert.rejects(() => started.completion, /background death/);
 });
+
+// ── 审计汇的两条纪律（id 撞车会毁掉终态证据） ────────────────────
+
+test('同一 run 的 settle 与 settle-failed 必须在审计链里各自存活', async () => {
+  const { workflowAuditSink } = await import('../dist/workflows/start.js');
+  const { MyTerminalStore } = await import('../dist/store.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-224audit-'));
+  try {
+    const stateDir = path.join(dir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const store = new MyTerminalStore(stateDir);
+    const { session } = store.registerRoot({ name: 'root' });
+    const sink = workflowAuditSink(store, dir);
+    const at = new Date().toISOString();
+    sink({ runId: 'wf_1', action: 'workflow_settle', actor: session.id, status: 'completed', reason: 'completed', at });
+    sink({ runId: 'wf_1', action: 'workflow_settle', actor: session.id, status: 'failed', reason: 'settle-failed', detail: 'background death', at });
+    const facts = store.auditFacts(50).filter((f) => f.tool.startsWith('workflow_'));
+    assert.equal(facts.length, 2, '两条都在——按 id 合并会把终态证据盖掉');
+    const failed = facts.find((f) => JSON.stringify(f).includes('settle-failed'));
+    assert.ok(failed, '结算期终止那条必须留得下来');
+    assert.match(JSON.stringify(failed), /background death/, 'detail 要真落到审计链，不能只活在内存条目里');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('审计 status 照条目本身映射，settle 不再一律记成 completed', async () => {
+  const { workflowAuditSink } = await import('../dist/workflows/start.js');
+  const { MyTerminalStore } = await import('../dist/store.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-224audit2-'));
+  try {
+    const stateDir = path.join(dir, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const store = new MyTerminalStore(stateDir);
+    const { session } = store.registerRoot({ name: 'root' });
+    const sink = workflowAuditSink(store, dir);
+    const at = new Date().toISOString();
+    sink({ runId: 'wf_2', action: 'workflow_settle', actor: session.id, status: 'failed', reason: 'run-gate', at });
+    const fact = store.auditFacts(50).find((f) => JSON.stringify(f).includes('run-gate'));
+    assert.ok(fact, '失败结算那条要在');
+    assert.equal(JSON.stringify(fact).includes('"completed"'), false, '失败的结算不许被记成 completed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
