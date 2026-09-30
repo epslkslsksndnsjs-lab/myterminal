@@ -1,6 +1,6 @@
 // #234（T11 文案三面与技能）——GPT_INSTRUCTIONS WORKFLOWS 段 × workflow_start 描述同文锁
 //
-// 票面六条测试清单（出处 ADR-0052 §23① / 本地工作稿 §14）：
+// 票面六条测试清单（口径 = ADR-0052 §23① 钉的六条）：
 //   ① 双版 WORKFLOWS 段 ≤1200 码点
 //   ② workflow_start 描述与 EN 段正文逐字相等（照 issue-140 AC② 的模板串抽取手法）
 //   ③ 关键词纪律：en poll / partial / cancel / cache；zh 轮询 / partial / 取消 / 缓存
@@ -210,7 +210,7 @@ test('⑥ workflow_cancel 描述是工具本地文本：三句照旧，且不与
     'Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.',
   );
   assert.notEqual(desc.trim(), enBody(), 'workflow_cancel 描述被并入了同文约束');
-  // 段里可以提 workflow_cancel（那是启动链的一部分），但不得整段照搬它的三句。
+  // 段里可以提 workflow_cancel（那是启动链的一部分），但不得整段复用它的三句。
   assert.ok(!enBody().includes('started by this session'), '段把 cancel 的归属句抄进了同文约束');
 });
 
