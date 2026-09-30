@@ -191,7 +191,9 @@ const mutations = [
   { name: 'WF-61: 取槽级软门移除（第二级检查失守）', file: 'src/workflows/engine.ts', find: '      this.assertOpen(context);\n      this.assertBudget(context);\n', replace: '      this.assertOpen(context);\n' },
   { name: 'WF-62: agentCap 构造期硬顶移除（注入越顶值直接生效）', file: 'src/workflows/engine.ts', find: 'agentCap: Math.min(HARD_AGENT_CAP_CEILING, Math.max(1, Math.floor(requested.agentCap))),', replace: 'agentCap: Math.max(1, Math.floor(requested.agentCap)),' },
   { name: 'WF-63: 不限制时预算读数不再报无顶（脚本读到 0 自己收手）', file: 'src/workflows/engine.ts', find: 'remaining: () => (this.gates.tokenCap === null ? Number.POSITIVE_INFINITY : Math.max(0, this.gates.tokenCap - context.spent)),', replace: 'remaining: () => Math.max(0, (this.gates.tokenCap ?? 0) - context.spent),' },
-  { name: 'WF-64: 设置节整段不校验（端点与 typo 全放行）', file: 'src/config.ts', tests: 'test/issue-226-*.test.mjs', find: 'if (settings.workflows) {', replace: 'if (false) {' },
+  // 整段 if 改恒假会让 normalized 未读 / 分支不可达而只被编译杀；
+  // 换成"校验做了、错误不上报"——编译过、行为错，由 AC3 的端点与 typo 断言杀。
+  { name: 'WF-64: 设置节校验错误不上报（端点与 typo 静默放行）', file: 'src/config.ts', tests: 'test/issue-226-*.test.mjs', find: 'if (normalized.errors.length) {', replace: 'if (false) {' },
   { name: 'WF-65: TUI 字段清单与登记表断链（新键在设置屏查无此文）', file: 'src/tui/controller-logic.ts', tests: 'test/issue-226-*.test.mjs', find: 'export const WORKFLOW_SETTING_FIELDS: string[] = WORKFLOW_SETTING_KEYS.map((key) => key.field);', replace: "export const WORKFLOW_SETTING_FIELDS: string[] = ['wf-token-cap'];" },
 ];
 
