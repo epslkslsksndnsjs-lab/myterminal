@@ -3,11 +3,12 @@ import type { ToolMode } from './tool-face.js';
 /**
  * 每路 agent 的系统提示词——模块自足拼接，一份一段地按这一跑的形状生成。
  *
- * 五块内容按固定次序（行为锁测试逐块点名）：
+ * 五块内容按固定次序（行为锁测试逐条点名）：
  *   角色与任务框架 → 工具用法 → 环境 → 输出约束 → 模式追加项。
  * 三条硬约束写在"输出约束"里：最终文本就是返回值、不许出现确认语、JSON 裸出无围栏；
  * schema 模式再加一条：结构化结果只能经 structured_output 出口交回。
- * 隔离面再加一段：收尾必须回报所改的 path 与 branch，人不在场也能对上了账。
+ * 声明了隔离的那一路再加一段：收尾必须回报所改的目录与分支——那是它对人的交代，
+ * 与它有没有拿到写工具是两件事（写面随隔离交付，#231）。
  */
 
 export type SystemPromptInput = {
@@ -15,7 +16,10 @@ export type SystemPromptInput = {
   cwd: string;
   platform: string;
   toolNames: readonly string[];
+  /** 这一跑的工具面模式（命令闸与可见性）。 */
   mode: ToolMode;
+  /** 脚本是否声明了隔离运行（isolation: 'worktree'）。 */
+  isolated: boolean;
   schema: boolean;
   /** 隔离面的分支名（尚未知时为 undefined，仍要求回报）。 */
   branch?: string;
@@ -56,14 +60,14 @@ export function buildAgentSystemPrompt(input: SystemPromptInput): string {
   ];
 
   if (input.schema) {
-    sections.push('This path must hand back a JSON object through the structured_output tool. Free text is not read as the result, and a fenced block is not a submission.');
+    sections.push('This path hands back its result through the structured_output tool. Narrating an answer in free text is not the submission; a fenced block is not a submission either.');
   }
-  if (input.mode === 'worktree') {
+  if (input.isolated) {
     sections.push('');
-    sections.push('# Working in an isolated checkout');
-    sections.push('You are writing inside a dedicated worktree, not the shared checkout.');
+    sections.push('# If you change files');
+    sections.push('This path was declared to run isolated from the shared checkout.');
     sections.push(
-      `End your answer with the absolute directory and the branch you changed${input.branch ? ` (branch: ${input.branch})` : ''}, so the work can be found and merged later.`,
+      `Report the absolute directory and the branch you changed${input.branch ? ` (branch: ${input.branch})` : ''} at the end of your answer, so the work can be found and merged later.`,
     );
   }
   return sections.join('\n');

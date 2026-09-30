@@ -24,12 +24,9 @@ export type { ToolMode };
  * 名字口径与缓存键同源：展示名 / 拼写名互认由 agent-opts 的归一化承担。
  */
 
-export type AgentToolTarget = 'file' | 'directory' | 'command';
-
 export type ToolContext = {
   runId: string;
   dispatchId: string;
-  label: string;
   /** 这一跑的归属边界：只读面是工作区，隔离面是那一跑的 worktree。 */
   cwd: string;
   mode: ToolMode;
@@ -37,15 +34,11 @@ export type ToolContext = {
   run: RunPaths;
   /** 无进展计时的挂起 / 恢复：工具在飞时不算 stall。 */
   progress?: StallProgress;
-  /** 本路的 schema 对象（结构化出口用它）。 */
-  schema?: Record<string, unknown>;
 };
 
 export type AgentTool = {
   name: string;
-  /** 单目标声明：动词作用的那一个对象在这里点名，第二个对象即复合工具。 */
-  target: AgentToolTarget;
-  /** 写类工具：只随隔离面出现。 */
+  /** 写类工具：只随隔离面出现（写必隔离，随边界交付一起放开）。 */
   write: boolean;
   description: string;
   inputSchema: Record<string, unknown>;

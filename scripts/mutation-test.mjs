@@ -208,7 +208,7 @@ const mutations = [
   { name: 'WF-72: 鉴权错误被当瞬态重试（auth 不是可恢复的瞬时错）', file: 'src/workflows/llm-retry.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: "['rate_limit', 'server_overload', 'connection']", replace: "['rate_limit', 'server_overload', 'connection', 'auth']" },
   { name: 'WF-77: 重试次数不进该路终态记账（审计看不到试了几次）', file: 'src/workflows/engine.ts', tests: 'test/issue-227-stall-retry.test.mjs', find: 'const reportAttempt = (n: number): void => { record.attempts = n; };', replace: 'const reportAttempt = (n: number): void => { void n; };' },
 
-  // ── src/workflows/ (18) — #228 T5 · 并行子 agent 工具集（只读面）：路径双检 / 命令闸 / 有界返回 / 工具 floor / 每路提示词 / 进程组收 ──
+  // ── src/workflows/ + server 接线 (22) — #228 T5 · 并行子 agent 工具集（只读面）：路径双检 / 命令闸 / 有界返回 / 工具 floor / 每路提示词 / 进程组收 ──
   // 每条对应票面一条钉死语义（§11），由本票的零件单元或引擎行为测试逐条杀（不做只被编译杀的形态）。
   { name: "WF-78: 边界归一改用宿主进程目录（这一跑的 cwd 不再生效）", file: "src/workflows/tool-boundary.ts", tests: 'test/issue-228-*.test.mjs', find: "  const resolved = path.normalize(path.isAbsolute(value) ? value : path.resolve(cwd, value));", replace: "  const resolved = path.normalize(path.resolve(value));" },
   { name: "WF-79: realpath 段拿词法路径自比（symlink 逃逸看不见）", file: "src/workflows/tool-boundary.ts", tests: 'test/issue-228-*.test.mjs', find: "    realTarget = realpathSync(resolved);", replace: "    realTarget = resolved;" },
@@ -228,6 +228,10 @@ const mutations = [
   { name: "WF-93: 按 pid 单杀而非按进程组杀（孙进程留在世上继续写盘）", file: "src/workflows/command-tree.ts", tests: 'test/issue-228-*.test.mjs', find: "    process.kill(-pid, signal);", replace: "    process.kill(pid, signal);" },
   { name: "WF-94: 关机第一步不停接单（收完在飞还在接新命令，燃烧打不住）", file: "src/workflows/command-tree.ts", tests: 'test/issue-228-*.test.mjs', find: "  stopAcceptingCommands();\n  const graceMs = options.graceMs ?? DEFAULT_COMMAND_GRACE_MS;", replace: "  const graceMs = options.graceMs ?? DEFAULT_COMMAND_GRACE_MS;" },
   { name: "WF-95: 子 schema 不再下钻（items / additionalProperties 里的越界关键词漏报）", file: "src/workflows/json-gate.ts", tests: 'test/issue-228-*.test.mjs', find: "      walkChildren(key, value);", replace: "      if (key === 'properties') walkChildren(key, value);" },
+  { name: "WF-96: 声明 isolation 即放开命令闸（写必隔离要等边界交付，不是等一句声明）", file: "src/workflows/engine.ts", tests: 'test/issue-228-*.test.mjs', find: "    const gatedMode: ToolMode = 'read-only';", replace: "    const gatedMode: ToolMode = gated.isolation === 'worktree' ? 'worktree' : 'read-only';" },
+  { name: "WF-97: 过期后台记录只销账不删输出文件（run 目录堆成永久垃圾）", file: "src/workflows/command-tree.ts", tests: 'test/issue-228-*.test.mjs', find: "        unlinkSync(command.outputPath);", replace: "        void command.outputPath;" },
+  { name: "WF-98: 关机不再收 Workflows 的在飞命令树（close 漏掉本模块）", file: "src/server.ts", tests: 'test/issue-228-*.test.mjs', find: "    await shutdownCommandTrees();", replace: "    void 0;" },
+  { name: "WF-99: 声明隔离的那一路不再拿到回报义务（产物找不到归属）", file: "src/workflows/engine.ts", tests: 'test/issue-228-*.test.mjs', find: "        isolated: gated.isolation === 'worktree',", replace: "        isolated: false," },
 ];
 
 let killedByTest = 0;

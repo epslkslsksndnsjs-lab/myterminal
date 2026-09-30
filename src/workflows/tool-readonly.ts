@@ -111,7 +111,6 @@ export function walkFiles(root: string, limit = MAX_LIST_ENTRIES * 20): string[]
 /** 读整份文本（有界）。分段读是另一个工具，不靠这里的隐藏参数。 */
 const readFileTool: AgentTool = {
   name: 'read_file',
-  target: 'file',
   write: false,
   description: 'Read a whole text file inside this path\'s working directory. Returns bounded text; large files come back truncated with explicit counts, so read a line range instead. Fails on directories and on files that look binary.',
   inputSchema: {
@@ -140,7 +139,6 @@ const readFileTool: AgentTool = {
 /** 按行读一段（1 基行号，带行号前缀输出）。 */
 const readFileRangeTool: AgentTool = {
   name: 'read_file_range',
-  target: 'file',
   write: false,
   description: 'Read a line range of a text file, returning lines prefixed with their 1-based numbers. Use this instead of read_file for large files, and move firstLine to page forward.',
   inputSchema: {
@@ -189,7 +187,6 @@ const readFileRangeTool: AgentTool = {
 /** 列一个目录。 */
 const listDirTool: AgentTool = {
   name: 'list_dir',
-  target: 'directory',
   write: false,
   description: 'List one directory: files and subdirectories, each with its size, sorted by name. Lists exactly one level — recurse with find_files instead.',
   inputSchema: {
@@ -231,7 +228,6 @@ function rowFor(directory: string, entry: fs.Dirent): string {
 /** 按 glob 找文件。 */
 const findFilesTool: AgentTool = {
   name: 'find_files',
-  target: 'directory',
   write: false,
   description: 'Find files by a glob pattern under a directory, returning paths relative to that directory. Returns at most a bounded number of hits — narrow the pattern rather than paging.',
   inputSchema: {
@@ -258,7 +254,6 @@ const findFilesTool: AgentTool = {
 /** 按正则搜文本。 */
 const searchTextTool: AgentTool = {
   name: 'search_text',
-  target: 'directory',
   write: false,
   description: 'Search text under a directory with a regular expression, returning "file:line:text" rows. Each row is capped and the match list is capped, so a truncated result means the pattern is too wide.',
   inputSchema: {

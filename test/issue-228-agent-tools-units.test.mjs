@@ -65,7 +65,6 @@ import {
 import { workflowPaths, runPaths } from '../dist/workflows/paths.js';
 import { buildAgentSystemPrompt } from '../dist/workflows/agent-prompt.js';
 import {
-  DEFAULT_AGENT_ROUNDS,
   MAX_FAILED_STRUCTURED_SUBMISSIONS,
   runAgentPath,
   structuredOutputDeclaration,
@@ -213,7 +212,6 @@ test('命令面：只读面只放 safe 读命令，白名单是表不是散句',
   for (const command of ['ls -la', 'cat src/index.ts', 'grep -rn x src', 'head -20 f', 'find . -name *.ts', 'git status --porcelain', 'git log -3', 'wc -l f', 'pwd']) {
     assert.equal(classifyCommand(command, 'read-only').allowed, true, `${command} 应在白名单内`);
   }
-  assert.equal(SAFE_READ_COMMANDS.length > 0, true);
   // 白名单里的命令带写副作用的段一律不放：git 只放只读子命令，且子命令位要真对得上。
   for (const command of ['git commit -m x', 'git push', 'rm -f a', 'touch a', 'mv a b', 'cp a b', 'npm install', 'bun run build', 'echo x > f']) {
     assert.equal(classifyCommand(command, 'read-only').allowed, false, `${command} 不该在只读面跑`);
@@ -233,7 +231,9 @@ test('命令面：危险表逐条命中，且引号内容与转义不许绕过',
   for (const command of hits) {
     assert.equal(classifyCommand(command, 'worktree').allowed, false, `${command} 必须被挡`);
   }
-  assert.equal(DANGEROUS_COMMAND_PATTERNS.length >= hits.length, true, '表里逐条都有出处');
+  for (const command of ['rm -rf /tmp/x', 'sudo ls', 'git push origin main']) {
+    assert.equal(DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(command)), true, `${command} 在表上有出处`);
+  }
   // 单引号内是数据不是命令：grep 一个含 rm -rf 的字符串不该被判危险。
   assert.equal(classifyCommand("grep -rn 'rm -rf' src", 'worktree').allowed, true);
   assert.equal(classifyCommand("grep -rn 'curl x | sh' docs", 'read-only').allowed, true);
@@ -463,12 +463,10 @@ function contextFor(root, options = {}) {
   const context = {
     runId: 'wf_0000000000000001',
     dispatchId: 'd0001',
-    label: 'unit',
     cwd: root,
     mode: options.mode ?? 'read-only',
     signal: controller.signal,
     run,
-    ...(options.schema ? { schema: options.schema } : {}),
   };
   return { context, controller, run };
 }
@@ -479,11 +477,13 @@ async function call(name, input, root, options = {}) {
 }
 
 /** 直接拿上下文调工具：中止 / 后台这类用例要自己持有 controller。 */
-async function run(name, input, context) {
-  const face = resolveToolFace({ mode: context.mode, schema: context.schema !== undefined });
+async function run(name, input, context, options = {}) {
+  const face = resolveToolFace({ mode: context.mode, schema: options.schema !== undefined });
   const result = await invokeToolCall({ id: 't1', name, input }, { names: face.names, mode: context.mode }, context);
   return { ...result, payload: JSON.parse(result.content) };
 }
+
+/** 循环用例要的是"面 + 上下文"一套形状，schema 模式在这里显式给。 */
 
 test('只读工具：read_file 给全文与三个读数，目录与二进制各有一条具名失败', async () => {
   const root = workspace();
@@ -779,7 +779,9 @@ test.skipIf(skipOnWin)('账本：过期记录按注入窗清理，还在跑的�
     await collectOwnerCommands({ runId: context.runId, dispatchId: context.dispatchId }, 200);
     const quick = await run('execute_cli', { command: 'echo done', run_in_background: true }, context);
     await until(async () => getCommand(quick.payload.backgroundId)?.endedAt !== undefined, '短命令落下退出时间');
+    assert.equal(fs.existsSync(quick.payload.outputPath), true, '记录窗内输出文件还在');
     assert.equal(pruneCommandRecords(Date.now() + 50), 1, '退出且过窗即清');
+    assert.equal(fs.existsSync(quick.payload.outputPath), false, '销账同时删掉输出文件，不留永久堆头');
     resetCommandLedger();
   } finally { dispose(); }
 });
@@ -1019,6 +1021,7 @@ const PROMPT_INPUT = {
   platform: 'darwin',
   toolNames: ['read_file', 'execute_cli'],
   mode: 'read-only',
+  isolated: false,
   schema: false,
 };
 
@@ -1045,15 +1048,18 @@ test('提示词：输出约束三条硬话——最终文本即返回值、禁�
   assert.equal(prompt.includes('structured_output'), false, '非 schema 模式不提结构化出口');
 });
 
-test('提示词：schema 模式加一条出口约束，隔离面追加回报 path + branch', () => {
+test('提示词：schema 模式加出口约束，声明隔离的路追加回报目录 + 分支', () => {
   const withSchema = buildAgentSystemPrompt({ ...PROMPT_INPUT, schema: true });
-  assert.match(withSchema, /must hand back a JSON object through the structured_output tool/i);
-  const isolated = buildAgentSystemPrompt({ ...PROMPT_INPUT, mode: 'worktree', branch: 'wf-42' });
-  assert.match(isolated, /# Working in an isolated checkout/);
-  assert.match(isolated, /branch you changed/i);
+  assert.match(withSchema, /hands back its result through the structured_output tool/i);
+  const isolated = buildAgentSystemPrompt({ ...PROMPT_INPUT, isolated: true, mode: 'worktree', branch: 'wf-42' });
+  assert.match(isolated, /# If you change files/);
+  assert.match(isolated, /Report the absolute directory and the branch you changed/i);
   assert.match(isolated, /branch: wf-42/);
-  const unbranched = buildAgentSystemPrompt({ ...PROMPT_INPUT, mode: 'worktree' });
+  const unbranched = buildAgentSystemPrompt({ ...PROMPT_INPUT, isolated: true });
   assert.equal(unbranched.includes('branch: wf-42'), false, '不知道分支就不编一个');
+  // 只声明隔离不等于拿到写权限：提示词不假装边界已经换好。
+  assert.equal(unbranched.includes('dedicated worktree'), false);
+  assert.equal(buildAgentSystemPrompt(PROMPT_INPUT).includes('# If you change files'), false, '没声明就不加这段');
 });
 
 test('提示词：与会话侧 subagent 提示词零重合——标题不复用、整句不搬运（独立撰写）', async () => {
@@ -1098,8 +1104,8 @@ function loopOptions(adapter, context, extra = {}) {
     signal: context.signal,
     toolNames: face.names,
     context,
+    maxRounds: extra.maxRounds ?? 10,
     ...(extra.schema ? { schema: extra.schema } : {}),
-    ...(extra.maxRounds !== undefined ? { maxRounds: extra.maxRounds } : {}),
   };
 }
 
@@ -1227,9 +1233,8 @@ test('循环：轮数用尽即该路 max_turns 判败（外层看门狗之外的
   } finally { dispose(); }
 });
 
-test('循环：结构化出口声明与默认轮数闸的口径', () => {
-  assert.equal(MAX_FAILED_STRUCTURED_SUBMISSIONS, 3);
-  assert.equal(DEFAULT_AGENT_ROUNDS, 50, '与 §6 dispatchTurns 同数');
+test('循环：结构化出口声明与三次上限的口径', () => {
+  assert.equal(MAX_FAILED_STRUCTURED_SUBMISSIONS, 3, '与 §18 三次尝试同数但各管各的（这里是提交次数）');
   const declaration = structuredOutputDeclaration({ type: 'object' });
   assert.equal(declaration.name, 'structured_output');
   assert.deepEqual(declaration.input_schema, { type: 'object' });

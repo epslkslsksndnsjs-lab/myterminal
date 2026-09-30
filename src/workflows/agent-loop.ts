@@ -22,9 +22,6 @@ import type { StallProgress } from './stall.js';
 
 export const MAX_FAILED_STRUCTURED_SUBMISSIONS = 3;
 
-/** 循环自己的轮数闸默认值（外层 dispatchTurns 更小时以它为准）。 */
-export const DEFAULT_AGENT_ROUNDS = 50;
-
 export type AgentPathOutcome = {
   text: string;
   outputTokens: number;
@@ -44,7 +41,8 @@ export type AgentLoopOptions = {
   toolNames: readonly string[];
   context: ToolContext;
   schema?: Record<string, unknown>;
-  maxRounds?: number;
+  /** 轮数闸：由外层 dispatch 轮数预算给（引擎传 gates.dispatchTurns），这里不设默认。 */
+  maxRounds: number;
 };
 
 /** 结构化出口的对外声明：参数形状就是这一路的 schema，成功与否由循环判。 */
@@ -74,7 +72,7 @@ export async function runAgentPath(options: AgentLoopOptions): Promise<AgentPath
   const schema = options.schema;
   const declarations = toolDeclarations(options.toolNames);
   if (schema) declarations.push(structuredOutputDeclaration(schema));
-  const maxRounds = Math.max(1, options.maxRounds ?? DEFAULT_AGENT_ROUNDS);
+  const maxRounds = Math.max(1, Math.floor(options.maxRounds));
 
   const messages: WorkflowAgentMessage[] = [{ role: 'user', content: [{ type: 'text', text: options.prompt }] }];
   let outputTokens = 0;

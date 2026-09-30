@@ -108,7 +108,6 @@ async function sinkBackground(handle: FileHandle, state: { bytes: number; capped
 
 export const executeCliTool: AgentTool = {
   name: 'execute_cli',
-  target: 'command',
   write: false,
   description: 'Run one shell command with a bounded timeout, or start it in the background. On a read-only path only allowlisted read commands run and output redirection is refused. Every command runs in its own process group and is collected when this path aborts or the runtime shuts down.',
   inputSchema: {

@@ -334,10 +334,10 @@ test('AC4 schema 路与隔离路各拿到自己的追加项', async () => {
   const prompts = model.systemPrompts();
   const schemaPrompt = prompts.find((text) => text.includes('# Path "S"'));
   const writePrompt = prompts.find((text) => text.includes('# Path "W"'));
-  assert.match(schemaPrompt, /must hand back a JSON object through the structured_output tool/i);
+  assert.match(schemaPrompt, /hands back its result through the structured_output tool/i);
   assert.equal(writePrompt.includes('structured_output'), false);
-  assert.match(writePrompt, /# Working in an isolated checkout/);
-  assert.match(writePrompt, /branch you changed/i, '写模式回报 path + branch');
+  assert.match(writePrompt, /# If you change files/);
+  assert.match(writePrompt, /Report the absolute directory and the branch you changed/i, '声明隔离的那一路要回报目录 + 分支');
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -406,11 +406,18 @@ test.skipIf(skipOnWin)('AC6 界内 symlink 指向界外：这一跑读不到它�
 // AC7 执行工具随路 / 随关机按进程组收（含后台命令）
 // ═══════════════════════════════════════════════════════════════
 
+// 收尸用例需要一个可预期的慢命令，而只读白名单里没有 sleep——`tail -f /dev/null`
+// 是放行的读命令（读空设备、永不返回），不必借道写模式就能把进程挂着。
+function waitingCommand() {
+  return 'tail -f /dev/null';
+}
+
 test.skipIf(skipOnWin)('AC7 该路收尾即收后台命令的进程组，run 结算时账本已空', async () => {
   const temp = tempWorkspace();
-  const model = scriptedModel((request, n) => (n === 1 ? toolUse('u1', 'execute_cli', { command: 'sleep 40', run_in_background: true }) : done('started it')));
+  const command = waitingCommand();
+  const model = scriptedModel((request, n) => (n === 1 ? toolUse('u1', 'execute_cli', { command, run_in_background: true }) : done('started it')));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates() });
-  const started = await engine.start({ script: `const a = await agent('start a long command', { label: 'BG', isolation: 'worktree' });\nreturn a;`, ownerSessionId: 'sess-a' });
+  const started = await engine.start({ script: `const a = await agent('start a long command', { label: 'BG' });\nreturn a;`, ownerSessionId: 'sess-a' });
   const index = await started.completion;
   assert.equal(index.dispatches[0].status, 'completed');
   const background = firstToolResult(model, 1).payload;
@@ -422,10 +429,11 @@ test.skipIf(skipOnWin)('AC7 该路收尾即收后台命令的进程组，run 结
 
 test.skipIf(skipOnWin)('AC7 关机三步在 run 在飞时成立：停接单、按组收在飞树、有限宽限', async () => {
   const temp = tempWorkspace();
-  const model = scriptedModel((request, n) => (n === 1 ? toolUse('u1', 'execute_cli', { command: 'sleep 40', run_in_background: true }) : NEVER));
+  const command = waitingCommand();
+  const model = scriptedModel((request, n) => (n === 1 ? toolUse('u1', 'execute_cli', { command, run_in_background: true }) : NEVER));
   const clock = virtualClock();
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates({ runGateMs: 60_000, dispatchWindowMs: 4_000, stallMs: 30_000 }), clock });
-  const started = await engine.start({ script: `const a = await agent('start then hang', { label: 'HANG', isolation: 'worktree' });\nreturn a;`, ownerSessionId: 'sess-a' });
+  const started = await engine.start({ script: `const a = await agent('start then hang', { label: 'HANG' });\nreturn a;`, ownerSessionId: 'sess-a' });
   await until(async () => listCommands({ runId: started.runId }).length === 1, '在飞那一路的命令登记上账');
   const pid = listCommands({ runId: started.runId })[0].pid;
   assert.equal(alive(pid), true);
@@ -472,4 +480,44 @@ test('AC8 本票交付的每一路都跑在模块自己的循环与工具面上�
   assert.equal(record.result, 'locked in');
   assert.equal(record.schemaVersion, 1);
   assert.equal(model.calls[0].system.includes('# Path "LOCK"'), true, '系统提示词由模块拼接，不取会话侧那份');
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 评审补口：写权限的 fail-closed、交付口径的两条腿、关机接线的归属
+// ═══════════════════════════════════════════════════════════════
+
+test('AC2 声明 isolation:worktree 不等于拿到写权限：命令闸仍按只读执法（fail-closed）', async () => {
+  const temp = tempWorkspace();
+  const commands = ['touch planted.txt', 'echo hi > planted.txt', 'rm -f keep.txt'];
+  const model = scriptedModel((request, n) => (n <= commands.length ? toolUse(`u${n}`, 'execute_cli', { command: commands[n - 1] }) : done('all refused')));
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates() });
+  const { started } = await settle(temp, engine, `const a = await agent('try to write', { label: 'ISO', isolation: 'worktree' });\nreturn a;`);
+  const reasons = [1, 2, 3].map((round) => firstToolResult(model, round).payload.reason);
+  assert.deepEqual(reasons, ['not-in-read-only-allowlist', 'not-in-read-only-allowlist', 'dangerous-command']);
+  assert.equal(fs.existsSync(path.join(temp.workspaceDir, 'planted.txt')), false, '声明隔离不是放开写盘的凭据');
+  assert.equal(agentRecord(temp, started.runId).result, 'all refused');
+});
+
+test('AC3 交付口径两条腿都锁住：经出口的提交与纯文本兜底各有其位', async () => {
+  const temp = tempWorkspace();
+  const model = scriptedModel((request, n) => {
+    if (request.prompt === 'submitted') return toolUse('u1', 'structured_output', { verdict: 'via-tool' });
+    if (request.prompt === 'textual') return done('{ "verdict": "via-text" }');
+    return done('unused');
+  });
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: gates() });
+  const { index } = await settle(temp, engine, `const out = await parallel([() => agent('submitted', { schema: ${JSON.stringify(SCHEMA)}, label: 'T' }), () => agent('textual', { schema: ${JSON.stringify(SCHEMA)}, label: 'X' })]);\nreturn out.filter(Boolean).length;`);
+  const dir = runPaths(temp.paths, index.runId).agentsDir;
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'd0001.json'), 'utf8')).result, { verdict: 'via-tool' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'd0002.json'), 'utf8')).result, { verdict: 'via-text' }, '没有提交时纯文本仍是既有兜底（#225 锁过的口径）');
+  const shipped = model.systemPrompts().find((text) => text.includes('# Path "T"'));
+  assert.match(shipped, /structured_output/g, '提示词说清出口');
+  assert.equal(shipped.includes('is not read as the result'), false, '但提示词不谎称引擎拒收文本');
+});
+
+test('AC7 关机接线的归属锁：SIGHUP → runtime close → 收 Workflows 的在飞命令树', () => {
+  const cli = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'cli.ts'), 'utf8');
+  const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.ts'), 'utf8');
+  assert.match(cli, /process\.once\('SIGHUP', \(\) => gracefulSignalShutdown\('SIGHUP'\)\)/, '关终端走优雅关机（既有链路）');
+  assert.match(server, /await this\.extensions\.shutdown\(\);\n[^]*?await shutdownCommandTrees\(\);/, 'Workflows 的命令树属 close() 的收尸面');
 });

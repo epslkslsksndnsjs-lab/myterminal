@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import { unlinkSync } from 'node:fs';
 
 /**
  * 在飞命令树账本——按进程组收，两条收尸路径（随路 abort / 随进程关机）。
@@ -191,12 +192,22 @@ export async function shutdownCommandTrees(options: { graceMs?: number; now?: nu
   return { collected: pending.length, remaining, graceMs };
 }
 
-/** 过期后台记录清理（1h 窗，与既有 subagent 记录同值）；返回清掉的条数。 */
+/**
+ * 过期后台记录清理（1h 窗，与既有 subagent 记录同值）：销账同时把它的输出文件一并删掉——
+ * 只清账本会把 run 目录堆成永久垃圾堆。返回清掉的条数。
+ */
 export function pruneCommandRecords(now: number = Date.now()): number {
   let removed = 0;
   for (const [id, command] of [...commands]) {
     if (command.endedAt === undefined || now - command.endedAt < ttlMs) continue;
     commands.delete(id);
+    if (command.outputPath) {
+      try {
+        unlinkSync(command.outputPath);
+      } catch {
+        /* 文件已经不在了；账已销，不再补记 */
+      }
+    }
     removed++;
   }
   return removed;

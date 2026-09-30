@@ -431,9 +431,13 @@ export class WorkflowEngine {
 
     // 工具面在派发之前算完：这一跑能用哪些工具、模式合不合闸，全在烧 token 前定死。
     // 不合面即形状错（脚本写错了，不是那一跑失败），且不消耗缓存键。
-    const mode: ToolMode = gated.isolation === 'worktree' ? 'worktree' : 'read-only';
+    // 模式口径：命令闸与写工具的可见性跟着**边界**走，而边界要等隔离交付（#231）才独立出去；
+    // 本票所有路都跑在共享工作区里，所以一律按只读执法——写必隔离不因声明而提前放开。
+    // 声明了 isolation:'worktree' 的那一路仍拿到"回报 path + branch"的义务（提示词面），
+    // 因为那是它对人的交代，不是权限。
+    const gatedMode: ToolMode = 'read-only';
     const face = resolveToolFace({
-      mode,
+      mode: gatedMode,
       tools: gated.tools,
       disallowedTools: gated.disallowedTools,
       agentType: gated.agentType,
@@ -479,7 +483,7 @@ export class WorkflowEngine {
     void context.journal.append({ type: 'started', seq: sequence, key, label, at: startedAt }).catch(() => undefined);
 
     try {
-      return await this.runPath(context, record, prompt, gated, toolNames, mode);
+      return await this.runPath(context, record, prompt, gated, toolNames, gatedMode);
     } catch (error) {
       // run 级终结把排队与在飞的等待打断：那不是这一路自己失败，
       // 绝不许在批里被降成 null（那会让非法扇出静默"完成"）。
@@ -511,6 +515,7 @@ export class WorkflowEngine {
         platform: process.platform,
         toolNames,
         mode,
+        isolated: gated.isolation === 'worktree',
         schema: gated.schema !== undefined,
       });
       let result;
@@ -530,13 +535,11 @@ export class WorkflowEngine {
             const toolContext: ToolContext = {
               runId: context.runId,
               dispatchId: record.id,
-              label: record.label,
               cwd,
               mode,
               signal,
               run,
               progress,
-              ...(gated.schema ? { schema: gated.schema } : {}),
             };
             try {
               // 这一跑的循环在模块自己手里：一轮一次模型往返，工具在飞挂起无进展计时。
