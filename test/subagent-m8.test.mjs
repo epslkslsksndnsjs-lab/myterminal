@@ -64,7 +64,8 @@ function mockSession(id, overrides = {}) {
 const hangingImpl = async () => await new Promise(() => {});
 
 /** 创建 fake deps——返回 { deps, callLog } */
-function fakeDeps(overrides = {}) {  const callLog = [];
+function fakeDeps(overrides = {}) {
+  const callLog = [];
   const deps = {
     runSubagentImpl: overrides.runSubagentImpl ?? (async () => {
       callLog.push('runSubagentImpl');

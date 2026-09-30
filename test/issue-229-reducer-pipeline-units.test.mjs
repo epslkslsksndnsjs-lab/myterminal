@@ -515,6 +515,7 @@ test('conclude-2: run 未终态 → failed(wait-timeout) 三段报告，不许 c
   const lines = verdict.report.split('\n');
   assert.equal(lines.length, 3, '三段报告 = 结论 / 失败清单 / 路径 + 索引');
   assert.ok(lines[0].includes('未结算'), `第一段必须如实写未结算：${lines[0]}`);
+  assert.ok(lines[0].includes('(wait-timeout') || lines[0].includes('（wait-timeout'), `首行须带机器可读的 reason token：${lines[0]}`);
   assert.ok(lines[2].includes('无摘要'), '超时场景如实写无摘要（半成品文件不算摘要）');
   assert.ok(lines[1].includes(temp.run.indexFile) || lines[2].includes(temp.run.indexFile), '三段报告须给出索引去处');
 });
@@ -525,6 +526,10 @@ test('conclude-3: run 已终态但 digest 缺失 = 不冒充交付，如实 fail
   const verdict = await concludeReducer(temp.paths, { runId: RUN_ID, agentId: 'sa_1', digestPath: temp.run.digestFile });
   assert.equal(verdict.status, 'failed');
   assert.equal(verdict.reason, 'no-digest');
+  assert.ok(
+    verdict.report.split('\n')[0].includes('(no-digest') || verdict.report.split('\n')[0].includes('（no-digest'),
+    `首行须带机器可读的 reason token：${verdict.report.split('\n')[0]}`,
+  );
 });
 
 test('conclude-4: 收场即释放等待位（死亡后可同 runId 补起）', async () => {

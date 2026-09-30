@@ -216,7 +216,7 @@ export function REDUCER_OBJECTIVE_TEMPLATE(input: {
     `Report honestly: partial appears as partial — never report a run you did not settle, never drop a failure, never soften a count.`,
     `If the budget expires before the marker appears: write no digest and exit with the same three sections, stating the run did not settle, that there is no digest, and where the index is.`,
     `Final message: one sentence with X/Y, the digest path, and the index reminder — ${summaryBudget} code units is all you get, so render paths in the canonical tail form when they do not fit.`,
-    `This budget allows ${input.rounds} wait calls of up to ${input.waitChunkSec}s each. The waiting budget comes from local settings; the model面 has no knob for it.`,
+    `This budget allows ${input.rounds} wait calls of up to ${input.waitChunkSec}s each. The waiting budget comes from local settings; the model-facing surface has no knob for it.`,
     `Delivery is your normal completion: your final text is checkpointed and sent to the requesting session, so do not call any messaging tool.`,
   ].join('\n');
 }
@@ -262,7 +262,7 @@ export async function concludeReducer(
       reason: 'wait-timeout',
       released,
       report: [
-        `结论：run ${input.runId} 未结算（等待预算内未见终态标记）· 已完成 ${counts.succeeded}/${counts.total}`,
+        `结论：run ${input.runId} 未结算（wait-timeout：等待预算内未见终态标记）· 已完成 ${counts.succeeded}/${counts.total}`,
         `失败清单：逐条见索引 ${run.indexFile}`,
         `产物与索引：无摘要 · 索引 ${run.indexFile}`,
       ].join('\n'),
@@ -274,7 +274,7 @@ export async function concludeReducer(
       reason: 'no-digest',
       released,
       report: [
-        `结论：run ${input.runId} 已结算为 ${counts.status} · 已完成 ${counts.succeeded}/${counts.total}`,
+        `结论：run ${input.runId} 已结算为 ${counts.status}（no-digest：digest 未写出）· 已完成 ${counts.succeeded}/${counts.total}`,
         '失败清单：逐条见索引',
         `产物与索引：无摘要（digest 未写出）· 索引 ${run.indexFile}`,
       ].join('\n'),

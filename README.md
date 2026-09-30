@@ -130,7 +130,7 @@ Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`
 
 ### Subagent system
 
-A subagent is an isolated agent loop with its own 8-tool set, context window, and token usage tracker. It runs asynchronously against an Anthropic-Messages-compatible LLM endpoint configured in `config.json` (`subagent.apiKey` / `subagent.baseUrl` / `subagent.model`, all three required). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for configuration.
+A subagent is an isolated agent loop with its own 9-tool set, context window, and token usage tracker. It runs asynchronously against an Anthropic-Messages-compatible LLM endpoint configured in `config.json` (`subagent.apiKey` / `subagent.baseUrl` / `subagent.model`, all three required). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for configuration.
 
 ### L3 tool-result shaping
 

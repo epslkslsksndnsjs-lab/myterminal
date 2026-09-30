@@ -145,7 +145,11 @@ export async function putNotice(run: RunPaths, draft: OutboxDraft): Promise<Outb
   const created = await createExclusive(file, `${JSON.stringify(item, null, 2)}\n`);
   if (created) return { created: true, item };
   const raw = await readJson(file);
-  if (raw === undefined) return { created: true, item };
+  // 排空趟可能刚抢在中间读走又删掉：这里补写回去，created 才算得诚实。
+  if (raw === undefined) {
+    await writeJsonAtomic(file, item);
+    return { created: true, item };
+  }
   return { created: false, item: normalizeOutboxItem(raw) };
 }
 

@@ -233,7 +233,7 @@ const mutations = [
   { name: "WF-98: 关机不再收 Workflows 的在飞命令树（close 漏掉本模块）", file: "src/server.ts", tests: 'test/issue-228-*.test.mjs', find: "    await shutdownCommandTrees();", replace: "    void 0;" },
   { name: "WF-99: 声明隔离的那一路不再拿到回报义务（产物找不到归属）", file: "src/workflows/engine.ts", tests: 'test/issue-228-*.test.mjs', find: "        isolated: gated.isolation === 'worktree',", replace: "        isolated: false," },
 
-  // ── src/workflows/ + subagent 面 + 接线 (40) — #229 T6 · 汇总体回传管线：终态消息 ≤200 / durable outbox / 等待位与配额 / 预算推导 / wait_for_path 三态 / 禁止 completed 掩盖 ──
+  // ── src/workflows/ + subagent 面 + 接线 (44) — #229 T6 · 汇总体回传管线：终态消息 ≤200 / durable outbox / 等待位与配额 / 预算推导 / wait_for_path 三态 / 禁止 completed 掩盖 ──
   { name: 'WF-100: 首行 KV 分隔符被改（去重键不再是钉死形态）', file: 'src/workflows/notice.ts', tests: 'test/issue-229-*.test.mjs', find: "  return `${KV_TAG} kind=${input.kind} runId=${input.runId} sha256=${input.sha256}`;", replace: "  return `${KV_TAG} kind:${input.kind} runId:${input.runId} sha256:${input.sha256}`;" },
   { name: 'WF-101: 通知体码元帽抬高（≤200 形同虚设）', file: 'src/workflows/notice.ts', tests: 'test/issue-229-*.test.mjs', find: 'export const MAX_NOTICE_CODE_UNITS = 200;', replace: 'export const MAX_NOTICE_CODE_UNITS = 20_000;' },
   { name: 'WF-102: 压缩阶梯丢掉绝对路径档（短路径也被压成尾段）', file: 'src/workflows/notice.ts', tests: 'test/issue-229-*.test.mjs', find: "  const ladder = [\n    `${draft.status} ${counts} index=${draft.indexPath}`,\n", replace: "  const ladder = [\n" },

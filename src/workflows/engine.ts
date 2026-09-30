@@ -694,7 +694,10 @@ export class WorkflowEngine {
     await writeSnapshot(context.run.snapshotFile, context.index);
     // 第一帧：快照已落、标记未落——认领趟要认出这个放大帧。
     this.crash('after-snapshot');
-    // 标记最后写：所有产物齐备后才宣告终态；已存在则静默退让（后到者不补发、不判更新版）。
+    // 结算序（T10 钉住）：快照 → outbox 原子写 → 终态标记最后写。
+    // 通知先于标记落盘，是为了让"标记后的任何帧"都可被排空趟补投——反序会造出
+    // "有标记、无 outbox 项"的帧，两趟判据都够不着，通知就真丢了。
+    const notice = await this.writeSettledNotice(context, endedAt);
     const markerWritten = await createExclusive(context.run.terminalFile, JSON.stringify({ schemaVersion: SCHEMA_VERSION, runId: context.runId, status, reason, endedAt }) + '\n');
     // 第二帧：唯一线性化点已落地，注册表尚未推进。
     this.crash('after-terminal');
@@ -708,21 +711,15 @@ export class WorkflowEngine {
     this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status, reason, at: endedAt });
     this.events.emit({ runId: context.runId, type: 'run_settled', at: endedAt, data: { status, reason, markerWritten } });
     // 第三帧：盘面齐、通知未投递——outbox 排空趟要能补发。
-    await this.publishSettledNotice(context);
+    await this.deliverSettledNotice(context, notice);
     return context.index;
   }
 
   /**
-   * 终态三件套的第三件：≤200 码元的 settled-notice 先原子写进 outbox，再试投一次，
-   * 投成功才标 delivered——投递是至少一次，去重靠内容键 (runId, sha256)。
-   *
-   * 两段分开的理由：落盘段的任何故障只记账、不改判终态（结算已封口）；
-   * 而"已落盘、未投递"这一帧必须真能死在这里——故障注入点不在 try 里，
-   * 否则注入被当成 IO 故障吞掉，排空趟的那一帧就永远演不出来。
+   * 终态三件套的第三件（上半）：≤200 码元的 settled-notice 原子写进 outbox。
+   * 落盘段的任何故障只记账、不改判终态（结算即将封口，通知不是关键路径）。
    */
-  private async publishSettledNotice(context: RunContext): Promise<void> {
-    const at = this.clock.iso();
-    let item: OutboxItem | undefined;
+  private async writeSettledNotice(context: RunContext, at: string): Promise<OutboxItem | undefined> {
     try {
       const sha256 = await sha256File(context.run.snapshotFile);
       const notice = buildSettledNotice({
@@ -735,9 +732,9 @@ export class WorkflowEngine {
       });
       if (!notice.ok) {
         this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status: context.index.status, reason: 'notice-too-long', at, detail: notice.message });
-        return;
+        return undefined;
       }
-      item = (await putNotice(context.run, {
+      return (await putNotice(context.run, {
         kind: 'settled-notice',
         runId: context.runId,
         sha256,
@@ -749,10 +746,17 @@ export class WorkflowEngine {
     } catch (error) {
       const detail = error && typeof error === 'object' && typeof (error as Error).message === 'string' ? (error as Error).message : String(error);
       this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status: context.index.status, reason: 'notice-failed', at, detail });
-      return;
+      return undefined;
     }
-    if (item.delivered) return;
-    // 崩溃点落在"通知已落盘、尚未投递"之间：这一帧必须有 outbox 项可补投。
+  }
+
+  /**
+   * 终态三件套的第三件（下半）：试投一次，投成功才标 delivered——至少一次投递，
+   * 去重靠内容键 (runId, sha256)。崩溃注入点刻意留在 try 之外：注入必须真能终止这一帧，
+   * 否则"已落盘、未投递"永远演不出来，排空趟也就无从验证。
+   */
+  private async deliverSettledNotice(context: RunContext, item: OutboxItem | undefined): Promise<void> {
+    if (!item || item.delivered) return;
     this.crash('before-notice');
     const deliver = this.deps.deliverNotice;
     if (!deliver) return;

@@ -558,8 +558,11 @@ test('e2e-1: 等待零模型调用 → 结算 → ≤1 个轮询周期醒 → �
   assert.equal(h.checkpoints.at(-1).phase, 'completed', 'checkpoint 先落（既有管线第一步）');
   const delivered = h.notified.at(-1);
   assert.equal(delivered.parentId, h.root.session.id, '交付回发起会话');
-  assert.ok(delivered.body.includes('subagent completed'), delivered.body);
-  assert.ok(delivered.body.includes(`kind=digest runId=${started.runId} sha256=${digestSha}`), delivered.body);
+  assert.ok(
+    delivered.body.startsWith(`[workflow] kind=digest runId=${started.runId} sha256=${digestSha}`),
+    `交付首行即 KV，不带"谁替谁转达"的前缀：${delivered.body}`,
+  );
+  assert.ok(delivered.body.length <= 200, `交付体 ${delivered.body.length} 码元 > 200`);
 
   // 两视图一致：轮询读到的 result 就是收件箱那条消息的正文来源
   const polled = getSubagentRunner().status(reducer.taskId);
@@ -567,7 +570,7 @@ test('e2e-1: 等待零模型调用 → 结算 → ≤1 个轮询周期醒 → �
   const polledAgain = getSubagentRunner().status(reducer.taskId);
   assert.deepEqual(polledAgain, polled, '轮询天然幂等：重复调用返回同结果');
   const inbox = h.store.inbox(h.root.session.id);
-  assert.ok(inbox.some((message) => message.body.includes(`kind=digest runId=${started.runId} sha256=${digestSha}`)), '摘要在收件箱');
+  assert.ok(inbox.some((message) => message.body.startsWith(`[workflow] kind=digest runId=${started.runId} sha256=${digestSha}`)), '摘要在收件箱：首行 KV');
   assert.ok(inbox.some((message) => message.body.startsWith(`[workflow] kind=settled-notice runId=${started.runId}`)), '终态消息在收件箱');
 
   // 终态消息：≤200 码元、outbox 标 delivered、sha = 快照文件字节哈希

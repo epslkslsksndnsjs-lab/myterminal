@@ -130,7 +130,7 @@ Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name
 
 ### Subagent 系统
 
-Subagent 是隔离的智能体循环，拥有独立的 8 工具集、上下文窗口和费用追踪器。它异步运行于 `config.json` 配置的 Anthropic Messages 兼容 LLM 端点（`subagent.apiKey` / `subagent.baseUrl` / `subagent.model` 三必填）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
+Subagent 是隔离的智能体循环，拥有独立的 9 工具集、上下文窗口和费用追踪器。它异步运行于 `config.json` 配置的 Anthropic Messages 兼容 LLM 端点（`subagent.apiKey` / `subagent.baseUrl` / `subagent.model` 三必填）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
 
 ### L3 工具结果整形
 

@@ -11,7 +11,7 @@ import {
 } from './store.js';
 import { getBackgroundTask } from './shell-tracker.js';
 import { MyTerminalError } from '../store.js';
-import type { SubagentRecord, SubagentTask } from './store.js';
+import type { ReducerLink, SubagentRecord, SubagentTask } from './store.js';
 import { SUBAGENT_STATUS_PAGE_CHARS, SUBAGENT_STATUS_PAGE_MAX_CHARS } from '../tool-schemas.js';
 import { defaultContext, type SubagentContext } from './context.js';
 import type { UsageSummary } from './cost-tracker.js';
@@ -31,7 +31,7 @@ export type SubagentStartInput = {
    * ADR-0052 §8：汇总体场景必填。runId 由工具层校验过（形状 / 归属 / 无旋钮），
    * digestPath 是 workflows 模块给出的不透明路径——本模块只透传，不解释布局。
    */
-  reduce?: { runId: string; digestPath: string };
+  reduce?: ReducerLink;
 };
 
 /** ADR-0052 接线 #9：汇总体准入与收场由接线方（host）给出，subagent 侧不 import workflows 模块。 */
@@ -67,7 +67,7 @@ export type SubagentRunnerDeps = {
    */
   reducer?: {
     admit(info: { agentId: string; runId: string; ownerSessionId: string }): Promise<ReducerAdmit>;
-    conclude(info: { agentId: string; runId: string; digestPath: string }): Promise<ReducerSettlement>;
+    conclude(info: { agentId: string } & ReducerLink): Promise<ReducerSettlement>;
   };
 };
 
@@ -152,15 +152,17 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     const failed = result.status !== 'completed' || settlement?.status === 'failed';
     if (!failed && result.status === 'completed') {
       const text = settlement?.status === 'completed' ? `${settlement.firstLine}\n${result.result}` : result.result;
-      const summary = text.slice(0, 200) || 'Subagent completed.';
       updateSubagentStatus(agentId, 'completed', { result: text });
       if (childIdentity) {
         await checkpoint(childSessionId, childIdentity, 'completed', text.length > 500
           ? `${text.slice(0, 500)}...`
           : text).catch(() => { /* best-effort：失败必须静默，否则 finalize 抛错会被外层 .catch 误把 completed 覆盖为 failed */ });
-        const body = origin?.type === 'skill'
-          ? `skill '${origin.skillName}' fork completed (taskId=${agentId}): ${summary}`
-          : `subagent completed (taskId=${agentId}): ${summary}`;
+        // 汇总体：通知体就是交付物本身——首行 KV 是身份（§15），不带"谁替谁转达"的前缀。
+        const body = settlement?.status === 'completed'
+          ? text.slice(0, 200) || 'Reducer completed.'
+          : origin?.type === 'skill'
+            ? `skill '${origin.skillName}' fork completed (taskId=${agentId}): ${text.slice(0, 200) || 'Subagent completed.'}`
+            : `subagent completed (taskId=${agentId}): ${text.slice(0, 200) || 'Subagent completed.'}`;
         await notify(childSessionId, childIdentity, parentSessionId, body).catch(() => { /* best-effort */ });
       }
     } else {
