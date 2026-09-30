@@ -27,8 +27,12 @@ import {
   type RunTerminationReason,
   type SettledFailure,
 } from './failures.js';
-import { AGENT_SYSTEM_PROMPT, type AdapterFactory } from './adapter.js';
+import type { AdapterFactory } from './adapter.js';
 import { resolveStallMs, runStallResilient } from './stall.js';
+import { resolveToolFace, type ToolContext, type ToolMode } from './tool-face.js';
+import { runAgentPath } from './agent-loop.js';
+import { buildAgentSystemPrompt } from './agent-prompt.js';
+import { collectOwnerCommands, collectRunCommands, resumeAcceptingCommands } from './command-tree.js';
 
 /**
  * run 生命周期：建 run → 脚本在窗口里 fan-out（每路一个独立 adapter 实例）→ 结算。
@@ -172,6 +176,10 @@ export class WorkflowEngine {
     this.factory = deps.adapterFactory;
     this.crash = deps.crash ?? resolveCrashPlan({ env: deps.crashEnv ?? process.env, kill: deps.crashKill });
     this.windowSize = this.gates.concurrencyWindow;
+    // 有引擎在跑 = 宿主愿意接单：关机流程把进程级的"停接单"置下去之后，
+    // 同一进程里重建引擎（重启 runtime、测试换宿主）就是重新开闸的唯一去处，
+    // 否则一次关机会把闸门永久留在关着的状态。
+    resumeAcceptingCommands();
   }
 
   /** 本引擎的并发窗口大小（观测面：滚动补位的上限水位）。 */
@@ -421,6 +429,19 @@ export class WorkflowEngine {
     // 形状错在这一刻就拒：不占键位、不计数、不进失败清单。
     const gated = gateAgentOpts(rawOpts);
 
+    // 工具面在派发之前算完：这一跑能用哪些工具、模式合不合闸，全在烧 token 前定死。
+    // 不合面即形状错（脚本写错了，不是那一跑失败），且不消耗缓存键。
+    const mode: ToolMode = gated.isolation === 'worktree' ? 'worktree' : 'read-only';
+    const face = resolveToolFace({
+      mode,
+      tools: gated.tools,
+      disallowedTools: gated.disallowedTools,
+      agentType: gated.agentType,
+      schema: gated.schema !== undefined,
+    });
+    if (face.refusal) throw new AgentCallShapeError(`${face.refusal.message} (reason: ${face.refusal.reason})`);
+    const toolNames = face.names;
+
     // 键先滚动，再过预算门与计数（ADR §17 顺序契约）：链是"调用序列"的函数，
     // 不能因为某一次被闸门拒掉就不计位——否则同一脚本在不同闸下会派生出不同的链。
     const sequence = ++context.seq;
@@ -458,7 +479,7 @@ export class WorkflowEngine {
     void context.journal.append({ type: 'started', seq: sequence, key, label, at: startedAt }).catch(() => undefined);
 
     try {
-      return await this.runPath(context, record, prompt, gated);
+      return await this.runPath(context, record, prompt, gated, toolNames, mode);
     } catch (error) {
       // run 级终结把排队与在飞的等待打断：那不是这一路自己失败，
       // 绝不许在批里被降成 null（那会让非法扇出静默"完成"）。
@@ -468,7 +489,7 @@ export class WorkflowEngine {
   }
 
   /** 叶子任务才进窗口：排队不占键位，取槽时再过一次预算门。 */
-  private runPath(context: RunContext, record: DispatchRecord, prompt: string, gated: GatedAgentOpts): Promise<unknown> {
+  private runPath(context: RunContext, record: DispatchRecord, prompt: string, gated: GatedAgentOpts, toolNames: readonly string[], mode: ToolMode): Promise<unknown> {
     return context.window.run(async () => {
       this.assertOpen(context);
       this.assertBudget(context);
@@ -482,6 +503,16 @@ export class WorkflowEngine {
       const stallMs = resolveStallMs(gated.stallMs, this.gates.stallMs);
       // 重试次数随每次尝试起跑即时落到 record（成功或耗尽判败都进该路终态记账）。
       const reportAttempt = (n: number): void => { record.attempts = n; };
+      const run = runPaths(this.paths, context.runId);
+      const cwd = this.deps.workspaceDir;
+      const system = buildAgentSystemPrompt({
+        label: record.label,
+        cwd,
+        platform: process.platform,
+        toolNames,
+        mode,
+        schema: gated.schema !== undefined,
+      });
       let result;
       try {
         // dispatch 层：无进展 → 换控制器重试（≤3）；非 stall 失败不重试，直接抛回归类。
@@ -495,14 +526,38 @@ export class WorkflowEngine {
             label: record.label,
             onAttempt: reportAttempt,
           },
-          (signal, progress) => adapter.complete({
-            system: AGENT_SYSTEM_PROMPT,
-            prompt,
-            maxTokens: DEFAULT_OUTPUT_TOKENS,
-            ...(gated.model ? { model: gated.model } : {}),
-            signal,
-            progress,
-          }),
+          async (signal, progress) => {
+            const toolContext: ToolContext = {
+              runId: context.runId,
+              dispatchId: record.id,
+              label: record.label,
+              cwd,
+              mode,
+              signal,
+              run,
+              progress,
+              ...(gated.schema ? { schema: gated.schema } : {}),
+            };
+            try {
+              // 这一跑的循环在模块自己手里：一轮一次模型往返，工具在飞挂起无进展计时。
+              return await runAgentPath({
+                adapter,
+                system,
+                prompt,
+                maxTokens: DEFAULT_OUTPUT_TOKENS,
+                ...(gated.model ? { model: gated.model } : {}),
+                signal,
+                progress,
+                toolNames,
+                context: toolContext,
+                maxRounds: this.gates.dispatchTurns,
+                ...(gated.schema ? { schema: gated.schema } : {}),
+              });
+            } finally {
+              // 随路收尸：这一路起出去的命令树（含后台）不许活过这一路。
+              await collectOwnerCommands({ runId: context.runId, dispatchId: record.id });
+            }
+          },
         );
         result = outcome.value;
       } catch (error) {
@@ -512,6 +567,10 @@ export class WorkflowEngine {
       }
       context.spent += result.outputTokens;
       if (gated.schema) {
+        // 结构化出口优先：经 structured_output 交回的对象就是该路结果。
+        if (result.hasStructured) {
+          return await this.settlePath(context, record, { ok: true, value: result.structured, outputTokens: result.outputTokens });
+        }
         const structured = parseStructured(result.text);
         if (!structured.ok) {
           return await this.settlePath(context, record, { ok: false, failure: { kind: 'no_structured_output', message: structured.message } });
@@ -571,6 +630,8 @@ export class WorkflowEngine {
     context.termination = { reason, message };
     context.controller.abort();
     context.window.abort();
+    // 整个 run 终结：在飞的命令树按进程组收（燃烧就地停，不留无主进程）。
+    void collectRunCommands(context.runId).catch(() => undefined);
   }
 
   private assertOpen(context: RunContext): void {

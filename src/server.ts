@@ -29,6 +29,7 @@ import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
 import { initWorkflowEngine } from './workflows/runtime.js';
+import { shutdownCommandTrees } from './workflows/command-tree.js';
 import { resolveWorkflowGates } from './workflows/gates.js';
 import { llmBackedFactory } from './workflows/adapter.js';
 import { workflowAuditSink } from './workflows/start.js';
@@ -571,6 +572,8 @@ export class MyTerminalRuntime {
     // Otherwise a detached command can keep a close request open and continue
     // mutating the workspace after the runtime lease has been released.
     await this.extensions.shutdown();
+    // Workflows 起出去的命令同样属本进程 owned：停接单 → 按进程组收 → 有限宽限（ADR-0052 §12 / §24）。
+    await shutdownCommandTrees();
     // ADR-0050 E2/E3（#81 W1-08）：运行时关闭 → 全量清 L3 配额 + 释放 L3 适配器单例
     // （D6 护栏3「会话结束从 Map 删除」全量面；D8.2「进程退出/会话结束释放」）
     clearL3Quota();

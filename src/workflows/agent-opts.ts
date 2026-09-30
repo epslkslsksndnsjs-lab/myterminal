@@ -11,11 +11,11 @@ import { AgentCallShapeError } from './failures.js';
  *   3. 归一化在这里一次做完（档位别名、工具名的展示名与拼写名、名单排序去重），
  *      键派生只吃归一后的形态——续跑重放才不会因书写差异而漂移。
  *
- * 本票（#225）的落地边界：十二项按 ADR §9 勘误 M1 的运行时白名单收全，但只有
- * `model` 与 `schema` 现在就改变执行；`tools` / `disallowedTools` / `agentType` 交给
- * 模块自有工具面（#228），`isolation` / `workingDir` 交给隔离执行（#231），`stallMs`
- * 交给看门狗（#227）——在各自票据落地前，它们只透传、只进键、只记账，不影响计时与闸门。
- * 之所以现在就收：键一旦变了，续跑就要重跑；选项表必须一次定全。
+ * 本票（#225）的落地边界：十二项按 ADR §9 勘误 M1 的运行时白名单收全。`model` / `schema`
+ * 与 `stallMs`（#227 看门狗）当场改变执行；`tools` / `disallowedTools` / `agentType` 由
+ * #228 的模块自有工具面兑现（resolveToolFace 只减不增地收窄），`isolation` 决定工具面的
+ * 模式（同票），`workingDir` 交给隔离执行（#231）。
+ * 之所以现在就收全：键一旦变了，续跑就要重跑；选项表必须一次定全。
  */
 
 export const KNOWN_AGENT_OPTS = [
@@ -203,7 +203,18 @@ export function gateAgentOpts(raw: unknown): GatedAgentOpts {
     if (!input.schema || typeof input.schema !== 'object' || Array.isArray(input.schema) || Object.keys(input.schema as object).length === 0) {
       shape(`agent(): schema must be a non-empty JSON Schema object (got ${label(input.schema)})`);
     }
-    gated.schema = input.schema as Record<string, unknown>;
+    // 脚本递过来的是沙箱 realm 的对象，留在宿主手里是隐患（getter / Proxy 会在宿主 realm 执行，
+    // 跨 realm 联合类型判据也不稳）：一次 JSON 复活成宿主纯数据再往下走。
+    let revived: unknown;
+    try {
+      revived = JSON.parse(JSON.stringify(input.schema));
+    } catch {
+      shape('agent(): schema must be JSON-serializable data (no functions, no cycles).');
+    }
+    if (!revived || typeof revived !== 'object' || Array.isArray(revived) || Object.keys(revived as object).length === 0) {
+      shape(`agent(): schema must still be a non-empty JSON object after revival (got ${label(revived)})`);
+    }
+    gated.schema = revived as Record<string, unknown>;
   }
   if (input.model !== undefined) {
     if (typeof input.model !== 'string' || !input.model.trim()) shape(`agent(): model must be a non-empty string (got ${label(input.model)})`);

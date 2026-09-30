@@ -11,6 +11,7 @@ import { assertRunId } from './ids.js';
  *     snapshot.json    机器件：仅终态写
  *     terminal         终态标记（独占创建，最后写）
  *     agents/<id>.json 每路一个文件（原子写）
+ *     bg/<id>.output   这一跑起出去的后台命令输出
  *     outbox/          待投递项
  *     digest           汇总产物
  *   saved/<name>.js    脚本持久化
@@ -37,6 +38,8 @@ export type RunPaths = {
   outboxDir: string;
   agentsDir: string;
   digestFile: string;
+  /** 这一跑起出去的后台命令，输出落在这里（独占创建、按字节帽截断）。 */
+  bgDir: string;
 };
 
 /** 库内 managed 根：工作区目录下的隐藏目录。 */
@@ -68,6 +71,7 @@ export function runPaths(paths: WorkflowPaths, runId: string): RunPaths {
     outboxDir: path.join(dir, 'outbox'),
     agentsDir: path.join(dir, 'agents'),
     digestFile: path.join(dir, 'digest'),
+    bgDir: path.join(dir, 'bg'),
   };
 }
 

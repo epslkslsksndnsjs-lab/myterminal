@@ -207,6 +207,27 @@ const mutations = [
   { name: 'WF-71: 瞬态 backoff 上界越过 stall 窗（会被看门狗误判无进展）', file: 'src/workflows/llm-retry.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: '[2_000, 5_000, 10_000, 20_000, 30_000]', replace: '[2_000, 5_000, 10_000, 20_000, 30_000, 400_000]' },
   { name: 'WF-72: 鉴权错误被当瞬态重试（auth 不是可恢复的瞬时错）', file: 'src/workflows/llm-retry.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: "['rate_limit', 'server_overload', 'connection']", replace: "['rate_limit', 'server_overload', 'connection', 'auth']" },
   { name: 'WF-77: 重试次数不进该路终态记账（审计看不到试了几次）', file: 'src/workflows/engine.ts', tests: 'test/issue-227-stall-retry.test.mjs', find: 'const reportAttempt = (n: number): void => { record.attempts = n; };', replace: 'const reportAttempt = (n: number): void => { void n; };' },
+
+  // ── src/workflows/ (18) — #228 T5 · 并行子 agent 工具集（只读面）：路径双检 / 命令闸 / 有界返回 / 工具 floor / 每路提示词 / 进程组收 ──
+  // 每条对应票面一条钉死语义（§11），由本票的零件单元或引擎行为测试逐条杀（不做只被编译杀的形态）。
+  { name: "WF-78: 边界归一改用宿主进程目录（这一跑的 cwd 不再生效）", file: "src/workflows/tool-boundary.ts", tests: 'test/issue-228-*.test.mjs', find: "  const resolved = path.normalize(path.isAbsolute(value) ? value : path.resolve(cwd, value));", replace: "  const resolved = path.normalize(path.resolve(value));" },
+  { name: "WF-79: realpath 段拿词法路径自比（symlink 逃逸看不见）", file: "src/workflows/tool-boundary.ts", tests: 'test/issue-228-*.test.mjs', find: "    realTarget = realpathSync(resolved);", replace: "    realTarget = resolved;" },
+  { name: "WF-80: 单引号内容也参与危险判定（数据被当命令，白名单里的 grep 全被判危险）", file: "src/workflows/tool-command.ts", tests: 'test/issue-228-*.test.mjs', find: "  return value.replace(SINGLE_QUOTED, \"''\");", replace: "  return value;" },
+  { name: "WF-81: 危险表先于替换面判（拒因错位，审计说不出为什么挡）", file: "src/workflows/tool-command.ts", tests: 'test/issue-228-*.test.mjs', find: "  if (hasCommandSubstitution(command)) return { allowed: false, reason: 'command-substitution' };\n  const scannable = stripSingleQuoted(command);\n  if (DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(scannable))) return { allowed: false, reason: 'dangerous-command' };", replace: "  const scannable = stripSingleQuoted(command);\n  if (DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(scannable))) return { allowed: false, reason: 'dangerous-command' };\n  if (hasCommandSubstitution(command)) return { allowed: false, reason: 'command-substitution' };" },
+  { name: "WF-82: 只读白名单反成写模式专属（默认面什么命令都放）", file: "src/workflows/tool-command.ts", tests: 'test/issue-228-*.test.mjs', find: "    if (mode === 'read-only') {", replace: "    if (mode !== 'read-only') {" },
+  { name: "WF-83: 结果帽抬到事实无界（一条工具结果灌满上下文）", file: "src/workflows/tool-output.ts", tests: 'test/issue-228-*.test.mjs', find: "export const MAX_TOOL_RESULT_CHARS = 50_000;", replace: "export const MAX_TOOL_RESULT_CHARS = 50_000_000;" },
+  { name: "WF-84: 截断落在代理对中间也照切（递给模型半个码元）", file: "src/workflows/tool-output.ts", tests: 'test/issue-228-*.test.mjs', find: "  const last = value.charCodeAt(limit - 1);", replace: "  const last = 0;" },
+  { name: "WF-85: tools 白名单可以扩面（只减不增被反过来）", file: "src/workflows/tool-face.ts", tests: 'test/issue-228-*.test.mjs', find: "    names = names.filter((name) => requested.includes(name));", replace: "    names = [...new Set([...names, ...requested.filter((name) => name !== STRUCTURED_OUTPUT_TOOL)])];" },
+  { name: "WF-86: agentType 被忽略（形态上界不成立，reader 也能执行命令）", file: "src/workflows/tool-face.ts", tests: 'test/issue-228-*.test.mjs', find: "  const agentType = options.agentType ?? DEFAULT_AGENT_TYPE;", replace: "  const agentType = DEFAULT_AGENT_TYPE;" },
+  { name: "WF-87: 第四次不合格提交才判败（三次上限不成立，且多烧一轮）", file: "src/workflows/agent-loop.ts", tests: 'test/issue-228-*.test.mjs', find: "        if (failedSubmissions >= MAX_FAILED_STRUCTURED_SUBMISSIONS) {", replace: "        if (failedSubmissions > MAX_FAILED_STRUCTURED_SUBMISSIONS) {" },
+  { name: "WF-88: 工具在飞不再挂起无进展计时（慢工具被当 stall 重跑）", file: "src/workflows/agent-loop.ts", tests: 'test/issue-228-*.test.mjs', find: "      options.progress?.toolStart();", replace: "      options.progress?.activity();" },
+  { name: "WF-89: floor 禁令退化成\"面外工具\"（模型看不出这是禁令不是笔误）", file: "src/workflows/tool-invoke.ts", tests: 'test/issue-228-*.test.mjs', find: "    const hint = FLOOR_HINT[call.name];", replace: "    const hint: string | undefined = undefined;" },
+  { name: "WF-90: 工具面不再递给端点（有面也用不上）", file: "src/workflows/adapter.ts", tests: 'test/issue-228-*.test.mjs', find: "            tools: request.tools ?? [],", replace: "            tools: []," },
+  { name: "WF-91: 模式判定丢失（隔离面按只读跑，写模式的回报义务消失）", file: "src/workflows/engine.ts", tests: 'test/issue-228-*.test.mjs', find: "    const mode: ToolMode = gated.isolation === 'worktree' ? 'worktree' : 'read-only';", replace: "    const mode: ToolMode = 'read-only';" },
+  { name: "WF-92: 该路收尾不随路收命令树（后台进程活过这一路）", file: "src/workflows/engine.ts", tests: 'test/issue-228-*.test.mjs', find: "              await collectOwnerCommands({ runId: context.runId, dispatchId: record.id });", replace: "              void 0;" },
+  { name: "WF-93: 按 pid 单杀而非按进程组杀（孙进程留在世上继续写盘）", file: "src/workflows/command-tree.ts", tests: 'test/issue-228-*.test.mjs', find: "    process.kill(-pid, signal);", replace: "    process.kill(pid, signal);" },
+  { name: "WF-94: 关机第一步不停接单（收完在飞还在接新命令，燃烧打不住）", file: "src/workflows/command-tree.ts", tests: 'test/issue-228-*.test.mjs', find: "  stopAcceptingCommands();\n  const graceMs = options.graceMs ?? DEFAULT_COMMAND_GRACE_MS;", replace: "  const graceMs = options.graceMs ?? DEFAULT_COMMAND_GRACE_MS;" },
+  { name: "WF-95: 子 schema 不再下钻（items / additionalProperties 里的越界关键词漏报）", file: "src/workflows/json-gate.ts", tests: 'test/issue-228-*.test.mjs', find: "      walkChildren(key, value);", replace: "      if (key === 'properties') walkChildren(key, value);" },
 ];
 
 let killedByTest = 0;
@@ -222,10 +243,10 @@ const TEST_GLOB = 'test/*.test.mjs';
  *  1) --bail：首个失败即停——检测只需知道红没红，无需跑完 1464 例。
  *     ⚠ 前提：基线必须绿（见下方 preflight），否则 --bail 会在既有红上误判 KILLED。
  *  2) 逐点窄口：变异点可带 `tests` 字段显式指定覆盖测试；src/workflows/ 下的点
- *     自动回退到本票 workflows 测试（issue-224/225），其余回退全量。
+ *     自动回退到 workflows 测试（issue-224..228），其余回退全量。
  * 不做"全局排除 e2e"——cluster/mcp 类变异的杀手测试恰是集成测试，排掉会漏杀。
  */
-const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs';
+const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs test/issue-228-*.test.mjs';
 const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，

@@ -519,7 +519,7 @@ test('adapter：llmBackedFactory 组装请求、拼接文本、透传 output tok
   assert.equal(seen.length, 1);
   assert.deepEqual(seen[0].model, 'test-model');
   assert.deepEqual(seen[0].system, 'sys');
-  assert.deepEqual(seen[0].tools, [], '格子工具面 v1 不带工具');
+  assert.deepEqual(seen[0].tools, [], '请求不带工具面时，端点工具表就是空（格子工具面自 #228 起才递工具）');
   assert.equal(seen[0].maxTokens, 1234);
   assert.equal(seen[0].messages.length, 1);
   assert.equal(seen[0].messages[0].content[0].text, 'do it');
