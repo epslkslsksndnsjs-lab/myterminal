@@ -156,9 +156,10 @@ test('AC1 脚本看到的预算面只有读数、没有旋钮；不限制开关�
 
   const open = fakeModel(() => ({ text: 'ok', outputTokens: 50_000_000 }));
   const second = engineFor(temp, { adapterFactory: open.factory, gates: { tokenCap: null } });
-  const started = await second.engine.start({ script: `await agent('total=' + String(budget.total)); await agent('again'); return 1;`, ownerSessionId: 'sess-a' });
+  const started = await second.engine.start({ script: `await agent('total=' + String(budget.total) + ' remaining=' + String(budget.remaining())); await agent('again'); return 1;`, ownerSessionId: 'sess-a' });
   const index = await started.completion;
-  assert.equal(open.state.prompts[0], 'total=null', '开=无顶哨兵 null（不写 0、不写假大数）');
+  // 无顶要读成"无顶"：把 remaining 报成 0 会让脚本自己收手，等于偷偷把闸又关上了。
+  assert.equal(open.state.prompts[0], 'total=null remaining=Infinity', '开=无顶哨兵 null（不写 0、不写假大数）');
   assert.equal(index.status, 'completed', '五千万 output token 也不判败——顶被显式解掉了');
   assert.equal(index.tokens.spent, 100_000_000, '解顶不等于不记账');
 });

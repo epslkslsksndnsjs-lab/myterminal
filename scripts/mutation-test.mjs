@@ -170,19 +170,24 @@ const mutations = [
   { name: 'WF-49: detail 不落进审计链（死在哪一步出不了函数）', file: 'src/workflows/start.ts', find: "...(entry.detail ? { detail: entry.detail } : {}),\n", replace: '' },
   { name: 'WF-50: 快照不走改名窗口（旧读者读不到旧键）', file: 'src/workflows/snapshot.ts', find: 'await writeJsonAtomic(file, withDualWrite(snapshot, renames));', replace: 'await writeJsonAtomic(file, snapshot);' },
 
-  // ── src/workflows/ (14) — #226 T3 · 自限闸门与设置节：默认即上限 / 硬顶 / 两级软门 / 嵌套校验 ──
+  // ── src/workflows/ (17) — #226 T3 · 自限闸门与设置节：默认即上限 / 硬顶 / 两级软门 / 嵌套校验 ──
   // 每条都对应票面一条钉死语义：越顶压回、下限守住、env 只认合法帧、"不限制"只解 token 闸、
   // 嵌套余量有效、设置节不含端点字段、未知键不静默。取槽级软门与构造期硬顶由行为测试杀。
-  { name: 'WF-51: 硬顶 clamp 移除（越 64 / 越 10,000 直接生效）', file: 'src/workflows/gates.ts', find: 'if (key.ceiling !== null && value > key.ceiling) {', replace: 'if (false) {' },
+  // 恒假条件会让 TS 判 unreachable / 变量未读而只被编译杀（杀得没意义）；
+  // 一律换成"照值放行但仍留告警"的行为错，由测试杀。
+  { name: 'WF-51: 硬顶 clamp 失守（留了告警却放行越顶值）', file: 'src/workflows/gates.ts', find: 'return { value: key.ceiling, notice:', replace: 'return { value, notice:' },
   { name: 'WF-52: 下限 clamp 移除（并发窗口被调成 1 = 静默串行化）', file: 'src/workflows/gates.ts', find: 'if (value < key.floor) {', replace: 'if (false) {' },
   { name: 'WF-53: env 的 0 被当合法值（关掉闸门用错写法就生效）', file: 'src/workflows/gates.ts', find: 'return Number.isSafeInteger(value) && value > 0 ? value : undefined;', replace: 'return Number.isSafeInteger(value) ? value : undefined;' },
   { name: 'WF-54: "不限制"开关失效（开了仍有顶）', file: 'src/workflows/gates.ts', find: 'tokenCap: unlimited ? null : numbers.tokenCap', replace: 'tokenCap: numbers.tokenCap', all: true },
   { name: 'WF-55: 嵌套校验只看账面（reduceSlack 余量被吃掉）', file: 'src/workflows/gates.ts', find: 'const maxAllowedMs = outerMs - slackMs;', replace: 'const maxAllowedMs = outerMs;' },
   { name: 'WF-56: 违例只报第一条（其余击穿静默通过）', file: 'src/workflows/gates.ts', find: 'return violations.length === 0 ? { ok: true } : { ok: false, violations };', replace: 'return violations.length === 0 ? { ok: true } : { ok: false, violations: violations.slice(0, 1) };' },
   { name: 'WF-57: 端点字段探针失效（baseUrl 混进 workflows 节没人管）', file: 'src/workflows/gates.ts', find: 'return ENDPOINT_FIELD_NAMES.filter((field) => Object.hasOwn(section, field));', replace: 'return [];' },
-  { name: 'WF-58: 默认并发窗口不看核数（公式失守）', file: 'src/workflows/gates.ts', find: "if (key.default === 'auto') return defaultConcurrencyWindow(availableParallelism);", replace: "if (key.default === 'auto') return MIN_CONCURRENCY;" },
+  { name: 'WF-58: 默认并发窗口不看核数（公式失守，一律取下限）', file: 'src/workflows/gates.ts', find: "return key.default === 'auto' ? defaultConcurrencyWindow(availableParallelism) : key.default;", replace: "return key.default === 'auto' ? MIN_CONCURRENCY : key.default;" },
   { name: 'WF-59: 未知键静默通过（typo 让用户以为调了）', file: 'src/workflows/gates.ts', find: "if (!byName.has(name) && !ENDPOINT_FIELD_NAMES.includes(name as (typeof ENDPOINT_FIELD_NAMES)[number])) {", replace: 'if (false) {' },
-  { name: 'WF-60: 启动不再校验时钟嵌套（击穿嵌套照常烧 token）', file: 'src/workflows/engine.ts', find: 'const nesting = validateClockNesting(this.gates);', replace: 'const nesting = { ok: true } as const;' },
+  // 硬编码成"永远放行"会让 TS 丢掉判别收窄而只被编译杀；换成"永远拒"——编译过、
+  // 行为错（连合法闸门集都起不来），由既有全部 run 用例杀。恒过那一臂由 WF-66 补。
+  { name: 'WF-60: 启动校验结果被硬编码（引擎不再真问嵌套）', file: 'src/workflows/engine.ts', find: 'const nesting = validateClockNesting(this.gates);', replace: 'const nesting = { ok: false, violations: [] } as const;' },
+  { name: 'WF-66: 嵌套校验恒过（击穿嵌套的闸门集照样放行）', file: 'src/workflows/gates.ts', find: 'return violations.length === 0 ? { ok: true } : { ok: false, violations };', replace: 'return { ok: true };' },
   { name: 'WF-61: 取槽级软门移除（第二级检查失守）', file: 'src/workflows/engine.ts', find: '      this.assertOpen(context);\n      this.assertBudget(context);\n', replace: '      this.assertOpen(context);\n' },
   { name: 'WF-62: agentCap 构造期硬顶移除（注入越顶值直接生效）', file: 'src/workflows/engine.ts', find: 'agentCap: Math.min(HARD_AGENT_CAP_CEILING, Math.max(1, Math.floor(requested.agentCap))),', replace: 'agentCap: Math.max(1, Math.floor(requested.agentCap)),' },
   { name: 'WF-63: 不限制时预算读数不再报无顶（脚本读到 0 自己收手）', file: 'src/workflows/engine.ts', find: 'remaining: () => (this.gates.tokenCap === null ? Number.POSITIVE_INFINITY : Math.max(0, this.gates.tokenCap - context.spent)),', replace: 'remaining: () => Math.max(0, (this.gates.tokenCap ?? 0) - context.spent),' },
