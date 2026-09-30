@@ -352,7 +352,7 @@ The script contract lives here and nowhere else; the tool description deliberate
 ### Shape of a script
 
 - Plain JavaScript. The source is wrapped in an async function body, so top-level \`await\` and \`return\` are legal — but the last expression is **not** the result: return explicitly on the success path. No \`import\`.
-- An optional leading \`export const meta = { name, description, phases }\` must be a pure literal; it is located and blanked before execution (line and column numbers are preserved), and an unbalanced block rejects the script.
+- A leading \`export const meta = { name, description, phases }\` block is allowed and is located and blanked before execution, with line and column numbers preserved; an unbalanced block rejects the script. Its \`name\` becomes the saved script's filename when it matches \`^[a-z][a-z0-9-]{0,40}$\`; otherwise the file is named after the runId. Nothing else about it is interpreted.
 - **Determinism is a launch gate.** \`Math.random()\` and every \`Date\` accessor (\`Date()\`, \`Date.now()\`, \`Date.parse()\`, \`Date.UTC()\`, \`new Date()\`) are rejected before a single token is spent, and the sandbox makes them throw as well. Resume replay depends on deterministic scripts, so a non-deterministic script can never be continued honestly.
 - The sandbox has no fs, shell, network, or environment. Every byte of I/O goes through \`agent()\`. Values crossing back out are revived per slot, so one path returning something unserializable loses only that slot, and the loss is logged.
 - Globals: \`agent()\`, \`parallel()\`, \`pipeline()\`, \`workflow()\`, \`args\`, \`budget\`, \`log()\`, \`phase()\`. \`console.log/warn/error\` route into the run log.
@@ -370,6 +370,7 @@ Option keys are exactly these twelve; an unknown option (including a typo) is re
 - \`tools\` / \`disallowedTools\` only ever narrow the tool face; they cannot add a tool the face does not offer, \`tools\` may not be an empty array, and wildcards are refused.
 - \`schema\` mode: that path must finish through \`structured_output\`. A submission that does not fit the schema is refused with the reason, and the third failed submission ends the path with no result.
 - \`workingDir\` pins an existing worktree and is mutually exclusive with \`isolation\`.
+- \`agentType\` selects one of the module's own profiles — \`workflow-agent\` by default, \`reader\` for a face with no write tool at all. A profile is an upper bound: it can only narrow what the mode already allows, so a \`reader\` path gets no write tool even when it asks for isolation.
 - A path can never fan out another path, message a human, or touch its own run: the fan-out, message, and control surfaces are absent from its tool face. \`workflow()\` nests at most one level.
 
 ### Three outcomes
