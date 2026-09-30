@@ -96,6 +96,8 @@ const IDEMPOTENCY_LEDGER = {
   skill: [false, 'ADR-0010 决策 8：fork 模式会启动 subagent'],
   subagent_start: [false, '每次调用启动一个新 subagent'],
   subagent_abort: [false, '维持 SUBAGENT_ANNOTATIONS 现状；其 description 自称幂等属已知矛盾，ADR-0034 登记为观察项，不在本刀范围'],
+  // #224：每次调用产出新 runId 并建一条 run 目录；重放会留下第二条 run（非幂等创建）
+  workflow_start: [false, '每次调用新建一个 run（新 runId + 新 run 目录）；重放留下第二条 run，故不声明幂等'],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

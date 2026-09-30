@@ -107,7 +107,9 @@ const mutations = [
   { name: 'TBP-2: builtin-target inner shaping bypassed', file: 'src/extensions.ts', find: 'return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };', replace: 'return { target: target.name, result: await target.invoke(merged, context) };' },
 
   // ── src/workflows/ (15) — Workflows 核心（ADR-0052 #224：新模块变异点 100% 被杀）──
-  { name: 'WF-1: runId 形态闸移除（路径穿越口）', file: 'src/workflows/ids.ts', find: 'if (!isRunId(value)) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);', replace: 'if (false) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);' },
+  // 形态闸用"恒假条件"会让 TS 判 unreachable 而编译失败（杀得没意义）；改成永不命中的真条件，
+  // 由行为测试来杀——变异点的价值在于证明有测试盯着这条纪律。
+  { name: 'WF-1: runId 形态闸移除（路径穿越口）', file: 'src/workflows/ids.ts', find: 'if (!isRunId(value)) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);', replace: 'if (value === null) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);' },
   { name: 'WF-2: 确定性扫描移除（非确定性脚本放行）', file: 'src/workflows/engine.ts', find: 'if (violations.length > 0) {', replace: 'if (false) {' },
   { name: 'WF-3: scriptPath 白名单失效（越界可读）', file: 'src/workflows/paths.ts', find: 'return resolved === root || resolved.startsWith(root + path.sep);', replace: 'return true;' },
   { name: 'WF-4: 终态标记改为覆盖式发布（失去独占）', file: 'src/workflows/atomic.ts', find: '      await link(temp, file);', replace: '      await rename(temp, file);' },
@@ -116,7 +118,7 @@ const mutations = [
   { name: 'WF-7: journal 丢弃段不记账（静默丢）', file: 'src/workflows/journal.ts', find: 'const dropped = lines.length - kept.length;', replace: 'const dropped = 0;' },
   { name: 'WF-8: token 记账移除（每路用量不累加）', file: 'src/workflows/engine.ts', find: '      context.spent += result.outputTokens;', replace: '      void result.outputTokens;' },
   { name: 'WF-9: 续跑归属校验移除（可续别人的 run）', file: 'src/workflows/engine.ts', find: 'if (previous.ownerSessionId !== request.ownerSessionId) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'', replace: 'if (false) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'' },
-  { name: 'WF-10: 续跑终态闸门移除（终态 run 可被重开）', file: 'src/workflows/engine.ts', find: 'if (await exists(run.terminalFile)) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'', replace: 'if (false) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'' },
+  { name: 'WF-10: 续跑终态闸门移除（终态 run 可被重开）', file: 'src/workflows/engine.ts', find: 'if (await exists(run.terminalFile)) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'', replace: 'if (await exists(`${run.terminalFile}.absent`)) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'' },
   { name: 'WF-11: args 记录位恒假（链种子丢失）', file: 'src/workflows/engine.ts', find: 'argsRecorded: request.args !== undefined,', replace: 'argsRecorded: false,' },
   { name: 'WF-12: saved 同名即复用（覆盖已有脚本）', file: 'src/workflows/saved.ts', find: 'if (existing === source) {', replace: 'if (true) {' },
   { name: 'WF-13: 静态扫描掩蔽移除（字符串内误报）', file: 'src/workflows/lint.ts', find: 'const masked = maskNonCode(source);', replace: 'const masked = source;' },
