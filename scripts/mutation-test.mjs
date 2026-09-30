@@ -107,9 +107,9 @@ const mutations = [
   { name: 'TBP-2: builtin-target inner shaping bypassed', file: 'src/extensions.ts', find: 'return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };', replace: 'return { target: target.name, result: await target.invoke(merged, context) };' },
 
   // ── src/workflows/ (15) — Workflows 核心（ADR-0052 #224：新模块变异点 100% 被杀）──
-  // 形态闸用"恒假条件"会让 TS 判 unreachable 而编译失败（杀得没意义）；改成永不命中的真条件，
-  // 由行为测试来杀——变异点的价值在于证明有测试盯着这条纪律。
-  { name: 'WF-1: runId 形态闸移除（路径穿越口）', file: 'src/workflows/ids.ts', find: 'if (!isRunId(value)) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);', replace: 'if (value === null) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);' },
+  // 形态闸替换成恒假条件会让 TS 判 unreachable / 窄化失效而只被编译杀（杀得没意义）；
+  // 直接让返回值不再过闸，由行为测试来杀——变异点的价值在于证明有测试盯着这条纪律。
+  { name: 'WF-1: runId 形态闸移除（路径穿越口）', file: 'src/workflows/ids.ts', find: '  return value;', replace: '  return String(value);' },
   { name: 'WF-2: 确定性扫描移除（非确定性脚本放行）', file: 'src/workflows/engine.ts', find: 'if (violations.length > 0) {', replace: 'if (false) {' },
   { name: 'WF-3: scriptPath 白名单失效（越界可读）', file: 'src/workflows/paths.ts', find: 'return resolved === root || resolved.startsWith(root + path.sep);', replace: 'return true;' },
   { name: 'WF-4: 终态标记改为覆盖式发布（失去独占）', file: 'src/workflows/atomic.ts', find: '      await link(temp, file);', replace: '      await rename(temp, file);' },
