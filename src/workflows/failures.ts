@@ -21,8 +21,8 @@ const CONTEXT_OVERFLOW_PATTERN = /prompt is too long|context (?:length|window|li
 
 export type SettledFailure = { kind: AgentFailureKind; message: string; reason?: string };
 
-function marker<T extends object>(error: T): T {
-  Object.defineProperty(error, '__wfAgentFailure', { value: true, enumerable: false, writable: false });
+function marker<T extends object>(error: T, key: '__wfAgentFailure' | '__wfRunFailure'): T {
+  Object.defineProperty(error, key, { value: true, enumerable: false, writable: false });
   return error;
 }
 
@@ -34,7 +34,7 @@ export class WorkflowAgentFailedError extends Error {
     super(message);
     this.name = 'WorkflowAgentFailedError';
     this.kind = kind;
-    marker(this);
+    marker(this, '__wfAgentFailure');
   }
 }
 
@@ -57,7 +57,7 @@ export class WorkflowRunLevelError extends Error {
   constructor(readonly reason: RunTerminationReason, message: string) {
     super(message);
     this.name = 'WorkflowRunLevelError';
-    Object.defineProperty(this, '__wfRunFailure', { value: true, enumerable: false, writable: false });
+    marker(this, '__wfRunFailure');
   }
 }
 
@@ -70,7 +70,7 @@ export class WorkflowAgentCapExceededError extends Error {
   constructor(readonly maxAgents: number) {
     super(`Workflow run exceeded the agent() cap of ${maxAgents} calls per run.`);
     this.name = 'WorkflowAgentCapExceededError';
-    Object.defineProperty(this, '__wfRunFailure', { value: true, enumerable: false, writable: false });
+    marker(this, '__wfRunFailure');
   }
 }
 
@@ -79,7 +79,7 @@ export class WorkflowBudgetExceededError extends Error {
   constructor(readonly runId: string, readonly spent: number, readonly budgetTotal: number) {
     super(`Workflow run ${runId} exceeded its token budget (${spent} / ${budgetTotal} output tokens). Further agent() calls are refused.`);
     this.name = 'WorkflowBudgetExceededError';
-    Object.defineProperty(this, '__wfRunFailure', { value: true, enumerable: false, writable: false });
+    marker(this, '__wfRunFailure');
   }
 }
 

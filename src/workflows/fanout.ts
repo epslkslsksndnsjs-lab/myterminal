@@ -49,9 +49,8 @@ export function assertItemsAndStages(items: unknown, stages: unknown): { items: 
  * 整批同时起步；结果按位置对齐。
  * 被拒的槽位坍缩为 null，run 级错误原样上抛（整批判败）。
  */
-export async function runParallel(thunks: unknown): Promise<unknown[]> {
-  const list = assertThunks(thunks);
-  const settled = await Promise.allSettled(list.map((thunk) => Promise.resolve().then(thunk)));
+/** 把 allSettled 的结果塌成对齐数组：run 级上抛，其余失败坍缩为该槽 null。 */
+function collapse<T>(settled: Array<PromiseSettledResult<T>>): unknown[] {
   const out: unknown[] = [];
   for (const entry of settled) {
     if (entry.status === 'fulfilled') {
@@ -62,6 +61,11 @@ export async function runParallel(thunks: unknown): Promise<unknown[]> {
     out.push(null);
   }
   return out;
+}
+
+export async function runParallel(thunks: unknown): Promise<unknown[]> {
+  const list = assertThunks(thunks);
+  return collapse(await Promise.allSettled(list.map((thunk) => Promise.resolve().then(thunk))));
 }
 
 /**
@@ -84,15 +88,5 @@ export async function runPipeline(items: unknown, stages: unknown): Promise<unkn
     }
     return previous === undefined ? null : previous;
   });
-  const settled = await Promise.allSettled(chains);
-  const out: unknown[] = [];
-  for (const entry of settled) {
-    if (entry.status === 'fulfilled') {
-      out.push(entry.value === undefined ? null : entry.value);
-      continue;
-    }
-    if (isRunLevelError(entry.reason)) throw entry.reason;
-    out.push(null);
-  }
-  return out;
+  return collapse(await Promise.allSettled(chains));
 }

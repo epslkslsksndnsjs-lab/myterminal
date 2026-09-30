@@ -466,6 +466,85 @@ test('AC4 纯展示项不进键：同一位置只换 label / phase / stepId → 
 });
 
 // ═══════════════════════════════════════════════════════════════
+// AC10 评审补钉：接链 / 封口 / 嵌套批内拒 / 硬顶（每条都是"改了就红"）
+// ═══════════════════════════════════════════════════════════════
+
+test('AC10 续跑接上断点处的键链：新调用的键不复用已有槽位', async () => {
+  const temp = tempWorkspace();
+  const hang = new Promise(() => { /* 在飞永不归：模拟进程被打断 */ });
+  const first = engineFor(temp, { adapterFactory: scripted(() => hang).factory, concurrencyWindow: 2 });
+  const script = `await parallel([() => agent('a', { label: 'A' }), () => agent('b', { label: 'B' })]);return 1;`;
+  const started = await first.engine.start({ script, ownerSessionId: 'sess-a' });
+  await settle();
+  const before = rawLines(temp, started.runId).filter((r) => r.type === 'started');
+  assert.equal(before.length, 2, '两路都已 admission，run 未终态');
+
+  // 换一个引擎实例（进程重启的形状），按 T1 的续跑闸从盘上接上同一条 run。
+  const again = engineFor(temp, { adapterFactory: scripted().factory, concurrencyWindow: 2 });
+  const resumed = await again.engine.start({ scriptPath: started.scriptPath, resumeFromRunId: started.runId, ownerSessionId: 'sess-a' });
+  const index = await resumed.completion;
+
+  const rows = rawLines(temp, started.runId).filter((r) => r.type === 'started');
+  assert.deepEqual(rows.map((r) => r.seq), [1, 2, 3, 4], '续跑的两路接在断点之后');
+  assert.equal(new Set(rows.map((r) => r.key)).size, 4, '键不复用——前缀必须从上一路的键接着滚');
+  assert.equal(rows[2].key, deriveAgentKey(rows[1].key, 'a', '{}'), '第 3 路键 = H(第 2 路键, 本路入参)');
+  assert.equal(rows[3].key, deriveAgentKey(rows[2].key, 'b', '{}'), '第 4 路键 = H(第 3 路键, 本路入参)');
+  assert.equal(index.status, 'completed');
+});
+
+test('AC10 第二层嵌套即使在批里也是 run 级 throw（不许静默"完成"）', async () => {
+  const temp = tempWorkspace();
+  writeSaved(temp, 'grandchild', `const g = await agent('never');\nreturn g;`);
+  writeSaved(temp, 'child', `const r = await parallel([() => workflow('grandchild'), () => agent('ok-child')]);\nreturn r;`);
+  const model = scripted();
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 2 });
+  const started = await engine.start({ script: `await workflow('child');return 1;`, ownerSessionId: 'sess-a' });
+  const index = await started.completion;
+  assert.equal(index.status, 'failed', '批内的非法嵌套必须把整 run 判败');
+  assert.equal(index.reason, 'nesting-limit');
+  assert.equal(model.state.prompts.includes('never'), false);
+});
+
+test('AC10 终态已宣告后，迟归的一路不再改动任何机器件', async () => {
+  const temp = tempWorkspace();
+  const gate = deferred();
+  let release;
+  const model = scripted(async (request) => {
+    if (request.prompt === 'late') { release = gate; return await gate.promise; }
+    return { text: 'ok', outputTokens: 1 };
+  });
+  const clock = virtualClock();
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, clock, concurrencyWindow: 2, thresholds: { runGateMs: 1000 } });
+  const started = await engine.start({
+    script: `const out = await parallel([() => agent('late'), () => agent('fast')]);return out.length;`,
+    ownerSessionId: 'sess-a',
+  });
+  await settle();
+  clock.advance(1000);
+  const index = await started.completion;
+  assert.equal(index.status, 'failed');
+  assert.equal(index.reason, 'run-gate');
+  const snapshotBefore = fs.readFileSync(runPaths(temp.paths, started.runId).snapshotFile, 'utf8');
+
+  release.resolve({ text: 'too late', outputTokens: 40 });
+  await settle(6);
+
+  const after = await readIndex(runPaths(temp.paths, started.runId).indexFile);
+  assert.equal(after.status, 'failed', '索引不被迟归覆盖');
+  assert.equal(after.tokens.spent, index.tokens.spent, '迟归的用量不进终态账');
+  assert.equal(fs.readFileSync(runPaths(temp.paths, started.runId).snapshotFile, 'utf8'), snapshotBefore, '快照不被改写');
+  assert.equal(fs.existsSync(path.join(runPaths(temp.paths, started.runId).agentsDir, 'd0001.json')), false, '迟归那一路不落每路文件');
+});
+
+test('AC10 并发窗口硬顶：越 64 的请求被压到 64，构造期即成立', () => {
+  const temp = tempWorkspace();
+  const { engine } = engineFor(temp, { adapterFactory: scripted().factory, concurrencyWindow: 5000 });
+  assert.equal(engine.windowLimit, 64, '硬顶不因来源而放松');
+  const zero = engineFor(temp, { adapterFactory: scripted().factory, concurrencyWindow: 0 });
+  assert.ok(zero.engine.windowLimit >= 1, '退化值不炸构造（窗口至少 1）');
+});
+
+// ═══════════════════════════════════════════════════════════════
 // AC5 每路独立 adapter 实例
 // ═══════════════════════════════════════════════════════════════
 
@@ -614,6 +693,10 @@ test('AC6 throw = run 级终结：agentCap 越限即整 run 判败、在飞中�
   assert.equal(index.reason, 'agent-cap');
   assert.ok(model.state.prompts.length <= 2, `越限后不再起新批次（实起 ${model.state.prompts.length}）`);
   assert.equal(index.dispatches.length, 2, '队列丢弃：第 3 路不 admission');
+  // 被打断的两路按 ADR §16② 记为"started 无 result"（在飞时被打断），
+  // 不冒充该路自身失败——失败清单只装真正结算过的路。
+  assert.deepEqual(index.failures, [], 'run 级打断不伪造该路失败条目');
+  assert.deepEqual(index.dispatches.map((d) => d.status), ['running', 'running']);
   assert.equal(await fs.promises.readFile(runPaths(temp.paths, started.runId).terminalFile, 'utf8').then((s) => s.includes('agent-cap')), true, '三件套照发');
 });
 

@@ -1,5 +1,4 @@
 import { AgentCallShapeError } from './failures.js';
-import type { AgentFailureKind } from './failures.js';
 
 /**
  * agent() 的选项面——闸门在派发之前。
@@ -11,6 +10,12 @@ import type { AgentFailureKind } from './failures.js';
  *      label / phase / stepId / stallMs 只影响观感与计时，换它们不换键。
  *   3. 归一化在这里一次做完（档位别名、工具名的展示名与拼写名、名单排序去重），
  *      键派生只吃归一后的形态——续跑重放才不会因书写差异而漂移。
+ *
+ * 本票（#225）的落地边界：十二项按 ADR §9 勘误 M1 的运行时白名单收全，但只有
+ * `model` 与 `schema` 现在就改变执行；`tools` / `disallowedTools` / `agentType` 交给
+ * 模块自有工具面（#228），`isolation` / `workingDir` 交给隔离执行（#231），`stallMs`
+ * 交给看门狗（#227）——在各自票据落地前，它们只透传、只进键、只记账，不影响计时与闸门。
+ * 之所以现在就收：键一旦变了，续跑就要重跑；选项表必须一次定全。
  */
 
 export const KNOWN_AGENT_OPTS = [
@@ -223,7 +228,7 @@ export function gateAgentOpts(raw: unknown): GatedAgentOpts {
   if (effort !== undefined) gated.effort = effort;
   if (input.stallMs !== undefined) {
     if (typeof input.stallMs !== 'number' || !Number.isFinite(input.stallMs) || input.stallMs < 0) {
-      shape(`agent(): stallMs must be a finite non-negative number (0 disables the watchdog) — got ${label(input.stallMs)}`);
+      shape(`agent(): stallMs must be a finite non-negative number (got ${label(input.stallMs)})`);
     }
     gated.stallMs = input.stallMs;
   }
@@ -266,5 +271,3 @@ export function canonicalAgentOpts(gated: GatedAgentOpts): string {
   }
   return stableStringify(projected);
 }
-
-export type { AgentFailureKind };

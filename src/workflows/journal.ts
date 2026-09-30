@@ -44,8 +44,11 @@ export class Journal {
 
   /** 记账一行。返回已排队的写盘 promise（fire-and-forget 场景可不安 await）。 */
   append(record: JournalInput): Promise<void> {
-    const line = JSON.stringify({ version: SCHEMA_VERSION, ...record });
-    return this.enqueue(line);
+    return this.enqueue(this.lineFor(record));
+  }
+
+  private lineFor(record: JournalInput, seq?: number): string {
+    return JSON.stringify({ version: SCHEMA_VERSION, ...(seq === undefined ? {} : { seq }), ...record });
   }
 
   private enqueue(line: string): Promise<void> {
@@ -68,9 +71,9 @@ export class Journal {
     }
     if (seq < this.expected) {
       // 重放的旧序号（同一路的第二张账）不再进链，直接落盘。
-      return this.enqueue(JSON.stringify({ version: SCHEMA_VERSION, seq, ...record }));
+      return this.enqueue(this.lineFor(record, seq));
     }
-    const line = JSON.stringify({ version: SCHEMA_VERSION, seq, ...record });
+    const line = this.lineFor(record, seq);
     return new Promise<void>((resolve) => {
       this.holding.set(seq, { line, settle: resolve });
       this.pumpOrdered();

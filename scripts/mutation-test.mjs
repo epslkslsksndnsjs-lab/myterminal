@@ -125,7 +125,7 @@ const mutations = [
   { name: 'WF-14: 注册表保留裁剪移除（终态无限增长）', file: 'src/workflows/registry.ts', find: '.slice(-MAX_RETAINED_TERMINAL_RUNS)', replace: '.slice()' },
   { name: 'WF-15: resume 缺 scriptPath 的互斥校验移除', file: 'src/workflows/start.ts', find: 'if (hasResume && !hasPath) {', replace: 'if (false) {' },
 
-  // ── src/workflows/ (17) — #225 T2 · N 路并发执行：并发窗口 / 键链 / 三态结算 ──
+  // ── src/workflows/ (21) — #225 T2 · N 路并发执行：并发窗口 / 键链 / 三态结算 ──
   // 每条都对应票面一条钉死语义：窗口水位、admission 序进键、形状错不 admission、
   // 沉默坍缩 null、run 级 throw、全败即 failed、账本按调用序归位。
   { name: 'WF-16: 并发窗口水位闸移除（N 路一起起跑）', file: 'src/workflows/scheduler.ts', find: 'while (!aborted && inFlight < limit && queue.length > 0) {', replace: 'while (!aborted && queue.length > 0) {' },
@@ -138,15 +138,20 @@ const mutations = [
   { name: 'WF-23: token 预算软检查移除（超限照常扇出）', file: 'src/workflows/engine.ts', find: 'if (context.spent < cap) return;', replace: 'if (true) return;' },
   // 恒假条件会让 TS 丢掉 allSettled 的判别收窄（.reason 直接编译不过）——只被编译器杀没意义；
   // 换成"认错态：把 run 级当形状错"，编译过、行为错，由测试杀。
-  { name: 'WF-24: run 级错误在批内被降成 null（整批该拒不拒）', file: 'src/workflows/fanout.ts', find: 'if (isRunLevelError(entry.reason)) throw entry.reason;', replace: 'if (entry.reason instanceof AgentCallShapeError) throw entry.reason;', all: true },
+  { name: 'WF-24: run 级错误在批内被降成 null（整批该拒不拒）', file: 'src/workflows/fanout.ts', find: 'if (isRunLevelError(entry.reason)) throw entry.reason;', replace: 'if (entry.reason instanceof AgentCallShapeError) throw entry.reason;' },
   { name: 'WF-25: 失败不具名记入索引（清单静默为空）', file: 'src/workflows/engine.ts', find: '      context.index.failures = [...context.index.failures, entry];\n', replace: '' },
   { name: 'WF-26: 全败判定移除（假完整交付）', file: 'src/workflows/engine.ts', find: 'if (admitted && !succeeded) {', replace: 'if (false) {' },
   { name: 'WF-27: 账本缓冲被绕过（完成序即账本序）', file: 'src/workflows/journal.ts', find: 'this.holding.set(seq, { line, settle: resolve });', replace: 'void this.enqueue(line).then(() => resolve());' },
   { name: 'WF-28: 脚本头部 meta 不再剥离（真脚本编译失败）', file: 'src/workflows/sandbox.ts', find: 'prepared = stripWorkflowMeta(options.source);', replace: 'prepared = options.source;' },
-  { name: 'WF-29: 嵌套层也注入 workflow()（单层限制失守）', file: 'src/workflows/engine.ts', find: 'if (!nested) host.workflow = async (ref, args, opts) => await this.runNested(context, ref, args, opts);', replace: 'host.workflow = async (ref, args, opts) => await this.runNested(context, ref, args, opts);' },
+  { name: 'WF-29: 嵌套层也注入 workflow()（单层限制失守）', file: 'src/workflows/engine.ts', find: 'host.workflow = nested ? () => this.nestingRefused(context) : async (ref, args, opts) => await this.runNested(context, ref, args, opts);', replace: 'host.workflow = async (ref, args, opts) => await this.runNested(context, ref, args, opts);' },
   { name: 'WF-30: pipeline 的 null 哨兵短路移除（失败 item 继续跑）', file: 'src/workflows/fanout.ts', find: 'if (stage > 0 && previous === null) return null;', replace: 'if (false) return null;' },
   { name: 'WF-31: 每路槽位不再唯一（独立 adapter 实例失去凭证）', file: 'src/workflows/engine.ts', find: 'const adapter = factory({ runId: context.runId, dispatchId: record.id });', replace: "const adapter = factory({ runId: context.runId, dispatchId: 'd0000' });" },
   { name: 'WF-32: isolation 标记不随每路记账', file: 'src/workflows/engine.ts', find: '      ...(gated.isolation ? { isolation: gated.isolation } : {}),\n', replace: '' },
+  // ── 评审补钉（#225）：接链 / 封口 / 链级拒 / 硬顶 —— 每条都由测试杀 ──
+  { name: 'WF-33: pipeline 段内 run 级错误被吞成该 item null', file: 'src/workflows/fanout.ts', find: '        if (isRunLevelError(error)) throw error;', replace: '        if (false) throw error;' },
+  { name: 'WF-34: 续跑不从断点接键链（键位撞车，重放歧义）', file: 'src/workflows/engine.ts', find: 'chainPrefix: lastChainKey(index) ?? argsChainSeed(index.args),', replace: 'chainPrefix: argsChainSeed(index.args),' },
+  { name: 'WF-35: 终态封口移除（迟归的一路改写终态机器件）', file: 'src/workflows/engine.ts', find: 'if (context.settled || !context.open) return null;', replace: 'if (false) return null;' },
+  { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));', replace: 'this.windowSize = Math.max(1, Math.floor(requested));' },
 ];
 
 let killedByTest = 0;

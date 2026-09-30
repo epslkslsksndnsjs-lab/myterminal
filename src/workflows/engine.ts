@@ -11,7 +11,7 @@ import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type FailureEntry, typ
 import { writeSnapshot } from './snapshot.js';
 import { ensureDir, createExclusive, exists, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents } from './events.js';
-import { createDispatchWindow, defaultConcurrencyWindow, type DispatchWindow } from './scheduler.js';
+import { createDispatchWindow, defaultConcurrencyWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
 import { canonicalAgentOpts, gateAgentOpts, type GatedAgentOpts } from './agent-opts.js';
 import { argsChainSeed, deriveAgentKey } from './keys.js';
 import {
@@ -168,7 +168,8 @@ export class WorkflowEngine {
     this.events = deps.events ?? new WorkflowEvents();
     this.factory = deps.adapterFactory;
     const requested = deps.concurrencyWindow ?? defaultConcurrencyWindow();
-    this.windowSize = Math.max(1, Math.floor(requested));
+    // 硬顶在这里也成立：并发值不得越过 64，无论它来自哪个设置面（T3 补 env / config 入口）。
+    this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));
   }
 
   /** 本引擎的并发窗口大小（观测面：滚动补位的上限水位）。 */
@@ -250,7 +251,7 @@ export class WorkflowEngine {
       controller: new AbortController(),
       window: createDispatchWindow(this.windowLimit),
       indexWrites: Promise.resolve(),
-      chainPrefix: argsChainSeed(index.args),
+      chainPrefix: lastChainKey(index) ?? argsChainSeed(index.args),
       agentCount: sequence,
     };
     this.runs.set(runId, context);
@@ -339,8 +340,16 @@ export class WorkflowEngine {
         remaining: () => Math.max(0, this.thresholds.tokenCap - context.spent),
       },
     };
-    if (!nested) host.workflow = async (ref, args, opts) => await this.runNested(context, ref, args, opts);
+    // 第二层拿不到再扇出的能力：限制靠"注入什么"表达，不靠计数器。
+    // 拒因带 run 级标记——批里也不许被降成 null，否则非法嵌套会以"完成"收场（假完整红线）。
+    host.workflow = nested ? () => this.nestingRefused(context) : async (ref, args, opts) => await this.runNested(context, ref, args, opts);
     return host;
+  }
+
+  private nestingRefused(context: RunContext): Promise<never> {
+    const error = runLevelError('nesting-limit', 'workflow() nesting is limited to one level: a nested script cannot fan out again.');
+    this.terminate(context, 'nesting-limit', error.message);
+    throw error;
   }
 
   /** 嵌套复用已保存脚本：共享同一 run 的键链、窗口、预算与注册表。 */
@@ -390,7 +399,12 @@ export class WorkflowEngine {
     // 形状错在这一刻就拒：不占键位、不计数、不进失败清单。
     const gated = gateAgentOpts(rawOpts);
 
-    // 预算入口门（软检查）先于计数：超限即 run 级终结，多烧的那点由取槽二检兜。
+    // 键先滚动，再过预算门与计数（ADR §17 顺序契约）：链是"调用序列"的函数，
+    // 不能因为某一次被闸门拒掉就不计位——否则同一脚本在不同闸下会派生出不同的链。
+    const sequence = ++context.seq;
+    const key = deriveAgentKey(context.chainPrefix, prompt, canonicalAgentOpts(gated));
+    context.chainPrefix = key;
+
     this.assertBudget(context);
     context.agentCount += 1;
     if (context.agentCount > this.thresholds.agentCap) {
@@ -398,10 +412,6 @@ export class WorkflowEngine {
       this.terminate(context, 'agent-cap', error.message);
       throw error;
     }
-
-    const sequence = ++context.seq;
-    const key = deriveAgentKey(context.chainPrefix, prompt, canonicalAgentOpts(gated));
-    context.chainPrefix = key;
 
     const slot = dispatchId(sequence);
     const label = typeof gated.label === 'string' && gated.label.trim() ? gated.label : `agent-${sequence}`;
@@ -425,7 +435,14 @@ export class WorkflowEngine {
     queueIndexWrite(context);
     void context.journal.append({ type: 'started', seq: sequence, key, label, at: startedAt }).catch(() => undefined);
 
-    return await this.runPath(context, record, prompt, gated);
+    try {
+      return await this.runPath(context, record, prompt, gated);
+    } catch (error) {
+      // run 级终结把排队与在飞的等待打断：那不是这一路自己失败，
+      // 绝不许在批里被降成 null（那会让非法扇出静默"完成"）。
+      if (!context.open) throw runLevelError(context.termination?.reason ?? 'cancelled', context.termination?.message ?? 'The run is no longer accepting work.');
+      throw error;
+    }
   }
 
   /** 叶子任务才进窗口：排队不占键位，取槽时再过一次预算门。 */
@@ -476,6 +493,9 @@ export class WorkflowEngine {
     record: DispatchRecord,
     outcome: { ok: true; value: unknown; outputTokens: number } | { ok: false; failure: SettledFailure },
   ): Promise<unknown> {
+    // 终态已宣告（或 run 级已封口）：迟归的那一路不再动任何机器件——
+    // 索引 / 快照 / 终态标记必须彼此一致，"此后任何证据不再改动终态"。
+    if (context.settled || !context.open) return null;
     const endedAt = this.clock.iso();
     const next: DispatchRecord = outcome.ok
       ? { ...record, status: 'completed', endedAt, outputTokens: outcome.outputTokens }
@@ -558,6 +578,15 @@ export class WorkflowEngine {
   static isTerminal(status: WorkflowStatus): boolean {
     return isTerminal(status);
   }
+}
+
+/** 续跑接链：从最后一条已 admission 的键接着滚，缺键的老产物退回 args 种子。 */
+function lastChainKey(index: RunIndex): string | undefined {
+  for (let i = index.dispatches.length - 1; i >= 0; i--) {
+    const key = index.dispatches[i].key;
+    if (typeof key === 'string' && key) return key;
+  }
+  return undefined;
 }
 
 /** 排一次索引写：入队顺序即落盘顺序，最后落盘的必是最新版。 */
