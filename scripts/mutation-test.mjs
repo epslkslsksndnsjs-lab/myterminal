@@ -149,7 +149,7 @@ const mutations = [
   { name: 'WF-32: isolation 标记不随每路记账', file: 'src/workflows/engine.ts', find: '      ...(gated.isolation ? { isolation: gated.isolation } : {}),\n', replace: '' },
   // ── 评审补钉（#225）：接链 / 封口 / 链级拒 / 硬顶 —— 每条都由测试杀 ──
   { name: 'WF-33: pipeline 段内 run 级错误被吞成该 item null', file: 'src/workflows/fanout.ts', find: '        if (isRunLevelError(error)) throw error;', replace: '        if (false) throw error;' },
-  { name: 'WF-34: 续跑不重推 args 种子键链（缓存全落空，重放失效）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'chainPrefix: replayChainSeed(index.args),', replace: 'chainPrefix: replayChainSeed({ __wf_bust_replay__: index.args }),' },
+  { name: 'WF-34: 续跑用错链种子（与首跑不一致，缓存全落空、重放失效）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'chainPrefix: replayChainSeed(index.args),', replace: 'chainPrefix: replayChainSeed(request.resumeFromRunId ? { __wf_bust_replay__: true } : index.args),' },
   { name: 'WF-35: 终态封口移除（迟归的一路改写终态机器件）', file: 'src/workflows/engine.ts', find: 'if (context.settled || !context.open) return null;', replace: 'if (false) return null;' },
   // #226 之后硬顶挪到闸门归一化那一步（构造期仍成立，口径没变，只是位置收敛）。
   { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'concurrencyWindow: Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(window))),', replace: 'concurrencyWindow: Math.max(1, Math.floor(window)),' },
@@ -281,8 +281,8 @@ const mutations = [
 
   // ── src/workflows/ (T7 #230) — 控制与续跑：cancel / pause / resume / 缓存重放 / 排他锁 ──
   // 每条对应票面一条钉死语义，全部由 test/issue-230-*.test.mjs 行为杀（非仅编译杀）。
-  { name: 'WF-200: 续跑不查缓存（命中前缀照样全 live，重放形同虚设）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (context.replay && !context.replayBarrierBroken && context.replay.has(key)) {', replace: 'if (context.replay && !context.replayBarrierBroken && false) {' },
-  { name: 'WF-201: 缓存命中不把已完成记录接回账本（每路 usage 丢、X/Y 算虚）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (reused) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };', replace: 'if (reused && false) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };' },
+  { name: 'WF-200: 续跑不查缓存（命中前缀照样全 live，重放形同虚设）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (context.replay && !context.replayBarrierBroken && context.replay.has(key)) {', replace: 'if (context.replay && context.replayBarrierBroken && context.replay.has(key)) {' },
+  { name: 'WF-201: 缓存命中不把已完成记录接回账本（每路 usage 丢、X/Y 算虚）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (reused) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };', replace: 'if (reused) context.index = { ...context.index, dispatches: [...context.index.dispatches] };' },
   { name: 'WF-202: run 级终结一律坍缩成 failed（取消不再是 cancelled 三态之一）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: "return reason === 'cancelled' ? 'cancelled' : 'failed';", replace: "return 'failed';" },
   { name: 'WF-203: 存活进程反被当失效锁（他人续跑被放行，双写目录）', file: 'src/workflows/lock.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (!isAlive(holder.pid)) return true;', replace: 'if (isAlive(holder.pid)) return true;' },
   { name: 'WF-204: pid 复用窗口的 epoch 兜底移除（复用 pid 打不死接管）', file: 'src/workflows/lock.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (holder.pid === self.pid && holder.epoch < self.epoch) return true;', replace: 'if (holder.pid === self.pid && holder.epoch < self.epoch) return false;' },
