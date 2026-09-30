@@ -116,7 +116,7 @@ function engineFor(temp, options = {}) {
     audit: () => { /* 票面不重述 T1 的审计契约 */ },
     adapterFactory: options.adapterFactory,
     events: options.events,
-    thresholds: options.thresholds,
+    gates: options.gates,
     ...(options.concurrencyWindow !== undefined ? { concurrencyWindow: options.concurrencyWindow } : {}),
   });
   return { engine, clock, events };
@@ -514,7 +514,7 @@ test('AC10 终态已宣告后，迟归的一路不再改动任何机器件', asy
     return { text: 'ok', outputTokens: 1 };
   });
   const clock = virtualClock();
-  const { engine } = engineFor(temp, { adapterFactory: model.factory, clock, concurrencyWindow: 2, thresholds: { runGateMs: 1000 } });
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, clock, concurrencyWindow: 2, gates: { runGateMs: 1000, dispatchWindowMs: 300, stallMs: 100, reducerBudgetMs: 2000, reducerTimeoutMs: 3000, reduceSlackMs: 100 } });
   const started = await engine.start({
     script: `const out = await parallel([() => agent('late'), () => agent('fast')]);return out.length;`,
     ownerSessionId: 'sess-a',
@@ -683,7 +683,7 @@ test('AC6 throw = run 级终结：agentCap 越限即整 run 判败、在飞中�
   const temp = tempWorkspace();
   const box = gateBox();
   const model = scripted(box.behave);
-  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 2, thresholds: { agentCap: 2 } });
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 2, gates: { agentCap: 2 } });
   const started = await engine.start({
     script: `await parallel([0,1,2,3,4].map((i) => () => agent('cap' + i)));return 1;`,
     ownerSessionId: 'sess-a',
@@ -703,7 +703,7 @@ test('AC6 throw = run 级终结：agentCap 越限即整 run 判败、在飞中�
 test('AC6 throw = run 级终结：token 预算越限即整 run 判败', async () => {
   const temp = tempWorkspace();
   const model = scripted(async () => ({ text: 'chunk', outputTokens: 60 }));
-  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 1, thresholds: { tokenCap: 100 } });
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 1, gates: { tokenCap: 100 } });
   const started = await engine.start({
     script: `await parallel([0,1,2,3].map((i) => () => agent('t' + i)));return 1;`,
     ownerSessionId: 'sess-a',

@@ -6,6 +6,7 @@ import { describePortOwner, portOwner, upsertWorkspaceRecord, workspaceId, works
 import { migrateWorkspaceState } from './migration.js';
 import os from 'node:os';
 import path from 'node:path';
+import { normalizeWorkflowSettings } from './workflows/gates.js';
 import type { MyTerminalConfig, MyTerminalSettings, SubagentSettings } from './types.js';
 
 const WORKSPACE_PLACEHOLDERS = new Set(['/absolute/path/to/project']);
@@ -164,6 +165,17 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
       if (sub.fallbackModel !== undefined && (typeof sub.fallbackModel !== 'string' || !sub.fallbackModel.trim())) {
         delete sub.fallbackModel;
       }
+    }
+  }
+
+  // ADR-0052 §1 / §8-I4：workflows 是**非端点**独立设置节。默认即上限，调参只经本机设置面；
+  // 类型不符 / 未知键 / 端点字段一律拒（fail-closed，启动即红），越硬顶按运行期同口径压回。
+  if (settings.workflows) {
+    const normalized = normalizeWorkflowSettings(settings.workflows);
+    if (normalized.errors.length) {
+      errors.push(...normalized.errors);
+    } else {
+      settings.workflows = normalized.value;
     }
   }
 

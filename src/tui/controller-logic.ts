@@ -1,9 +1,10 @@
 // #29（批5 第 9 刀 / ADR-0032）：TuiController 对话流/字段解析纯函数层。
 // 本模块零 I/O —— 不 import spawn/fs/net，全部函数可直接单测。
 // 逻辑与 state.ts 原内联块逐字等价（行为不变铁律）；I/O 收敛见 host-io.ts。
-import type { MyTerminalSession, MyTerminalSettings, TaskPackage } from '../types.js';
+import type { MyTerminalSession, MyTerminalSettings, TaskPackage, WorkflowsSettings } from '../types.js';
 import type { FormQuestion } from './contracts.js';
 import { isValidPublicBaseUrl } from '../config.js';
+import { WORKFLOW_SETTING_KEYS, workflowSettingDefault, type WorkflowSettingKey } from '../workflows/gates.js';
 import { isAddWorkspaceSelection, selectedWorkspace, type WorkspaceSelectionItem } from '../workspace-selection.js';
 import type { Translate } from './copy/i18n.js';
 
@@ -45,6 +46,84 @@ type SettingsApplyContext = {
   workspace: WorkspaceResolution;
   setPassiveAction: (choice: PassiveLockChoice) => void;
 };
+
+/** 本机设置面里 workflows 那一段的字段名（选择清单与登记表同源，不留两份清单）。 */
+export const WORKFLOW_SETTING_FIELDS: string[] = WORKFLOW_SETTING_KEYS.map((key) => key.field);
+
+/**
+ * workflows 设置节的字段文案。标签归本机设置面这一层，边界与默认仍从 gates.ts 的
+ * 登记表取——TUI 里说的上限必须就是闸门钉的那个，不能再写一遍数字。
+ */
+const WORKFLOW_FIELD_COPY: Record<string, readonly [string, string]> = {
+  'wf-token-cap': ['Workflow token cap (output tokens per run)', '工作流单 run token 上限（输出 token）'],
+  'wf-unlimited': ['Workflow unlimited tokens (requires explicit user authorization)', '工作流不限制 token（需用户明确说明）'],
+  'wf-run-gate': ['Workflow wall-clock gate (minutes per run)', '工作流墙钟闸（分钟 / run）'],
+  'wf-agent-cap': ['Workflow agent cap (agent() calls per run)', '工作流 agent 数上限（单 run 调用数）'],
+  'wf-concurrency-window': ['Workflow concurrency window', '工作流并发窗口'],
+  'wf-dispatch-window': ['Workflow per-path dispatch window (minutes)', '工作流逐路派发窗（分钟）'],
+  'wf-dispatch-turns': ['Workflow per-path turn cap', '工作流逐路轮数上限'],
+  'wf-stall-seconds': ['Workflow stall window (seconds without progress)', '工作流 stall 窗（无进展秒数）'],
+  'wf-wait-chunk-seconds': ['Workflow wait chunk (seconds per reducer wait)', '工作流单次等待窗（汇总体每次阻塞秒数）'],
+  'wf-reducer-budget': ['Reducer wait budget (minutes)', '汇总体等待预算（分钟）'],
+  'wf-reducer-timeout': ['Reducer hard timeout (minutes)', '汇总体硬超时（分钟）'],
+  'wf-keep-quota-count': ['Worktree keep quota (count)', 'worktree 保留配额（个）'],
+  'wf-keep-quota-bytes': ['Worktree keep quota (bytes)', 'worktree 保留配额（字节）'],
+  'wf-archive-after-days': ['Worktree archive threshold (days)', 'worktree 归档阈值（天）'],
+  'wf-auto-archive': ['Worktree auto-archive', 'worktree 自动归档'],
+  'wf-snapshot-retain': ['Workflow snapshot retention (count)', '工作流快照保留份数'],
+  'wf-terminal-run-retain': ['Terminal workflow run retention (count)', '终态 run 保留数'],
+  'wf-reducer-quota': ['Reducer concurrency quota', '汇总体并发配额'],
+};
+
+function savedWorkflowValue(current: MyTerminalSettings, key: WorkflowSettingKey): number | boolean | undefined {
+  const saved = (current.workflows as WorkflowsSettings | undefined)?.[key.name];
+  return typeof saved === 'number' || typeof saved === 'boolean' ? saved : undefined;
+}
+
+/** 登记表 → SETTINGS_FIELDS 条目：question / apply 与上面 11 个字段走同一对契约。 */
+function workflowSettingFields(): Record<string, { question: (ctx: SettingsQuestionContext) => FormQuestion; apply: (value: string, ctx: SettingsApplyContext) => void }> {
+  const fields: Record<string, { question: (ctx: SettingsQuestionContext) => FormQuestion; apply: (value: string, ctx: SettingsApplyContext) => void }> = {};
+  for (const key of WORKFLOW_SETTING_KEYS) {
+    const copy = WORKFLOW_FIELD_COPY[key.field] ?? [key.name, key.name];
+    fields[key.field] = {
+      question: ({ current, text }) => {
+        const label = text(copy[0], copy[1]);
+        const saved = savedWorkflowValue(current, key);
+        if (key.unit === 'switch') {
+          const value = typeof saved === 'boolean' ? saved : workflowSettingDefault(key);
+          return { label, fallback: value ? 'on' : 'off', options: ['off', 'on'] };
+        }
+        // 边界文案从登记表的数字生成——TUI 里说的上限就是闸门钉的那个，不能再写一遍。
+        const range = () => key.ceiling === null
+          ? text(`Use an integer of at least ${key.floor}.`, `请输入不小于 ${key.floor} 的整数。`)
+          : text(`Use an integer from ${key.floor} to ${key.ceiling}.`, `请输入 ${key.floor} 到 ${key.ceiling} 的整数。`);
+        const value = typeof saved === 'number' ? saved : Number(workflowSettingDefault(key));
+        return {
+          label,
+          fallback: String(value),
+          validate: (input) => {
+            const parsed = Number(input);
+            if (!Number.isInteger(parsed) || parsed < key.floor) return range();
+            if (key.ceiling !== null && parsed > key.ceiling) return range();
+            return undefined;
+          },
+        };
+      },
+      apply: (value, { next, current }) => {
+        // 从 next 起抄：同一批答案里后面的字段不能把前面已写回的那格冲掉。
+        const workflows: Record<string, number | boolean> = { ...(next.workflows ?? {}) };
+        const saved = savedWorkflowValue(current, key);
+        if (key.unit === 'switch') {
+          workflows[key.name] = value.trim().toLowerCase() === 'on';
+        } else {
+          workflows[key.name] = integer(value, typeof saved === 'number' ? saved : Number(workflowSettingDefault(key)));
+        }
+        next.workflows = workflows as WorkflowsSettings;
+      },
+    };
+  }
+  return fields;
+}
 
 /**
  * 设置字段注册表——question（字段 → 表单问题）与 apply（答案 → settings 写回）
@@ -108,6 +187,7 @@ const SETTINGS_FIELDS: Record<string, {
       next.passiveLockEnabled = choice !== 'off';
     },
   },
+  ...workflowSettingFields(),
 };
 
 /** editSettings :344-362 —— 已选字段 → 表单问题（含校验器）。 */

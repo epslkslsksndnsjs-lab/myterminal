@@ -12,7 +12,8 @@ import { writeSnapshot } from './snapshot.js';
 import { ensureDir, createExclusive, exists, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents } from './events.js';
 import { resolveCrashPlan, type CrashPlan, type CrashPoint } from './crash.js';
-import { createDispatchWindow, defaultConcurrencyWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
+import { createDispatchWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
+import { DEFAULT_GATES, HARD_AGENT_CAP_CEILING, describeClockNesting, validateClockNesting, type WorkflowGates } from './gates.js';
 import { canonicalAgentOpts, gateAgentOpts, type GatedAgentOpts } from './agent-opts.js';
 import { argsChainSeed, deriveAgentKey } from './keys.js';
 import {
@@ -40,26 +41,6 @@ import { AGENT_SYSTEM_PROMPT, type AdapterFactory } from './adapter.js';
  * 一切时间经注入时钟，一切模型调用经注入工厂，state 根与并发窗口可整体重定向。
  */
 
-export type EngineThresholds = {
-  /** run 总闸（墙钟）。 */
-  runGateMs: number;
-  /** 单路无进展判定窗。 */
-  stallMs: number;
-  /** 等待原语单次阻塞上限。 */
-  waitMs: number;
-  /** 单 run 输出 token 硬顶。 */
-  tokenCap: number;
-  /** 单 run 的 agent() 调用数硬顶。 */
-  agentCap: number;
-};
-
-export const DEFAULT_THRESHOLDS: EngineThresholds = {
-  runGateMs: 30 * 60 * 1000,
-  stallMs: 180_000,
-  waitMs: 600_000,
-  tokenCap: 8_000_000,
-  agentCap: 1000,
-};
 
 /** 单路一次调用的输出上限（本票不表达为脚本可传的旋钮）。 */
 export const DEFAULT_OUTPUT_TOKENS = 32_000;
@@ -83,8 +64,9 @@ export type EngineDeps = {
   adapterFactory?: AdapterFactory;
   events?: WorkflowEvents;
   audit?: (entry: WorkflowAuditEntry) => void;
-  thresholds?: Partial<EngineThresholds>;
-  /** 并发窗口：默认按核数公式；注入即所断言的窗口（闸门的设置面属 T3）。 */
+  /** 自限闸门（默认即上限；本机设置面经 gates.ts 解析后注入这里）。 */
+  gates?: Partial<WorkflowGates>;
+  /** 并发窗口的直接断言缝：给了就以它为准（滚动补位的水位用例用它）。 */
   concurrencyWindow?: number;
   /** 终态通知缝：回传管线接线前为空实现，结算纪律不受影响。 */
   notifier?: (settled: { runId: string; status: WorkflowStatus; reason?: TerminalReason; indexPath: string }) => void;
@@ -164,7 +146,7 @@ class RunGateReached extends Error {
 export class WorkflowEngine {
   private readonly clock: Clock;
   private readonly paths: WorkflowPaths;
-  private readonly thresholds: EngineThresholds;
+  private readonly gates: WorkflowGates;
   private readonly events: WorkflowEvents;
   private readonly factory: AdapterFactory | undefined;
   private readonly windowSize: number;
@@ -174,13 +156,19 @@ export class WorkflowEngine {
   constructor(private readonly deps: EngineDeps) {
     this.clock = deps.clock ?? systemClock();
     this.paths = workflowPaths(deps.managedRoot ?? managedRootFor(deps.workspaceDir));
-    this.thresholds = { ...DEFAULT_THRESHOLDS, ...(deps.thresholds ?? {}) };
+    // 硬顶在构造期也成立：并发值不得越过 64、agent 数不得越过 10,000，无论它来自
+    // 设置文件、env 还是直接注入本构造器的调用方。
+    const requested = { ...DEFAULT_GATES, ...(deps.gates ?? {}) };
+    const window = deps.concurrencyWindow ?? requested.concurrencyWindow;
+    this.gates = {
+      ...requested,
+      concurrencyWindow: Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(window))),
+      agentCap: Math.min(HARD_AGENT_CAP_CEILING, Math.max(1, Math.floor(requested.agentCap))),
+    };
     this.events = deps.events ?? new WorkflowEvents();
     this.factory = deps.adapterFactory;
     this.crash = deps.crash ?? resolveCrashPlan({ env: deps.crashEnv ?? process.env, kill: deps.crashKill });
-    const requested = deps.concurrencyWindow ?? defaultConcurrencyWindow();
-    // 硬顶在这里也成立：并发值不得越过 64，无论它来自哪个设置面（T3 补 env / config 入口）。
-    this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));
+    this.windowSize = this.gates.concurrencyWindow;
   }
 
   /** 本引擎的并发窗口大小（观测面：滚动补位的上限水位）。 */
@@ -188,8 +176,18 @@ export class WorkflowEngine {
     return this.windowSize;
   }
 
+  /** 本引擎实际生效的 agent 数上限（观测面：硬顶压回后的最终值）。 */
+  get agentLimit(): number {
+    return this.gates.agentCap;
+  }
+
   /** 启动一条 run：做完所有"烧 token 前"的校验，立即返回，余下在后台跑。 */
   async start(request: StartRequest): Promise<StartResult> {
+    // 时钟嵌套不变量先过：调参击穿嵌套就 fail-closed 拒启动（§16，违例码照 §8 = FORBIDDEN）。
+    const nesting = validateClockNesting(this.gates);
+    if (!nesting.ok) {
+      throw new WorkflowStartError('FORBIDDEN', 'clock-nesting', `Workflow clock nesting violated: ${describeClockNesting(nesting.violations)}.`);
+    }
     const runId = request.resumeFromRunId ?? newRunId();
     const run = runPaths(this.paths, runId);
 
@@ -307,7 +305,7 @@ export class WorkflowEngine {
       context.gateHandle = this.clock.setTimeout(() => {
         this.terminate(context, 'run-gate', 'The run reached its wall-clock gate.');
         reject(new RunGateReached());
-      }, this.thresholds.runGateMs);
+      }, this.gates.runGateMs);
     });
 
     try {
@@ -356,9 +354,9 @@ export class WorkflowEngine {
     const host: SandboxHost = {
       agent: async (prompt, opts) => await this.countedDispatch(context, prompt, opts),
       budget: {
-        total: this.thresholds.tokenCap,
+        total: this.gates.tokenCap,
         spent: () => context.spent,
-        remaining: () => Math.max(0, this.thresholds.tokenCap - context.spent),
+        remaining: () => (this.gates.tokenCap === null ? Number.POSITIVE_INFINITY : Math.max(0, this.gates.tokenCap - context.spent)),
       },
     };
     // 第二层拿不到再扇出的能力：限制靠"注入什么"表达，不靠计数器。
@@ -428,8 +426,8 @@ export class WorkflowEngine {
 
     this.assertBudget(context);
     context.agentCount += 1;
-    if (context.agentCount > this.thresholds.agentCap) {
-      const error = new WorkflowAgentCapExceededError(this.thresholds.agentCap);
+    if (context.agentCount > this.gates.agentCap) {
+      const error = new WorkflowAgentCapExceededError(this.gates.agentCap);
       this.terminate(context, 'agent-cap', error.message);
       throw error;
     }
@@ -559,9 +557,10 @@ export class WorkflowEngine {
     throw runLevelError(termination?.reason ?? 'cancelled', termination?.message ?? 'The run is no longer accepting work.');
   }
 
-  /** 两级软检查的第一级（入口）；第二级在取槽时。 */
+  /** 两级软检查的第一级（入口）；第二级在取槽时。cap 为 null = 不限制开关已开。 */
   private assertBudget(context: RunContext): void {
-    const cap = this.thresholds.tokenCap;
+    const cap = this.gates.tokenCap;
+    if (cap === null) return;
     if (context.spent < cap) return;
     const error = new WorkflowBudgetExceededError(context.runId, context.spent, cap);
     this.terminate(context, 'token-budget', error.message);

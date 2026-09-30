@@ -134,7 +134,7 @@ const mutations = [
   { name: 'WF-19: started 行不带键（重放无从对齐调用）', file: 'src/workflows/engine.ts', find: "{ type: 'started', seq: sequence, key, label, at: startedAt }", replace: "{ type: 'started', seq: sequence, label, at: startedAt }" },
   { name: 'WF-20: 键投影吃下全部已知项（展示项进键）', file: 'src/workflows/agent-opts.ts', find: 'for (const field of DISPATCH_AFFECTING_AGENT_OPTS) {', replace: 'for (const field of KNOWN_AGENT_OPTS) {' },
   { name: 'WF-21: 未知选项闸移除（形状错静默通过并占键位）', file: 'src/workflows/agent-opts.ts', find: 'if (unknown.length > 0) {', replace: 'if (false) {' },
-  { name: 'WF-22: agentCap 检查移除（run 级终结少一臂）', file: 'src/workflows/engine.ts', find: 'if (context.agentCount > this.thresholds.agentCap) {', replace: 'if (false) {' },
+  { name: 'WF-22: agentCap 检查移除（run 级终结少一臂）', file: 'src/workflows/engine.ts', find: 'if (context.agentCount > this.gates.agentCap) {', replace: 'if (false) {' },
   { name: 'WF-23: token 预算软检查移除（超限照常扇出）', file: 'src/workflows/engine.ts', find: 'if (context.spent < cap) return;', replace: 'if (true) return;' },
   // 恒假条件会让 TS 丢掉 allSettled 的判别收窄（.reason 直接编译不过）——只被编译器杀没意义；
   // 换成"认错态：把 run 级当形状错"，编译过、行为错，由测试杀。
@@ -151,7 +151,8 @@ const mutations = [
   { name: 'WF-33: pipeline 段内 run 级错误被吞成该 item null', file: 'src/workflows/fanout.ts', find: '        if (isRunLevelError(error)) throw error;', replace: '        if (false) throw error;' },
   { name: 'WF-34: 续跑不从断点接键链（键位撞车，重放歧义）', file: 'src/workflows/engine.ts', find: 'chainPrefix: lastChainKey(index) ?? argsChainSeed(index.args),', replace: 'chainPrefix: argsChainSeed(index.args),' },
   { name: 'WF-35: 终态封口移除（迟归的一路改写终态机器件）', file: 'src/workflows/engine.ts', find: 'if (context.settled || !context.open) return null;', replace: 'if (false) return null;' },
-  { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));', replace: 'this.windowSize = Math.max(1, Math.floor(requested));' },
+  // #226 之后硬顶挪到闸门归一化那一步（构造期仍成立，口径没变，只是位置收敛）。
+  { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'concurrencyWindow: Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(window))),', replace: 'concurrencyWindow: Math.max(1, Math.floor(window)),' },
 
   // ── src/workflows/ (14) — #224 补口 · 结算故障注入点 + 重命名双写窗口 + 审计证据保真 ──
   { name: 'WF-37: 通知前那一帧不触发（三点矩阵缺一帧）', file: 'src/workflows/engine.ts', find: "this.crash('before-notice');\n", replace: '' },
@@ -168,6 +169,25 @@ const mutations = [
   { name: 'WF-48: 审计 status 退回一律 completed（失败结算看不出来）', file: 'src/workflows/start.ts', find: "status: AUDIT_STATUS[entry.status] ?? 'failed',", replace: "status: entry.action === 'workflow_settle' ? 'completed' : 'running',", all: true },
   { name: 'WF-49: detail 不落进审计链（死在哪一步出不了函数）', file: 'src/workflows/start.ts', find: "...(entry.detail ? { detail: entry.detail } : {}),\n", replace: '' },
   { name: 'WF-50: 快照不走改名窗口（旧读者读不到旧键）', file: 'src/workflows/snapshot.ts', find: 'await writeJsonAtomic(file, withDualWrite(snapshot, renames));', replace: 'await writeJsonAtomic(file, snapshot);' },
+
+  // ── src/workflows/ (14) — #226 T3 · 自限闸门与设置节：默认即上限 / 硬顶 / 两级软门 / 嵌套校验 ──
+  // 每条都对应票面一条钉死语义：越顶压回、下限守住、env 只认合法帧、"不限制"只解 token 闸、
+  // 嵌套余量有效、设置节不含端点字段、未知键不静默。取槽级软门与构造期硬顶由行为测试杀。
+  { name: 'WF-51: 硬顶 clamp 移除（越 64 / 越 10,000 直接生效）', file: 'src/workflows/gates.ts', find: 'if (key.ceiling !== null && value > key.ceiling) {', replace: 'if (false) {' },
+  { name: 'WF-52: 下限 clamp 移除（并发窗口被调成 1 = 静默串行化）', file: 'src/workflows/gates.ts', find: 'if (value < key.floor) {', replace: 'if (false) {' },
+  { name: 'WF-53: env 的 0 被当合法值（关掉闸门用错写法就生效）', file: 'src/workflows/gates.ts', find: 'return Number.isSafeInteger(value) && value > 0 ? value : undefined;', replace: 'return Number.isSafeInteger(value) ? value : undefined;' },
+  { name: 'WF-54: "不限制"开关失效（开了仍有顶）', file: 'src/workflows/gates.ts', find: 'tokenCap: unlimited ? null : numbers.tokenCap', replace: 'tokenCap: numbers.tokenCap', all: true },
+  { name: 'WF-55: 嵌套校验只看账面（reduceSlack 余量被吃掉）', file: 'src/workflows/gates.ts', find: 'const maxAllowedMs = outerMs - slackMs;', replace: 'const maxAllowedMs = outerMs;' },
+  { name: 'WF-56: 违例只报第一条（其余击穿静默通过）', file: 'src/workflows/gates.ts', find: 'return violations.length === 0 ? { ok: true } : { ok: false, violations };', replace: 'return violations.length === 0 ? { ok: true } : { ok: false, violations: violations.slice(0, 1) };' },
+  { name: 'WF-57: 端点字段探针失效（baseUrl 混进 workflows 节没人管）', file: 'src/workflows/gates.ts', find: 'return ENDPOINT_FIELD_NAMES.filter((field) => Object.hasOwn(section, field));', replace: 'return [];' },
+  { name: 'WF-58: 默认并发窗口不看核数（公式失守）', file: 'src/workflows/gates.ts', find: "if (key.default === 'auto') return defaultConcurrencyWindow(availableParallelism);", replace: "if (key.default === 'auto') return MIN_CONCURRENCY;" },
+  { name: 'WF-59: 未知键静默通过（typo 让用户以为调了）', file: 'src/workflows/gates.ts', find: "if (!byName.has(name) && !ENDPOINT_FIELD_NAMES.includes(name as (typeof ENDPOINT_FIELD_NAMES)[number])) {", replace: 'if (false) {' },
+  { name: 'WF-60: 启动不再校验时钟嵌套（击穿嵌套照常烧 token）', file: 'src/workflows/engine.ts', find: 'const nesting = validateClockNesting(this.gates);', replace: 'const nesting = { ok: true } as const;' },
+  { name: 'WF-61: 取槽级软门移除（第二级检查失守）', file: 'src/workflows/engine.ts', find: '      this.assertOpen(context);\n      this.assertBudget(context);\n', replace: '      this.assertOpen(context);\n' },
+  { name: 'WF-62: agentCap 构造期硬顶移除（注入越顶值直接生效）', file: 'src/workflows/engine.ts', find: 'agentCap: Math.min(HARD_AGENT_CAP_CEILING, Math.max(1, Math.floor(requested.agentCap))),', replace: 'agentCap: Math.max(1, Math.floor(requested.agentCap)),' },
+  { name: 'WF-63: 不限制时预算读数不再报无顶（脚本读到 0 自己收手）', file: 'src/workflows/engine.ts', find: 'remaining: () => (this.gates.tokenCap === null ? Number.POSITIVE_INFINITY : Math.max(0, this.gates.tokenCap - context.spent)),', replace: 'remaining: () => Math.max(0, (this.gates.tokenCap ?? 0) - context.spent),' },
+  { name: 'WF-64: 设置节整段不校验（端点与 typo 全放行）', file: 'src/config.ts', tests: 'test/issue-226-*.test.mjs', find: 'if (settings.workflows) {', replace: 'if (false) {' },
+  { name: 'WF-65: TUI 字段清单与登记表断链（新键在设置屏查无此文）', file: 'src/tui/controller-logic.ts', tests: 'test/issue-226-*.test.mjs', find: 'export const WORKFLOW_SETTING_FIELDS: string[] = WORKFLOW_SETTING_KEYS.map((key) => key.field);', replace: "export const WORKFLOW_SETTING_FIELDS: string[] = ['wf-token-cap'];" },
 ];
 
 let killedByTest = 0;
@@ -186,7 +206,7 @@ const TEST_GLOB = 'test/*.test.mjs';
  *     自动回退到本票 workflows 测试（issue-224/225），其余回退全量。
  * 不做"全局排除 e2e"——cluster/mcp 类变异的杀手测试恰是集成测试，排掉会漏杀。
  */
-const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs';
+const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs';
 const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，

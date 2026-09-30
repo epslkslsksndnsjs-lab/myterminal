@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
 import { copyToHostClipboard, notifySystem, playAttentionSound } from './host-io.js';
-import { buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
+import { WORKFLOW_SETTING_FIELDS, buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
 export { copyToHostClipboard } from './host-io.js';
 import { i18nFor, type I18n } from './copy/i18n.js';
 import { logicalSessionGroups } from '../tui-model.js';
@@ -289,11 +289,11 @@ export class TuiController {
     const workspaceItems = workspaceSelector.items;
     const passiveStatus = process.platform === 'darwin' ? passiveLockStatus(config) : { state: 'unsupported' };
     const passiveFallback = passiveLockFallback(current.passiveLockEnabled, passiveStatus.state);
-    const settingFields = ['language', 'theme', 'workspace', 'host', 'port', 'public-url', 'max-output', 'timeout', 'actions-continuation', 'non-blocking-tasks', 'passive-lock'];
+    const settingFields = ['language', 'theme', 'workspace', 'host', 'port', 'public-url', 'max-output', 'timeout', 'actions-continuation', 'non-blocking-tasks', 'passive-lock', ...WORKFLOW_SETTING_FIELDS];
     const selection = await ask([{ label: this.text('Choose settings to edit', '选择要修改的设置'), options: settingFields, multiSelect: true }], [
       this.text('Edit only the settings you choose.', '只修改你选择的设置；未选择的项目保持不变。'),
       this.text('Available fields:', '可选字段：'),
-      'language, theme, workspace, host, port, public-url, max-output, timeout, actions-continuation, non-blocking-tasks, passive-lock',
+      ['language, theme, workspace, host, port, public-url, max-output, timeout, actions-continuation, non-blocking-tasks, passive-lock', ...WORKFLOW_SETTING_FIELDS].join(', '),
     ]);
     if (!selection?.[0]) return;
     const fields = parseSelectedFields(selection[0]);

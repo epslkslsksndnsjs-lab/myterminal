@@ -47,7 +47,7 @@ function engine(workspaceDir, managedRoot, extra = {}) {
     audit: (entry) => auditLog.push(entry),
     adapterFactory: extra.adapterFactory ?? (() => ({ complete: async () => ({ text: 'ok', outputTokens: 2 }) })),
     ...(extra.events ? { events: extra.events } : {}),
-    ...(extra.thresholds ? { thresholds: extra.thresholds } : {}),
+    ...(extra.gates ? { gates: extra.gates } : {}),
   });
 }
 

@@ -29,6 +29,7 @@ import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
 import { initWorkflowEngine } from './workflows/runtime.js';
+import { resolveWorkflowGates } from './workflows/gates.js';
 import { llmBackedFactory } from './workflows/adapter.js';
 import { workflowAuditSink } from './workflows/start.js';
 
@@ -110,10 +111,14 @@ export class MyTerminalRuntime {
     });
       // Workflows 与会话侧共用同一端点三元组（单一来源、不另开配置），但执行线彼此
       // 独立：这里只注入适配器工厂与审计汇，不复用会话侧执行器、记录库或并发池。
+      // 闸门取本机设置面（config / env）解析后的值：默认即上限，越硬顶已被压回并留下告警。
+      const workflowGates = resolveWorkflowGates(settings.workflows, process.env);
+      for (const warning of workflowGates.warnings) console.warn(`[workflows] ${warning}`);
       initWorkflowEngine({
         workspaceDir: config.workspaceDir,
         adapterFactory: llmBackedFactory(subagentSettings),
         audit: workflowAuditSink(this.store, config.workspaceDir),
+        gates: workflowGates.gates,
       });
     }
     this.mcp = new MyTerminalMcpTransport(this.extensions);

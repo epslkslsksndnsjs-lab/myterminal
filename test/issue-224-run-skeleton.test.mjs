@@ -22,7 +22,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { WorkflowEngine, WorkflowStartError, DEFAULT_THRESHOLDS } from '../dist/workflows/engine.js';
+import { WorkflowEngine, WorkflowStartError } from '../dist/workflows/engine.js';
+import { DEFAULT_GATES } from '../dist/workflows/gates.js';
 import { virtualClock } from '../dist/workflows/clock.js';
 import { initWorkflowEngine, getWorkflowEngine, resetWorkflowEngine } from '../dist/workflows/runtime.js';
 import { validateStartArgs, mapStartError } from '../dist/workflows/start.js';
@@ -103,7 +104,7 @@ function engineFor(workspaceDir, managedRoot, extra = {}) {
     events,
     audit: (entry) => auditLog.push(entry),
     adapterFactory: extra.adapterFactory,
-    thresholds: extra.thresholds,
+    gates: extra.gates,
     ...(extra.notifier ? { notifier: extra.notifier } : {}),
   });
 }
@@ -342,14 +343,14 @@ test('AC3 墙钟到期 → failed(run-gate)，虚拟钟推进即触发（单测�
   const { workspaceDir, managedRoot } = tempWorkspace();
   const clock = virtualClock();
   const hang = new Promise(() => { /* 永不兑现 */ });
-  const engine = engineFor(workspaceDir, managedRoot, { adapterFactory: fakeFactory({ hang }).factory, clock, thresholds: { runGateMs: 1000 } });
+  const engine = engineFor(workspaceDir, managedRoot, { adapterFactory: fakeFactory({ hang }).factory, clock, gates: { runGateMs: 1000, dispatchWindowMs: 300, stallMs: 100, reducerBudgetMs: 2000, reducerTimeoutMs: 3000, reduceSlackMs: 100 } });
   const started = await engine.start({ script: INLINE_SCRIPT, ownerSessionId: 'sess-a' });
   assert.equal((await readIndex(runPaths(workflowPaths(managedRoot), started.runId).indexFile)).status, 'running');
   clock.advance(1000);
   const index = await started.completion;
   assert.equal(index.status, 'failed');
   assert.equal(index.reason, 'run-gate');
-  assert.equal(DEFAULT_THRESHOLDS.runGateMs, 30 * 60 * 1000, '默认闸是 30 分钟，测试里才缩短');
+  assert.equal(DEFAULT_GATES.runGateMs, 30 * 60 * 1000, '默认闸是 30 分钟，测试里才整栈缩短');
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -530,7 +531,7 @@ test('AC6 阈值可注入：墙钟缩短后到期判定随注入值走', async (
   const { workspaceDir, managedRoot } = tempWorkspace();
   const clock = virtualClock();
   const hang = new Promise(() => {});
-  const engine = engineFor(workspaceDir, managedRoot, { adapterFactory: fakeFactory({ hang }).factory, clock, thresholds: { runGateMs: 50 } });
+  const engine = engineFor(workspaceDir, managedRoot, { adapterFactory: fakeFactory({ hang }).factory, clock, gates: { runGateMs: 50, dispatchWindowMs: 10, stallMs: 5, reducerBudgetMs: 100, reducerTimeoutMs: 150, reduceSlackMs: 5 } });
   const started = await engine.start({ script: INLINE_SCRIPT, ownerSessionId: 's' });
   clock.advance(49);
   assert.equal((await readIndex(runPaths(workflowPaths(managedRoot), started.runId).indexFile)).status, 'running');
