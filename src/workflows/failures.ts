@@ -87,10 +87,13 @@ function duck(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 }
 
-function readField(value: unknown, key: string): unknown {
+/**
+ * 判定路径上的鸭子读名字——只认数据属性：getter 可能是模型可控代码的入口，
+ * 判定路径上绝不触发它。跨 realm / 跨传输边界的错误与进展对象都经此读，勿 instanceof。
+ */
+export function readField(value: unknown, key: string): unknown {
   const record = duck(value);
   const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  // 只认数据属性：getter 可能是模型可控代码的入口，判定路径上绝不触发它。
   return descriptor && 'value' in descriptor ? descriptor.value : undefined;
 }
 

@@ -477,7 +477,8 @@ export class WorkflowEngine {
         return await this.settlePath(context, record, { ok: false, failure: { kind: 'error', message: 'No model adapter is wired for this run.', reason: 'no-adapter' } });
       }
       // 每路独立实例：缓存断点是实例态，共享实例会让一路撞到的 4xx 关掉全部并发路的断点。
-      const adapter = factory({ runId: context.runId, dispatchId: record.id });
+      // 把本引擎的注入时钟交给工厂：传输层瞬态 backoff 与 stall 看门狗共用一只钟（§16）。
+      const adapter = factory({ runId: context.runId, dispatchId: record.id, clock: this.clock });
       const stallMs = resolveStallMs(gated.stallMs, this.gates.stallMs);
       // 重试次数随每次尝试起跑即时落到 record（成功或耗尽判败都进该路终态记账）。
       const reportAttempt = (n: number): void => { record.attempts = n; };

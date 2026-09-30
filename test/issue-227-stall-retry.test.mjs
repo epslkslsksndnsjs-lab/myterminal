@@ -17,8 +17,8 @@ import path from 'node:path';
 
 import { WorkflowEngine } from '../dist/workflows/engine.js';
 import { virtualClock } from '../dist/workflows/clock.js';
+import { llmBackedFactory } from '../dist/workflows/adapter.js';
 import { agentFile, runPaths, workflowPaths } from '../dist/workflows/paths.js';
-import { readIndex } from '../dist/workflows/run-index.js';
 import { agentFailure } from '../dist/workflows/failures.js';
 
 let TMP;
@@ -295,4 +295,37 @@ test('AC4 调大逐路窗口击穿嵌套 → 启动校验 fail-closed（FORBIDDE
   const started = await okEngine.start({ script: `return 1;`, ownerSessionId: 'sess-a' });
   const index = await started.completion;
   assert.equal(index.status, 'completed', '嵌套合规的窗口放行');
+});
+
+test('AC5 集成：引擎注入的虚拟钟同时驱动传输 backoff（两层共用一只钟、backoff<stall 不误判整路重试）', async () => {
+  const temp = tempWorkspace();
+  const clock = virtualClock();
+  let creates = 0;
+  // 走真实 llmBackedFactory（其 withTransientRetry 用引擎注入的这只钟），只把端点换成 make()。
+  const make = () => ({
+    provider: 'fake',
+    stream: async function* () { /* 非流式 */ },
+    create: async () => {
+      creates += 1;
+      if (creates === 1) { const e = new Error('rate limited'); e.name = 'LlmError'; e.kind = 'rate_limit'; throw e; }
+      return { message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, usage: { input_tokens: 0, output_tokens: 4 } };
+    },
+  });
+  const factory = llmBackedFactory(
+    { enabled: true, model: 'm', baseUrl: 'http://127.0.0.1:9', apiKey: 'k', maxTurns: 700, timeoutSec: 7200, maxParallel: 2 },
+    make,
+  );
+  // stall(3000) 远大于首档 backoff(2000)：传输层在同一只钟上退避补枪，绝不被看门狗判成无进展。
+  const { engine } = engineFor(temp, { adapterFactory: factory, clock, gates: clockGates({ stallMs: 3_000, dispatchWindowMs: 4_000 }) });
+  const started = await engine.start({ script: `return await agent('p', { label: 'P' });`, ownerSessionId: 'sess-a' });
+
+  await settle();
+  assert.equal(creates, 1, '第一枪瞬态失败，正在 backoff');
+  clock.advance(2_000); // 走完首档 backoff（2s）
+  const index = await started.completion;
+
+  assert.equal(creates, 2, '退避后同一路补枪成功');
+  assert.equal(index.dispatches[0].status, 'completed');
+  assert.equal(index.dispatches[0].attempts, 1, '传输层重试对 dispatch 透明：stall 尝试数仍是 1');
+  assert.equal(index.tokens.spent, 4, '失败那一枪不带 token 回来，只记 settled 那次');
 });

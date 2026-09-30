@@ -33,7 +33,7 @@ export type WorkflowAgentAdapter = {
   complete(request: WorkflowAgentRequest): Promise<WorkflowAgentResult>;
 };
 
-export type AdapterFactory = (context: { runId: string; dispatchId: string }) => WorkflowAgentAdapter;
+export type AdapterFactory = (context: { runId: string; dispatchId: string; clock?: Clock }) => WorkflowAgentAdapter;
 
 /**
  * 子 agent 的行为约束——模块自足拼接，与会话侧提示词互不引用。
@@ -46,12 +46,14 @@ export const AGENT_SYSTEM_PROMPT = [
   'You work in isolation: another agent may be running the same task in a separate directory at the same time.',
 ].join(' ');
 
-export function llmBackedFactory(settings: SubagentSettings, make?: () => LlmAdapter, clock?: Clock): AdapterFactory {
-  const transportClock = clock ?? systemClock();
-  return () => {
+export function llmBackedFactory(settings: SubagentSettings, make?: () => LlmAdapter): AdapterFactory {
+  return (context) => {
+    // 一切时间经引擎注入的时钟（无则系统钟）：瞬态 backoff 与 stall 看门狗共用一只钟，
+    // 测试里可整栈在虚拟钟上协同驱动（ADR §16 "每只钟只有一个持有者"）。
     const base: WorkflowAgentAdapter = {
       complete: async (request) => {
         // 一次传输往返 = 一轮进展：重置 stall 计时、计入 dispatch 轮数预算。
+        // 流式增量 / 工具在飞的 activity()/toolStart()/toolEnd() 随执行器接入（#228/#231）补发。
         request.progress?.round();
         // 测试注入缝：make 缺省走真实端点适配器（与会话侧同源）。
         const adapter = make ? make() : createAdapter(settings);
@@ -73,6 +75,6 @@ export function llmBackedFactory(settings: SubagentSettings, make?: () => LlmAda
       },
     };
     // 传输层瞬态重试（模块自持，不复用 subagent 策略）——对 dispatch 透明。
-    return withTransientRetry(base, { clock: transportClock });
+    return withTransientRetry(base, { clock: context.clock ?? systemClock() });
   };
 }

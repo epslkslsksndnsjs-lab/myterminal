@@ -16,11 +16,11 @@ import {
 } from '../dist/workflows/stall.js';
 import {
   TRANSIENT_BACKOFF_CEILING_MS,
-  DEFAULT_STALL_MS,
   isTransientLlmError,
   computeTransientBackoffMs,
   withTransientRetry,
 } from '../dist/workflows/llm-retry.js';
+import { defaultWorkflowGates } from '../dist/workflows/gates.js';
 import { virtualClock } from '../dist/workflows/clock.js';
 import { agentFailure, isAgentFailure, isRunLevelError } from '../dist/workflows/failures.js';
 
@@ -229,6 +229,25 @@ test('弹性器：工具在飞时挂起无进展计时（慢工具不是 stall�
   assert.equal(calls, 2, 'toolEnd 之后重新计时，越窗才判 stall 并重试');
 });
 
+test('弹性器：activity() 重置无进展计时（任何进展都不计轮数）', async () => {
+  const clock = virtualClock();
+  const parent = new AbortController();
+  let calls = 0;
+  let progress;
+  const driver = runStallResilient(
+    { clock, stallMs: 100, dispatchWindowMs: 100_000, dispatchTurns: 100, parentSignal: parent.signal, label: 'a' },
+    async (_signal, p) => { calls += 1; progress = p; return new Promise(() => {}); },
+  );
+  driver.catch(() => { /* 收尾断言里再看 */ });
+  await settle();
+  // 每次都在不足一个 stall 窗时推进 + activity()：一路"有进展"，不该判 stall
+  for (let i = 0; i < 3; i++) { clock.advance(60); progress.activity(); await settle(); }
+  assert.equal(calls, 1, '持续 activity() 视为有进展，绝不重试');
+  // 停发进展、整窗推进 → 才判 stall → 重试
+  clock.advance(100); await settle();
+  assert.equal(calls, 2, '停止进展后越窗才 stall 重试');
+});
+
 test('弹性器：stallMs=0 关看门狗 → 挂死也不走 stall 重试（只剩窗口/轮数那两把钟）', async () => {
   const clock = virtualClock();
   const parent = new AbortController();
@@ -248,9 +267,10 @@ test('弹性器：stallMs=0 关看门狗 → 挂死也不走 stall 重试（只�
 // ═══════════════════════════════════════════════════════════════
 
 test('AC5 瞬态 backoff 上界 < stall 窗（180s）——否则会被看门狗误判为无进展', () => {
-  assert.equal(DEFAULT_STALL_MS, 180_000);
-  assert.ok(TRANSIENT_BACKOFF_CEILING_MS < DEFAULT_STALL_MS, `上界 ${TRANSIENT_BACKOFF_CEILING_MS} 必须 < ${DEFAULT_STALL_MS}`);
-  // 上界 = 阶梯之和，非负、有限、单调可见
+  // stall 窗唯一账本 = gates 登记表默认（180s）；不在本模块另立常量（防漂移）。
+  const stallWindowMs = defaultWorkflowGates(8).stallMs;
+  assert.equal(stallWindowMs, 180_000);
+  assert.ok(TRANSIENT_BACKOFF_CEILING_MS < stallWindowMs, `上界 ${TRANSIENT_BACKOFF_CEILING_MS} 必须 < stall 窗 ${stallWindowMs}`);
   assert.ok(Number.isFinite(TRANSIENT_BACKOFF_CEILING_MS) && TRANSIENT_BACKOFF_CEILING_MS > 0);
 });
 
