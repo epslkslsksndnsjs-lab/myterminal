@@ -147,6 +147,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
       'message_list covers both sent and received messages; message_conversation returns a two-way thread. Message results include send/observation timestamps, age, audited operations since send, and possible delay notices.',
       'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.',
       'Use skill() to list available skills, skill(name) to run one.',
+      'Workflows: start a run only when the user asks — load the workflow-authoring skill, call workflow_start, then start a reducer with subagent_start(reduce) and poll it for the final summary; workflow_cancel stops a whole run (idempotent). Runs continue locally after this conversation ends.',
     ].join('\n'),
   });
   server.registerTool('extension_discover', {

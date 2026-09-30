@@ -333,6 +333,16 @@ const mutations = [
   { name: "WF-337: 面板轮询不再收死路的件（孤儿停在 active，配额与面板都看不见）", file: "src/workflows/worktree-service.ts", tests: 'test/issue-231-*.test.mjs', find: "      await this.reconcileStale();", replace: "      void 0;" },
   { name: "WF-338: 收尸的保守判据移除（在跑的那一件也被收）", file: "src/workflows/worktree-service.ts", tests: 'test/issue-231-*.test.mjs', find: "      if (!abandoned) continue;", replace: "      if (false) continue;" },
 
+  // ── src/mcp.ts (T12 #235, 7) — MCP/Apps 通道面：直连两条 / 对外独立文本 / 单源派生 / instructions 一条 / 形状与 _meta 与注解 ──
+  // 每条对应 #235 票面 AC1–AC2 的一条钉死语义，全部由 test/issue-235-*.test.mjs 行为杀（非仅编译杀、非等价豁免）。
+  { name: "MCP-1: 直连名单少一条（对外 workflow_cancel 根本不存在）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "  registerDirect('workflow_cancel', 'Cancel Workflow', ", replace: "  if (false) registerDirect('workflow_cancel', 'Cancel Workflow', " },
+  { name: "MCP-2: 对外描述退回内部 canonical（防漂移矩阵三分破防 = 跨份复制粘贴）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "'Cancel a whole workflow run and stop its local agents. Idempotent — a terminal run returns its current status. The reducer still reports what finished.',", replace: "'Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.'," },
+  { name: "MCP-3: inputSchema 不再从单源派生（退回手抄空形状）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "    const derived = jsonSchemaToZod(BUILTIN_INPUT_SCHEMAS[name], name) as z.ZodObject<z.ZodRawShape>;", replace: "    const derived = z.object({}) as unknown as z.ZodObject<z.ZodRawShape>;" },
+  { name: "MCP-4: instructions 里出现第二条 Workflows 行（追加被写成重复追加）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "      'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.',", replace: "      'Workflows: see workflow_start.',\n      'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.'," },
+  { name: "MCP-5: extraShape 混入工具专属键（传输层越权）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "      title, description, inputSchema: derived.extend({ ...extraShape, identity: optionalIdentitySchema }), outputSchema: responseSchema, annotations,", replace: "      title, description, inputSchema: derived.extend({ ...extraShape, probeFlag: z.string().optional(), identity: optionalIdentitySchema }), outputSchema: responseSchema, annotations," },
+  { name: "MCP-6: _meta 不再按 title 生成（写死一份通用文案）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "      _meta: { 'openai/toolInvocation/invoking': `Running ${title}…`, 'openai/toolInvocation/invoked': `${title} ready` },", replace: "      _meta: { 'openai/toolInvocation/invoking': 'Running tool…', 'openai/toolInvocation/invoked': 'Tool ready' }," },
+  { name: "MCP-7: 注解集不镜像既有 abort 先例（退回 safeRead）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "this conversation staying open.', safeLocalMutation);", replace: "this conversation staying open.', safeRead);" },
+
 ];
 
 let killedByTest = 0;
