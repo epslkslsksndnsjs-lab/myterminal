@@ -391,6 +391,11 @@ describe('worktree-git：命令面与失败口径', () => {
     const none = recorder({ code: 0, stdout: '0\n', stderr: '' });
     assert.equal(await hasUnmergedWorktreeCommits(none.runner, { repoRoot: '/repo', branch: 'worktree-x', baseRef: 'HEAD' }), false);
     assert.equal(await hasUnmergedWorktreeCommits(async () => { throw new Error('nope'); }, { repoRoot: '/repo', branch: 'worktree-x', baseRef: 'HEAD' }), true);
+    // 命令打出去了但答不出个数：这一臂走的是 NaN，不是退出码，两臂都得单独钉住。
+    for (const junk of ['not-a-number\n', '\n', '-1x\n']) {
+      const unreadable = recorder({ code: 0, stdout: junk, stderr: '' });
+      assert.equal(await hasUnmergedWorktreeCommits(unreadable.runner, { repoRoot: '/repo', branch: 'worktree-x', baseRef: 'HEAD' }), true, `读不懂"${junk}"要按有活保留`);
+    }
   });
 
   test('removeWorktree 只收 git 侧：目录已由 fence 移走，注册位用 prune 收，分支安全删', async () => {

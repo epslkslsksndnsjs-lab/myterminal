@@ -195,7 +195,8 @@ export async function hasUnmergedWorktreeCommits(
   const result = await run(runner, options.repoRoot, ['rev-list', '--count', `${base}..${options.branch}`]);
   if (!succeeded(result)) return true;
   const count = Number.parseInt(result.stdout.trim(), 10);
-  if (!Number.isFinite(count)) return true;
+  // 读不懂的个数与负数都不是"没有"：判不准一律按有活保留（rev-list 正常不会给这两种形状）。
+  if (!Number.isInteger(count) || count < 0) return true;
   return count > 0;
 }
 
