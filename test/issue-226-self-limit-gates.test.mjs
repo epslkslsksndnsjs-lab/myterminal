@@ -50,6 +50,7 @@ function toolConfig(workspaceDir, stateDir) {
 }
 import { validateSettings } from '../dist/config.js';
 import { WORKFLOW_SETTING_FIELDS, buildSettingsQuestions, resolveSettingsAnswers } from '../dist/tui/controller-logic.js';
+import { runtimeSettingsSnapshot } from '../dist/runtime-settings.js';
 
 let TMP;
 
@@ -396,6 +397,32 @@ test('AC3 既有 TUI Settings 屏把每个登记键都做成可编字段（quest
   assert.equal(applied.next.workflows.concurrencyWindow, 4);
   assert.equal(applied.next.workflows.autoArchive, true);
   assert.equal(applied.next.workflows.agentCap, 1000, '未作答的键保持默认，不被清空');
+});
+
+test('AC3 TUI 一次编辑不抹段：没答的 workflows 键与 subagent 段一起带过去', () => {
+  // 运行时快照没有这两段（config 里根本不存），只从盘面取；漏一条就是"改端口顺手删端点"。
+  const persisted = settingsWith({
+    subagent: { enabled: true, model: 'claude', baseUrl: 'https://gw.example', apiKey: 'secret-key-value', maxTurns: 700, timeoutSec: 7200, maxParallel: 2 },
+    workflows: { tokenCap: 5000, agentCap: 42, unlimited: true },
+  });
+  const snapshot = runtimeSettingsSnapshot({
+    port: 3210,
+    config: {
+      schemaVersion: 1, workspaceDir: '/tmp/ws', stateDir: '', settingsPath: '', host: '127.0.0.1', port: 0,
+      connectorKey: 'k'.repeat(32), actionsToken: 't'.repeat(32), publicBaseUrl: '', maxOutputChars: 120_000,
+      commandTimeoutSec: 60, uiLanguage: 'zh-CN', uiTheme: 'dark', passiveLockEnabled: false,
+      actionsContinuationMode: 'off', nonBlockingTasksEnabled: false,
+    },
+  }, persisted);
+  assert.deepEqual(snapshot.workflows, { tokenCap: 5000, agentCap: 42, unlimited: true });
+  assert.equal(snapshot.subagent.baseUrl, 'https://gw.example', '端点三元组同样不能掉');
+
+  const applied = resolveSettingsAnswers(['wf-run-gate'], ['45'], snapshot, { items: [] });
+  assert.equal(applied.next.workflows.runGateMinutes, 45, '答了的那项写回');
+  assert.equal(applied.next.workflows.tokenCap, 5000, '没答的键保持原值，不被清空');
+  assert.equal(applied.next.workflows.unlimited, true);
+  assert.equal(applied.next.subagent.baseUrl, 'https://gw.example');
+  assert.deepEqual(validateSettings(applied.next), []);
 });
 
 test('AC3 调参入口 = config / env：解析后的闸进引擎，非法与越顶都留痕', async () => {
