@@ -17,6 +17,10 @@ docs/adr/
 tool-returns/
 _release-assets/
 
+# Local agent/dev config — kept off the public face
+AGENTS.md
+docs/agents/
+
 # L3 模型文件（1.2GB+，绝不入 git——下载走 myterminal l3-model fetch，D-7 分发决策）
 models/
 *.gguf
