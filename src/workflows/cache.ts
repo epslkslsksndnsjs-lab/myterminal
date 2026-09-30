@@ -52,19 +52,3 @@ export function buildReplayCache(records: readonly JournalRecord[]): ReplayCache
 export function replayChainSeed(args: unknown): string {
   return argsChainSeed(args);
 }
-
-/**
- * 续跑起点索引里要保留的记录：良前缀里的已完成路（键命中缓存）留下继续算账，
- * 在飞被打断的 running 与判败的 failed 都不带过来——它们落在重放屏障之后，由 live 重跑
- * 重新起账，避免同一位置记两次、把 X/Y 读数算虚。
- */
-export function retainedCompletedKeys(records: readonly JournalRecord[]): Set<string> {
-  const cache = buildReplayCache(records);
-  const keys = new Set<string>();
-  for (const record of records) {
-    if (record.type !== 'result') continue;
-    const key = record.key;
-    if (typeof key === 'string' && key.length > 0 && cache.has(key)) keys.add(key);
-  }
-  return keys;
-}

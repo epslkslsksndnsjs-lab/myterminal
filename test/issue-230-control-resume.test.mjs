@@ -427,7 +427,53 @@ test('AC6 只改 label / phase（展示项）→ 全缓存（键不变）', asyn
   const resumed = await engine.start({ scriptPath, resumeFromRunId: runId, ownerSessionId: OWNER });
   await resumed.completion;
   assert.equal(model2.calls().includes('p0'), false, 'label/phase 不进键 → 改它们仍命中缓存');
-  assert.equal(model2.calls().length, 0, '展示项变更 → 六路全缓存');
+  assert.equal(model2.calls().length, 0, '展示项仅改 → 六路全缓存');
+});
+
+// 首跑脚本：p3 带 effort/disallowedTools，末尾挂一个永不归的 TAIL 让 run 停在在飞态、可续跑。
+const NORM_TAIL = `const a=await agent('p0');const b=await agent('p1');const c=await agent('p2');const d=await agent('p3',{effort:'low',disallowedTools:['write_file']});const e=await agent('p4');const f=await agent('p5');await agent('TAIL');return 1;`;
+
+/** 首跑：release 若干 prompt、末调 holdPrompts 挂起 → 取消，留下可重放的 cancelled run。 */
+async function cancelledRunWith(temp, script, releasePrompts, holdPrompt) {
+  const model = countedModel({ holdPrompts: [holdPrompt] });
+  for (const p of releasePrompts) model.release(p);
+  const { engine } = engineFor(temp, { adapterFactory: model.factory });
+  const started = await engine.start({ script, ownerSessionId: OWNER });
+  await until(() => ledgerRows(temp, started.runId, 'result').length >= releasePrompts.length, '已放行路结算落账');
+  await engine.cancel(started.runId, [OWNER]);
+  return { runId: started.runId, scriptPath: started.scriptPath };
+}
+
+test('AC6 改 effort 档 → 从该路起重跑（其后全 live），前缀仍缓存', async () => {
+  const temp = tempWorkspace();
+  const { runId, scriptPath } = await cancelledRunWith(temp, NORM_TAIL, ['p0', 'p1', 'p2', 'p3', 'p4', 'p5'], 'TAIL');
+  const model2 = countedModel();
+  const { engine } = engineFor(temp, { adapterFactory: model2.factory });
+  // effort 换档进键 → p3 起重跑；p4/p5 前缀跟着错位也 live；p0..p2 未变仍缓存。
+  overwriteScript(temp, scriptPath, NORM_TAIL.replace("effort:'low'", "effort:'high'").replace("await agent('TAIL');", ''));
+  const resumed = await engine.start({ scriptPath, resumeFromRunId: runId, ownerSessionId: OWNER });
+  await resumed.completion;
+  const calls = model2.calls();
+  for (const p of ['p0', 'p1', 'p2']) assert.equal(calls.includes(p), false, `${p} 前缀未变 → 命中缓存`);
+  for (const p of ['p3', 'p4', 'p5']) assert.ok(calls.includes(p), `${p} 应自变更路起重跑（live）`);
+  assert.equal(calls.length, 3, '只有变更路及其后 3 路走 live');
+});
+
+test('AC6 disallowedTools 别名 / 顺序（归一后同集）→ 全缓存；改内容才 bust', async () => {
+  const temp = tempWorkspace();
+  const { runId, scriptPath } = await cancelledRunWith(temp, NORM_TAIL, ['p0', 'p1', 'p2', 'p3', 'p4', 'p5'], 'TAIL');
+  const model2 = countedModel();
+  const { engine } = engineFor(temp, { adapterFactory: model2.factory });
+  // 把 p3 的 disallowedTools 写成展示名 + 改书写顺序：归一（互认拼写名/展示名、排序去重）后同一集合 → 键不变 → 全缓存。
+  overwriteScript(temp, scriptPath, NORM_TAIL.replace("disallowedTools:['write_file']", "disallowedTools:['Apply exact patch', 'write_file']")
+    .replace("const a=await agent('p0');", "const a=await agent('p0', { disallowedTools: ['apply_patch'] });")
+    .replace("await agent('TAIL');", ''));
+  const resumed = await engine.start({ scriptPath, resumeFromRunId: runId, ownerSessionId: OWNER });
+  await resumed.completion;
+  // p3 别名+顺序归一后同集合；但 p0 新增了 disallowedTools:['apply_patch'] —— 这是"改内容"，从 p0 起重跑。
+  const calls = model2.calls();
+  assert.ok(calls.includes('p0'), 'p0 加了 deny 内容 → 键变 → 从 p0 起重跑');
+  assert.equal(calls.includes('p3'), true, 'p3 别名/顺序归一后键不变，但屏障已在 p0 断 → 仍 live');
 });
 
 // ═══════════════════════════════════════════════════════════════

@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { buildReplayCache, replayChainSeed, retainedCompletedKeys } from '../dist/workflows/cache.js';
+import { buildReplayCache, replayChainSeed } from '../dist/workflows/cache.js';
 import { acquireResumeLock, releaseResumeLock, isLockStale } from '../dist/workflows/lock.js';
 import { argsChainSeed, deriveAgentKey } from '../dist/workflows/keys.js';
 import { BUILTIN_INPUT_SCHEMAS } from '../dist/tool-schemas.js';
@@ -89,17 +89,6 @@ test('缓存：无 key 的记录（launched / 裸 started）被跳过，不污�
 test('缓存：result 值为 null 仍算命中（沉默与成功值两回事，按 has 判定）', () => {
   const cache = buildReplayCache([rec({ type: 'result', seq: 1, key: RES, value: null })]);
   assert.equal(cache.has(RES), true, 'completed-but-null 也是结算出来的结果');
-});
-
-test('retainedCompletedKeys：只挑出良前缀里"可复用结果"的键', () => {
-  const records = [
-    rec({ type: 'started', seq: 1, key: RES }),
-    rec({ type: 'result', seq: 1, key: RES, value: 'a' }),
-    rec({ type: 'started', seq: 2, key: OTHER }), // 在飞被打断，无 result
-  ];
-  const keepable = retainedCompletedKeys(records);
-  assert.equal(keepable.has(RES), true);
-  assert.equal(keepable.has(OTHER), false);
 });
 
 test('replayChainSeed：续跑起点 = args 种子，与首跑同串（改 args 即全量重跑的根）', () => {

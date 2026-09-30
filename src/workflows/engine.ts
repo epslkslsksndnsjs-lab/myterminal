@@ -283,7 +283,7 @@ export class WorkflowEngine {
       previous = await readIndex(run.indexFile);
       if (!previous) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run not found: ${request.resumeFromRunId}.`);
       // 归属 = ownerSessionId 相等或其延续链包含（§3④）；换凭证不改归属，session_inherit 继承全部名下 run。
-      if (!ownerCandidates.includes(previous.ownerSessionId)) throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
+      if (!this.ownsRun(previous.ownerSessionId, ownerCandidates)) throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
       // 判据 = 脚本引用（路径 / 名）一致；内容编辑不改引用（改动按缓存语义从变更调用起重跑），引用不同 = 新 run。
       if (previous.sourceRef.id !== script.sourceRef.id) throw new WorkflowStartError('VALIDATION', 'source-mismatch', `Resuming a run requires the same script reference (${previous.sourceRef.id}); got ${script.sourceRef.id}.`);
       // 终态 run 里只有 cancelled 可被 resume 重开（§19：取消后想接着干 = 对同一 runId 续跑）；completed / failed 恒封口。
@@ -602,8 +602,12 @@ export class WorkflowEngine {
     // 前缀屏障：第一个未命中的调用起，其后一律 live（哪怕脚本后面没改）。
     if (context.replay && !context.replayBarrierBroken && context.replay.has(key)) {
       // 命中：把对应的已完成记录接回账本（每路 usage 与结果都在里面），token 不重算、不重复扣预算。
+      // 与 live 路同一把写列（queueIndexWrite），别让命中路径和派发路径各写一套 index。
       const reused = context.replayRecords.get(key);
-      if (reused) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };
+      if (reused) {
+        context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };
+        queueIndexWrite(context);
+      }
       return context.replay.get(key);
     }
     if (context.replay) context.replayBarrierBroken = true;
@@ -907,9 +911,15 @@ export class WorkflowEngine {
     return context;
   }
 
-  /** 运行态 status 落盘（原子写）——读侧契约（wait_for_path / 查询面）都认这里的 index.status。 */
+  /**
+   * 运行态 status 落盘——读侧契约（wait_for_path 冻结、查询面）都认这里的 index.status。
+   * 必须走 context.indexWrites 那条串行列：否则在飞的 dispatch 索引写（status=running）可能在
+   * 暂停写之后才 rename 落地，把 paused 抹回 running——正是要保护的那个冻结信号就丢了。
+   * 调用方须已把新 status 写进 context.index。
+   */
   private async persistStatus(context: RunContext, status: WorkflowStatus): Promise<void> {
-    await writeIndex(context.run.indexFile, context.index);
+    queueIndexWrite(context);
+    await context.indexWrites;
     await upsertRegistry(this.paths.registryFile, {
       runId: context.runId,
       status,
