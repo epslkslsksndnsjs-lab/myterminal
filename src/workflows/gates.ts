@@ -125,30 +125,17 @@ function toGateNumber(unit: 'minutes' | 'seconds' | 'tokens' | 'bytes' | 'days' 
   return value;
 }
 
-/** 默认闸——由登记表算出，本机核数决定并发窗口那一项。 */
-/** 默认闸——一切键都不调时的形状；reduceSlack 恒为常量。 */
+/**
+ * 默认闸——一切键都不调时的形状。
+ * 实现就是"空设置面 + 空 env 解析一次"：默认值只有一处定义（登记表），
+ * 不再另写一条平行循环去算同一批数字。
+ */
 export function defaultWorkflowGates(availableParallelism: number = os.availableParallelism()): WorkflowGates {
-  const numbers = {} as Record<Exclude<keyof WorkflowGates, 'autoArchive' | 'reduceSlackMs'>, number>;
-  let autoArchive = false;
-  let unlimited = false;
-  for (const key of WORKFLOW_SETTING_KEYS) {
-    if (key.unit === 'switch') {
-      if (key.name === 'unlimited') unlimited = key.default === 'on';
-      else if (key.name === 'autoArchive') autoArchive = key.default === 'on';
-      continue;
-    }
-    numbers[key.gate as keyof typeof numbers] = toGateNumber(key.unit, numericDefaultOf(key, availableParallelism));
-  }
-  return { ...numbers, reduceSlackMs: REDUCE_SLACK_MS, autoArchive, tokenCap: unlimited ? null : numbers.tokenCap };
+  return resolveWorkflowGates(undefined, {}, availableParallelism).gates;
 }
 
 /** 默认闸（按本机核数）；测试要固定核数口径时用 defaultWorkflowGates(n)。 */
 export const DEFAULT_GATES: WorkflowGates = defaultWorkflowGates();
-
-/** 某个登记键的默认值（设置面单位）——TUI 回显与"默认即上限"的展示口径同源。 */
-export function workflowSettingDefault(key: WorkflowSettingKey, availableParallelism: number = os.availableParallelism()): number | boolean {
-  return key.unit === 'switch' ? key.default === 'on' : numericDefaultOf(key, availableParallelism);
-}
 
 /** 设置面的默认形态：只有明确写死的键（并发窗口留空 = 走核数公式）。 */
 export const DEFAULT_WORKFLOW_SETTINGS: WorkflowsSettings = Object.fromEntries(

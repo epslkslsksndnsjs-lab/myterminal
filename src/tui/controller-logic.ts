@@ -4,7 +4,7 @@
 import type { MyTerminalSession, MyTerminalSettings, TaskPackage, WorkflowsSettings } from '../types.js';
 import type { FormQuestion } from './contracts.js';
 import { isValidPublicBaseUrl } from '../config.js';
-import { WORKFLOW_SETTING_KEYS, workflowSettingDefault, type WorkflowSettingKey } from '../workflows/gates.js';
+import { WORKFLOW_SETTING_KEYS, type WorkflowSettingKey } from '../workflows/gates.js';
 import { isAddWorkspaceSelection, selectedWorkspace, type WorkspaceSelectionItem } from '../workspace-selection.js';
 import type { Translate } from './copy/i18n.js';
 
@@ -84,24 +84,28 @@ function savedWorkflowValue(current: MyTerminalSettings, key: WorkflowSettingKey
 function workflowSettingFields(): Record<string, { question: (ctx: SettingsQuestionContext) => FormQuestion; apply: (value: string, ctx: SettingsApplyContext) => void }> {
   const fields: Record<string, { question: (ctx: SettingsQuestionContext) => FormQuestion; apply: (value: string, ctx: SettingsApplyContext) => void }> = {};
   for (const key of WORKFLOW_SETTING_KEYS) {
-    const copy = WORKFLOW_FIELD_COPY[key.field] ?? [key.name, key.name];
+    const copy = WORKFLOW_FIELD_COPY[key.field];
+    if (!copy) throw new Error(`Workflows setting "${key.field}" has no field copy.`);
     fields[key.field] = {
       question: ({ current, text }) => {
         const label = text(copy[0], copy[1]);
         const saved = savedWorkflowValue(current, key);
         if (key.unit === 'switch') {
-          const value = typeof saved === 'boolean' ? saved : workflowSettingDefault(key);
+          const value = typeof saved === 'boolean' ? saved : key.default === 'on';
           return { label, fallback: value ? 'on' : 'off', options: ['off', 'on'] };
         }
-        // 边界文案从登记表的数字生成——TUI 里说的上限就是闸门钉的那个，不能再写一遍。
+        // 边界与默认都从登记表取数字——TUI 里说的上限必须就是闸门钉的那个，不再写第二遍。
         const range = () => key.ceiling === null
           ? text(`Use an integer of at least ${key.floor}.`, `请输入不小于 ${key.floor} 的整数。`)
           : text(`Use an integer from ${key.floor} to ${key.ceiling}.`, `请输入 ${key.floor} 到 ${key.ceiling} 的整数。`);
-        const value = typeof saved === 'number' ? saved : Number(workflowSettingDefault(key));
+        // 本模块零 I/O（文件头契约）：'auto' 那一项要靠核数，这里不问机器，留空就是自动。
+        const auto = key.default === 'auto';
+        const fallback = typeof saved === 'number' ? String(saved) : auto ? '' : String(key.default);
         return {
-          label,
-          fallback: String(value),
+          label: auto ? `${label} ${text('(blank = follow core count)', '（留空 = 按核数自动）')}` : label,
+          fallback,
           validate: (input) => {
+            if (auto && !input.trim()) return undefined;
             const parsed = Number(input);
             if (!Number.isInteger(parsed) || parsed < key.floor) return range();
             if (key.ceiling !== null && parsed > key.ceiling) return range();
@@ -113,10 +117,14 @@ function workflowSettingFields(): Record<string, { question: (ctx: SettingsQuest
         // 从 next 起抄：同一批答案里后面的字段不能把前面已写回的那格冲掉。
         const workflows: Record<string, number | boolean> = { ...(next.workflows ?? {}) };
         const saved = savedWorkflowValue(current, key);
+        const trimmed = value.trim();
         if (key.unit === 'switch') {
-          workflows[key.name] = value.trim().toLowerCase() === 'on';
+          workflows[key.name] = trimmed.toLowerCase() === 'on';
+        } else if (key.default === 'auto' && !trimmed) {
+          delete workflows[key.name];
         } else {
-          workflows[key.name] = integer(value, typeof saved === 'number' ? saved : Number(workflowSettingDefault(key)));
+          const keep = typeof saved === 'number' ? saved : typeof key.default === 'number' ? key.default : 0;
+          workflows[key.name] = integer(value, keep);
         }
         next.workflows = workflows as WorkflowsSettings;
       },
@@ -129,7 +137,9 @@ function workflowSettingFields(): Record<string, { question: (ctx: SettingsQuest
  * 设置字段注册表——question（字段 → 表单问题）与 apply（答案 → settings 写回）
  * 成对收敛于此。此前两者是两份独立的 11 分支 if/else 级联（:47/:84），加一个
  * 字段要改两处且容易漏半边；现在加字段 = 在这里加一个条目。
- * 每个条目与原级联分支逐字等价（行为不变铁律，锁测试 tui-controller-logic-issue29）。
+ * 上面 11 项与原级联分支逐字等价（行为不变铁律，锁测试 tui-controller-logic-issue29）；
+ * 末尾 workflows 那一段是 #226 从登记表生成的，不走"逐字等价"这条锁——它的契约是
+ * "边界与默认取自 gates.ts 的同一份登记"，由 issue-226 的用例锁住。
  */
 const SETTINGS_FIELDS: Record<string, {
   question: (ctx: SettingsQuestionContext) => FormQuestion | 'workspace-unavailable';

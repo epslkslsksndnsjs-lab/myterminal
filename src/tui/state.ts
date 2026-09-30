@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
 import { copyToHostClipboard, notifySystem, playAttentionSound } from './host-io.js';
+import { describeClockNesting, resolveWorkflowGates, validateClockNesting } from '../workflows/gates.js';
 import { WORKFLOW_SETTING_FIELDS, buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
 export { copyToHostClipboard } from './host-io.js';
 import { i18nFor, type I18n } from './copy/i18n.js';
@@ -342,6 +343,12 @@ export class TuiController {
         else { this.currentRuntime.log(conflict, 'error'); return; }
       } catch (error) { this.currentRuntime.log(error instanceof Error ? error.message : String(error), 'error'); return; }
     } else if (errors.length) { this.currentRuntime.log(errors.join(' '), 'error'); return; }
+    // 时钟嵌套不变量：调完就破嵌套的答案不该等到 run 启动才炸（那时只剩一条 FORBIDDEN）。
+    const nesting = validateClockNesting(resolveWorkflowGates(next.workflows, process.env).gates);
+    if (!nesting.ok) {
+      this.currentRuntime.log(this.text(`Workflow clocks must stay nested: ${describeClockNesting(nesting.violations)}`, `工作流时钟必须保持嵌套：${describeClockNesting(nesting.violations)}`), 'error');
+      return;
+    }
     await this.applySettings(next);
     if (process.platform === 'darwin' && passiveAction) {
       await commandPassiveLock(this.currentRuntime.config, passiveAction === 'off' ? 'stop' : passiveAction);

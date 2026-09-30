@@ -170,7 +170,7 @@ const mutations = [
   { name: 'WF-49: detail 不落进审计链（死在哪一步出不了函数）', file: 'src/workflows/start.ts', find: "...(entry.detail ? { detail: entry.detail } : {}),\n", replace: '' },
   { name: 'WF-50: 快照不走改名窗口（旧读者读不到旧键）', file: 'src/workflows/snapshot.ts', find: 'await writeJsonAtomic(file, withDualWrite(snapshot, renames));', replace: 'await writeJsonAtomic(file, snapshot);' },
 
-  // ── src/workflows/ + 设置面 (19) — #226 T3 · 自限闸门与设置节：默认即上限 / 硬顶 / 两级软门 / 嵌套校验 ──
+  // ── src/workflows/ + 设置面 (18) — #226 T3 · 自限闸门与设置节：默认即上限 / 硬顶 / 两级软门 / 嵌套校验 ──
   // 每条都对应票面一条钉死语义：越顶压回、下限守住、env 只认合法帧、"不限制"只解 token 闸、
   // 嵌套余量有效、设置节不含端点字段、未知键不静默。取槽级软门与构造期硬顶由行为测试杀。
   // 恒假条件会让 TS 判 unreachable / 变量未读而只被编译杀（杀得没意义）；

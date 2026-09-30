@@ -194,19 +194,20 @@ test('AC1 不设全局并发顶：两个 run 各自在自己的窗口里持位',
   const gatesA = deferred();
   const gatesB = deferred();
   const model = fakeModel((request) => (request.prompt === 'a' ? gatesA.promise : gatesB.promise));
-  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 1 });
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 2 });
 
-  const runA = await engine.start({ script: `await agent('a'); return 1;`, ownerSessionId: 'sess-a' });
-  const runB = await engine.start({ script: `await agent('b'); return 1;`, ownerSessionId: 'sess-a' });
+  const runA = await engine.start({ script: `await parallel([() => agent('a'), () => agent('a2')]); return 1;`, ownerSessionId: 'sess-a' });
+  const runB = await engine.start({ script: `await parallel([() => agent('b'), () => agent('b2')]); return 1;`, ownerSessionId: 'sess-a' });
   await settle();
 
-  // 窗口 = 1 且无全局顶：两条 run 各占一路在飞，合计 2；有全局顶就只会是 1。
-  assert.equal(model.state.maxInFlight, 2, '多 run 各自在闸内持窗口');
+  // 每条 run 各自持一个 2 路窗口、且没有全局顶：合计 4 路在飞；有全局顶就只会是 2。
+  assert.equal(model.state.maxInFlight, 4, '多 run 各自在闸内持窗口，不设全局并发顶');
   gatesA.resolve({ text: 'ok', outputTokens: 1 });
   gatesB.resolve({ text: 'ok', outputTokens: 2 });
-  await runA.completion;
-  await runB.completion;
-  assert.equal(model.state.calls, 2);
+  const [indexA, indexB] = await Promise.all([runA.completion, runB.completion]);
+  assert.equal(model.state.calls, 4, '两条 run 各烧两路，彼此不借槽');
+  assert.equal(indexA.status, 'completed');
+  assert.equal(indexB.status, 'completed');
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -390,6 +391,15 @@ test('AC3 既有 TUI Settings 屏把每个登记键都做成可编字段（quest
   const concurrency = built.questions.find((q) => q.label.startsWith('Workflow concurrency window'));
   assert.equal(concurrency.validate('65'), 'Use an integer from 2 to 64.', 'TUI 里说的上限就是闸门钉的那个');
   assert.equal(concurrency.validate('1'), 'Use an integer from 2 to 64.', '并发窗口下不到 1');
+  // 核数公式那一项不在纯函数层问机器：留空 = 自动，写值 = 手动定死。
+  assert.match(concurrency.label, /blank = follow core count/);
+  assert.equal(concurrency.fallback, '', '未设置时回显空 = 走公式，而不是替用户猜一个核数');
+  assert.equal(concurrency.validate(''), undefined, '空值放行（回到自动）');
+  assert.match(tokenCap.validate(''), /at least 1/, '非自动项空值不放行');
+
+  const cleared = resolveSettingsAnswers(['wf-concurrency-window', 'wf-token-cap'], ['', '9000'], current, { items: [] });
+  assert.equal(Object.hasOwn(cleared.next.workflows, 'concurrencyWindow'), false, '清空 = 交还给核数公式');
+  assert.equal(cleared.next.workflows.tokenCap, 9000);
 
   const applied = resolveSettingsAnswers(WORKFLOW_SETTING_FIELDS, answersFor({ tokenCap: '1500', unlimited: 'on', concurrencyWindow: '4', autoArchive: 'on' }), current, { items: [] });
   assert.equal(applied.next.workflows.tokenCap, 1500);
@@ -462,6 +472,11 @@ test('AC3 设置节不含端点字段：混进 baseUrl / apiKey / model 一律�
   assert.deepEqual(validateSettings(clamped), []);
   assert.equal(clamped.workflows.agentCap, 10_000, '校验即压回硬顶');
   assert.equal(clamped.workflows.concurrencyWindow, 2);
+
+  // 保存边界也要拦（照 myterminal.test 对 state.ts 的源码级锁惯例）：击穿嵌套的调参
+  // 不该等到 run 启动才炸出来——那时用户只剩一条 FORBIDDEN。
+  const state = fs.readFileSync(path.join(process.cwd(), 'src/tui/state.ts'), 'utf8');
+  assert.match(state, /validateClockNesting\(resolveWorkflowGates\(next\.workflows, process\.env\)\.gates\)/);
 
   const endpointsStillSingleSource = settingsWith({ subagent: { enabled: true, model: 'm', baseUrl: 'https://x', apiKey: 'k' } });
   assert.deepEqual(validateSettings(endpointsStillSingleSource), [], '端点三元组照旧只在 subagent 段校验，签名与校验都没改');

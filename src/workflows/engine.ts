@@ -158,6 +158,8 @@ export class WorkflowEngine {
     this.paths = workflowPaths(deps.managedRoot ?? managedRootFor(deps.workspaceDir));
     // 硬顶在构造期也成立：并发值不得越过 64、agent 数不得越过 10,000，无论它来自
     // 设置文件、env 还是直接注入本构造器的调用方。
+    // 下限这里刻意是 1 而不是设置面的 2：构造器是水位断言的注入缝（"窗口 1 会静默
+    // 串行化 parallel"这类用例要用它），本机设置面则由 gates.ts 钉住公式下限 2。
     const requested = { ...DEFAULT_GATES, ...(deps.gates ?? {}) };
     const window = deps.concurrencyWindow ?? requested.concurrencyWindow;
     this.gates = {
