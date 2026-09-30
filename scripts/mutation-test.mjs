@@ -132,13 +132,17 @@ let survived = 0;
 let equivalent = 0;
 const results = [];
 
-// 排除会触发 TUI 交互的测试文件
+// 全量套件（改后全量 / PR 门禁走它）
 const TEST_GLOB = 'test/*.test.mjs';
-const EXCLUDE_TESTS = ['test/cli-regression.test.mjs'];
 /**
- * 开发期窄口：ONLY_TESTS='test/issue-224-*.test.mjs'——随写随杀时只跑本票测试文件，
- * 判定"该变异体是否让对应测试变红"足够。默认仍是全量套件（改后全量与 PR 门禁走全量）。
+ * 变异内环提速（不改变"是否有测试变红"的判定语义）：
+ *  1) --bail：首个失败即停——检测只需知道红没红，无需跑完 1464 例。
+ *     ⚠ 前提：基线必须绿（见下方 preflight），否则 --bail 会在既有红上误判 KILLED。
+ *  2) 逐点窄口：变异点可带 `tests` 字段显式指定覆盖测试；src/workflows/ 下的点
+ *     自动回退到本票 workflows 测试（issue-224/225），其余回退全量。
+ * 不做"全局排除 e2e"——cluster/mcp 类变异的杀手测试恰是集成测试，排掉会漏杀。
  */
+const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs';
 const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，
@@ -186,6 +190,22 @@ if (!process.env.SKIP_GIT_SAFETY) {
   console.log('[safety] SKIP_GIT_SAFETY=1：跳过跑前干净检查（仅限无 git 的环境）');
 }
 
+// ── preflight：基线必须绿，否则 --bail 会在既有红上误杀、变异分数无效（T1 红线）──
+if (!process.env.SKIP_PREFLIGHT) {
+  process.stdout.write('[preflight] 基线全绿校验（--bail，最多 240s）… ');
+  try {
+    execSync(`bun test --bail --timeout 120000 ${TEST_FILES} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 240_000 });
+    console.log('绿 → 开始变异。');
+  } catch (e) {
+    const out = (e.stdout?.toString() || '') + (e.stderr?.toString() || '');
+    const fails = (out.match(/(\d+) fail/) || [])[1] || '?';
+    const bad = out.split('\n').filter((l) => /^\(fail\)|^\(error\)/.test(l)).slice(0, 30).join('\n');
+    console.log(`红（${fails} fail）→ 变异门禁中止。`);
+    console.log('[preflight] 基线非绿时跑变异无意义。先修以下红，或确认无碍后 SKIP_PREFLIGHT=1 强跑：\n' + bad);
+    process.exit(1);
+  }
+}
+
 for (let i = 0; i < mutations.length; i++) {
   const m = mutations[i];
   if (ONLY.length && !ONLY.some((p) => m.name.includes(p))) continue;
@@ -218,7 +238,8 @@ for (let i = 0; i < mutations.length; i++) {
     continue;
   }
   try {
-    const out = execSync(`bun test --timeout 120000 ${TEST_FILES} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 480_000 });
+    const files = m.tests || (m.file.startsWith('src/workflows/') ? WORKFLOW_TESTS : TEST_FILES);
+    const out = execSync(`bun test --bail --timeout 120000 ${files} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 480_000 });
     const passMatch = out.match(/(\d+) pass/);
     const failMatch = out.match(/(\d+) fail/);
     const passes = passMatch ? parseInt(passMatch[1]) : 0;
