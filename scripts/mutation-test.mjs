@@ -153,7 +153,7 @@ const mutations = [
   { name: 'WF-35: 终态封口移除（迟归的一路改写终态机器件）', file: 'src/workflows/engine.ts', find: 'if (context.settled || !context.open) return null;', replace: 'if (false) return null;' },
   { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));', replace: 'this.windowSize = Math.max(1, Math.floor(requested));' },
 
-  // ── src/workflows/ (10) — #224 补口 · 结算故障注入点 + 重命名双写窗口 ──
+  // ── src/workflows/ (14) — #224 补口 · 结算故障注入点 + 重命名双写窗口 + 审计证据保真 ──
   { name: 'WF-37: 通知前那一帧不触发（三点矩阵缺一帧）', file: 'src/workflows/engine.ts', find: "this.crash('before-notice');\n", replace: '' },
   { name: 'WF-38: env 命中判据反向（命中的不动、其余的全动）', file: 'src/workflows/crash.ts', find: 'if (point !== target) return;', replace: 'if (point === target) return;' },
   { name: 'WF-39: env 值不 trim（带空格的合法帧名认不出来）', file: 'src/workflows/crash.ts', find: 'const normalized = raw.trim();', replace: 'const normalized = raw;' },
@@ -164,6 +164,10 @@ const mutations = [
   { name: 'WF-44: 空窗口表被硬编码成有表（今天形状多出旧键）', file: 'src/workflows/run-index.ts', find: 'renames: readonly FieldRename[] = RENAMED_FIELDS.index): Promise<void> {', replace: "renames: readonly FieldRename[] = [{ field: 'status', previous: 'state' }]): Promise<void> {" },
   { name: 'WF-45: 后台终止记错审计动作（结算失败被当启动）', file: 'src/workflows/engine.ts', find: "this.deps.audit?.({ runId, action: 'workflow_settle', actor: request.ownerSessionId, status: 'failed', reason: 'settle-failed',", replace: "this.deps.audit?.({ runId, action: 'workflow_start', actor: request.ownerSessionId, status: 'failed', reason: 'settle-failed'," },
   { name: 'WF-46: 终态宣告后又被改判第二次', file: 'src/workflows/engine.ts', find: 'if (context.settled) throw error;', replace: 'if (false) throw error;' },
+  { name: 'WF-47: 审计幂等键不带因由（settle-failed 把终态证据整条盖掉）', file: 'src/workflows/start.ts', find: '`workflow-${entry.runId}-${entry.action}-${entry.reason}`', replace: '`workflow-${entry.runId}-${entry.action}`' },
+  { name: 'WF-48: 审计 status 退回一律 completed（失败结算看不出来）', file: 'src/workflows/start.ts', find: "status: AUDIT_STATUS[entry.status] ?? 'failed',", replace: "status: entry.action === 'workflow_settle' ? 'completed' : 'running',", all: true },
+  { name: 'WF-49: detail 不落进审计链（死在哪一步出不了函数）', file: 'src/workflows/start.ts', find: "...(entry.detail ? { detail: entry.detail } : {}),\n", replace: '' },
+  { name: 'WF-50: 快照不走改名窗口（旧读者读不到旧键）', file: 'src/workflows/snapshot.ts', find: 'await writeJsonAtomic(file, withDualWrite(snapshot, renames));', replace: 'await writeJsonAtomic(file, snapshot);' },
 ];
 
 let killedByTest = 0;
