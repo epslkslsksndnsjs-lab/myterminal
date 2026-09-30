@@ -246,6 +246,9 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
     });
   registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
 
+  // ── Workflows 启动面（ADR-0052 §23②：对外文案面向 Apps/MCP 审核独立撰写）──
+  registerDirect('workflow_start', 'Start Workflow', 'Start a multi-agent workflow run from a script. Asynchronous: returns a runId immediately and runs locally in the background. Start a reducer subagent right after; poll the reducer for the final summary — long runs do not depend on this conversation staying open.', safeLocalMutation);
+
   // ── Skill 工具（ADR-0037 #82：指令 mcp.ts:150 已承诺 skill() 直呼，须补齐 direct 注册）──
   // 1:1 镜像 core-tools.ts builtin `skill` 行为：无参列清单 / 有参运行（fork 走 subagent）。
   // inputSchema 由 BUILTIN_INPUT_SCHEMAS.skill 派生；注解对齐 core-tools.ts:526 四 hint。

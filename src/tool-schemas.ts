@@ -100,6 +100,10 @@ export const BUILTIN_INPUT_SCHEMAS = {
   subagent_status: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: SUBAGENT_STATUS_PAGE_MAX_CHARS } }, required: ['taskId'], additionalProperties: false },
   subagent_abort: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false },
 
+  // ── Workflows（ADR-0052 §8：启动面三种互斥形态，参数面不含任何闸门）──
+  // 恰选一与 resume 组合规则是运行期语义，刻意不在 schema 表达（形状只管形状）。
+  workflow_start: { type: 'object', properties: { script: { type: 'string', minLength: 1, maxLength: 200_000 }, scriptPath: { type: 'string', minLength: 1 }, resumeFromRunId: { type: 'string', minLength: 1 }, args: { type: 'object', additionalProperties: true } }, additionalProperties: false },
+
   /**
    * task_poll 不是 builtin——它由 `ExtensionService.call` 直接拦截处理，不进 builtins map。
    * 但 `extension_discover` 的目录和 MCP 的 direct tool 都要公布它的形状，所以形状归这里。

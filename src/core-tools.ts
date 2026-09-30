@@ -14,6 +14,8 @@ import { continuationPolicy } from './continuation.js';
 import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
 import { IGNORE_DIRECTORIES, walkFiles } from './utils/fs.js';
+import { getWorkflowEngine } from './workflows/runtime.js';
+import { mapStartError, validateStartArgs } from './workflows/start.js';
 
 // Bounded wall-clock budget for search_text. The regex-safety gate (see
 // validateSafeRegex) blocks the catastrophic-backtracking class; this is a
@@ -718,6 +720,44 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       } catch (err) {
         const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
         throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);
+      }
+    },
+  });
+
+  // ── Workflows 启动面（ADR-0052 §8）──
+  // 只有 root 能启动：subagent 通道一律 FORBIDDEN（递归防线的第一层）。
+  // 参数面只有三种互斥形态 + 可选 args，闸门参数一个都不暴露（默认档即上限）。
+  add({
+    name: 'workflow_start', title: 'Start workflow',
+    description: 'Start a multi-agent workflow run from a script — only when the user explicitly asks for one; never start a run on your own initiative. Pass script (inline; it is saved to disk so the same scriptPath can be reused) or scriptPath; add resumeFromRunId together with scriptPath to continue a previous run. Returns { runId, status, scriptPath } immediately: the run continues locally in the background after this conversation ends, so start a reducer subagent right after and read the run index for the full account.',
+    inputSchema: BUILTIN_INPUT_SCHEMAS.workflow_start,
+    annotations: { ...localWrite, idempotentHint: false },
+    invoke: async (input, context) => {
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot start workflow runs.', { reason: 'subagent-channel' } as JsonObject);
+      }
+      const session = actor(context);
+      const check = validateStartArgs(input);
+      if (!check.ok) {
+        throw new MyTerminalError(check.code === 'VALIDATION' ? 'EXTENSION_ERROR' : check.code, check.message, { reason: check.reason } as JsonObject);
+      }
+      const engine = getWorkflowEngine();
+      if (!engine) {
+        throw new MyTerminalError('FORBIDDEN', 'Workflow runs need the model endpoint configured (baseUrl / apiKey / model).', { reason: 'endpoint-not-configured' } as JsonObject);
+      }
+      try {
+        const started = await engine.start({
+          ...(typeof input.script === 'string' ? { script: input.script } : {}),
+          ...(typeof input.scriptPath === 'string' ? { scriptPath: input.scriptPath } : {}),
+          ...(typeof input.resumeFromRunId === 'string' ? { resumeFromRunId: input.resumeFromRunId } : {}),
+          ...(input.args !== undefined ? { args: input.args } : {}),
+          ownerSessionId: session.id,
+        });
+        return { runId: started.runId, status: started.status, scriptPath: started.scriptPath } as JsonObject;
+      } catch (error) {
+        const mapped = mapStartError(error);
+        if (mapped) throw new MyTerminalError(mapped.code, mapped.message, mapped.details);
+        throw error;
       }
     },
   });

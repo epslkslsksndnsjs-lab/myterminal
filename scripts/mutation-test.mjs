@@ -105,6 +105,23 @@ const mutations = [
   // ── src/tool-parse.ts / src/extensions.ts (#147) ──
   { name: 'TBP-1: builtin-target reduce fallback removed', file: 'src/tool-parse.ts', find: '(TOOL_SHAPES.get(targetName)?.reduce ?? denoiseCommandResult)', replace: '(TOOL_SHAPES.get(targetName)?.reduce)' },
   { name: 'TBP-2: builtin-target inner shaping bypassed', file: 'src/extensions.ts', find: 'return { target: target.name, result: reduceBuiltinTargetResult(target.name, await target.invoke(merged, context)) };', replace: 'return { target: target.name, result: await target.invoke(merged, context) };' },
+
+  // ── src/workflows/ (15) — Workflows 核心（ADR-0052 #224：新模块变异点 100% 被杀）──
+  { name: 'WF-1: runId 形态闸移除（路径穿越口）', file: 'src/workflows/ids.ts', find: 'if (!isRunId(value)) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);', replace: 'if (false) throw new Error(`runId must match ${RUN_ID_PATTERN.source}; received: ${String(value)}`);' },
+  { name: 'WF-2: 确定性扫描移除（非确定性脚本放行）', file: 'src/workflows/engine.ts', find: 'if (violations.length > 0) {', replace: 'if (false) {' },
+  { name: 'WF-3: scriptPath 白名单失效（越界可读）', file: 'src/workflows/paths.ts', find: 'return resolved === root || resolved.startsWith(root + path.sep);', replace: 'return true;' },
+  { name: 'WF-4: 终态标记改为覆盖式发布（失去独占）', file: 'src/workflows/atomic.ts', find: '      await link(temp, file);', replace: '      await rename(temp, file);' },
+  { name: 'WF-5: 快照终态校验移除（活跃期可写快照）', file: 'src/workflows/snapshot.ts', find: 'if (!isTerminal(index.status)) throw new Error(`Cannot snapshot a run that is not terminal (status: ${index.status}).`);', replace: 'if (false) throw new Error(`Cannot snapshot a run that is not terminal (status: ${index.status}).`);' },
+  { name: 'WF-6: 版本超前拒读移除（半读半猜）', file: 'src/workflows/schema.ts', find: 'if (found > current) throw new VersionMismatchError(label, found, current);', replace: 'if (false) throw new VersionMismatchError(label, found, current);' },
+  { name: 'WF-7: journal 丢弃段不记账（静默丢）', file: 'src/workflows/journal.ts', find: 'const dropped = lines.length - kept.length;', replace: 'const dropped = 0;' },
+  { name: 'WF-8: token 记账移除（每路用量不累加）', file: 'src/workflows/engine.ts', find: '      context.spent += result.outputTokens;', replace: '      void result.outputTokens;' },
+  { name: 'WF-9: 续跑归属校验移除（可续别人的 run）', file: 'src/workflows/engine.ts', find: 'if (previous.ownerSessionId !== request.ownerSessionId) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'', replace: 'if (false) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'' },
+  { name: 'WF-10: 续跑终态闸门移除（终态 run 可被重开）', file: 'src/workflows/engine.ts', find: 'if (await exists(run.terminalFile)) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'', replace: 'if (false) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'' },
+  { name: 'WF-11: args 记录位恒假（链种子丢失）', file: 'src/workflows/engine.ts', find: 'argsRecorded: request.args !== undefined,', replace: 'argsRecorded: false,' },
+  { name: 'WF-12: saved 同名即复用（覆盖已有脚本）', file: 'src/workflows/saved.ts', find: 'if (existing === source) {', replace: 'if (true) {' },
+  { name: 'WF-13: 静态扫描掩蔽移除（字符串内误报）', file: 'src/workflows/lint.ts', find: 'const masked = maskNonCode(source);', replace: 'const masked = source;' },
+  { name: 'WF-14: 注册表保留裁剪移除（终态无限增长）', file: 'src/workflows/registry.ts', find: '.slice(-MAX_RETAINED_TERMINAL_RUNS)', replace: '.slice()' },
+  { name: 'WF-15: resume 缺 scriptPath 的互斥校验移除', file: 'src/workflows/start.ts', find: 'if (hasResume && !hasPath) {', replace: 'if (false) {' },
 ];
 
 let killedByTest = 0;
@@ -116,6 +133,11 @@ const results = [];
 // 排除会触发 TUI 交互的测试文件
 const TEST_GLOB = 'test/*.test.mjs';
 const EXCLUDE_TESTS = ['test/cli-regression.test.mjs'];
+/**
+ * 开发期窄口：ONLY_TESTS='test/issue-224-*.test.mjs'——随写随杀时只跑本票测试文件，
+ * 判定"该变异体是否让对应测试变红"足够。默认仍是全量套件（改后全量与 PR 门禁走全量）。
+ */
+const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，
 // 防止突变体残留污染工作树（事故：套件被误杀致 STO-1 残留在 audit-log.ts，污染后续测量数字）。
@@ -138,6 +160,29 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 
 // #177：单点重跑过滤（ONLY=SUB-1,OPD-3,OPD-4）——按点名前缀子串匹配
 const ONLY = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+// ═══════════════════════════════════════════════════════════
+// 变异安全带（#145 事故教训：残留变异体污染后续测量）
+//
+// 逐点备份/还原 + 信号处理器已经覆盖了 SIGINT/SIGTERM；剩下唯一的口子是
+// SIGKILL / 断电 —— 那种情形下 git 是最后一层兜底：
+//   · 跑前：工作树必须干净，不干净拒跑（否则"还原"无法用 git diff 验证）；
+//   · 跑后：`git diff --exit-code` 自检，非空即报警并还原。
+// 开发期每轮变异前先提交到集成分支，即可满足"跑前干净"。
+// ═══════════════════════════════════════════════════════════
+function gitPorcelain() {
+  return execSync('git status --porcelain', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+if (!process.env.SKIP_GIT_SAFETY) {
+  const dirty = gitPorcelain();
+  if (dirty) {
+    console.error('[safety] 拒绝运行：git 工作树不干净（残留变异体会污染测量）。先提交或清理：\n' + dirty);
+    process.exit(1);
+  }
+} else {
+  console.log('[safety] SKIP_GIT_SAFETY=1：跳过跑前干净检查（仅限无 git 的环境）');
+}
 
 for (let i = 0; i < mutations.length; i++) {
   const m = mutations[i];
@@ -171,7 +216,7 @@ for (let i = 0; i < mutations.length; i++) {
     continue;
   }
   try {
-    const out = execSync(`bun test --timeout 120000 ${TEST_GLOB} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 480_000 });
+    const out = execSync(`bun test --timeout 120000 ${TEST_FILES} 2>&1`, { stdio: 'pipe', encoding: 'utf8', env: { ...process.env, CI: '1' }, timeout: 480_000 });
     const passMatch = out.match(/(\d+) pass/);
     const failMatch = out.match(/(\d+) fail/);
     const passes = passMatch ? parseInt(passMatch[1]) : 0;
@@ -203,6 +248,22 @@ for (let i = 0; i < mutations.length; i++) {
 
 // 恢复正确状态
 execSync('bun run build 2>&1', { stdio: 'pipe' });
+
+// 安全带自检：跑完必须与开跑前逐字节一致（残余变异体 = 报警 + 还原）
+if (!process.env.SKIP_GIT_SAFETY) {
+  const after = gitPorcelain();
+  if (after) {
+    console.error('\n[safety] 报警：跑后工作树仍有差异，判定为残留变异体，正在用 git 还原：\n' + after);
+    try {
+      execSync('git checkout -- .', { stdio: 'pipe' });
+      execSync('bun run build 2>&1', { stdio: 'pipe' });
+      console.error('[safety] 已还原并重建。');
+    } catch { /* 还原尽力而为，报警信息已经打出 */ }
+    process.exitCode = 1;
+  } else {
+    console.log('[safety] 跑后自检通过：工作树与开跑前一致。');
+  }
+}
 
 const total = results.length;
 const killed = killedByTest + killedByBuild;

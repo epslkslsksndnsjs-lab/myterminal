@@ -28,6 +28,9 @@ import { writeRuntimeLifecycle, type RuntimeLifecyclePhase } from './runtime-lif
 import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
+import { initWorkflowEngine } from './workflows/runtime.js';
+import { llmBackedFactory } from './workflows/adapter.js';
+import { workflowAuditSink } from './workflows/start.js';
 
 export type RuntimeLog = { at: string; level: 'info' | 'error'; message: string; audit?: ToolAuditEvent };
 export type RuntimeHealth = { phase: 'active' | 'revalidating' | 'degraded' | 'shutting_down'; environment: RuntimeEnvironmentStatus; message?: string; lastCheckedAt: string };
@@ -105,6 +108,13 @@ export class MyTerminalRuntime {
         return { session: result.session, identity: result.identity };
       },
     });
+      // Workflows 与会话侧共用同一端点三元组（单一来源、不另开配置），但执行线彼此
+      // 独立：这里只注入适配器工厂与审计汇，不复用会话侧执行器、记录库或并发池。
+      initWorkflowEngine({
+        workspaceDir: config.workspaceDir,
+        adapterFactory: llmBackedFactory(subagentSettings),
+        audit: workflowAuditSink(this.store, config.workspaceDir),
+      });
     }
     this.mcp = new MyTerminalMcpTransport(this.extensions);
     this.app = express();
