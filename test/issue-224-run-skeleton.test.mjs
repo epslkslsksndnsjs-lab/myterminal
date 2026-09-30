@@ -24,7 +24,7 @@ import path from 'node:path';
 
 import { WorkflowEngine, WorkflowStartError, DEFAULT_THRESHOLDS } from '../dist/workflows/engine.js';
 import { virtualClock } from '../dist/workflows/clock.js';
-import { initWorkflowEngine, resetWorkflowEngine } from '../dist/workflows/runtime.js';
+import { initWorkflowEngine, getWorkflowEngine, resetWorkflowEngine } from '../dist/workflows/runtime.js';
 import { validateStartArgs, mapStartError } from '../dist/workflows/start.js';
 import { SCHEMA_VERSION, VersionMismatchError } from '../dist/workflows/schema.js';
 import { readIndex, writeIndex } from '../dist/workflows/run-index.js';
@@ -495,7 +495,8 @@ test('AC5 正常启动经工具面返回 { runId, status, scriptPath } 且立即
   assert.equal(result.status, 'running');
   assert.ok(isRunId(result.runId));
   release({ text: 'done', outputTokens: 1 });
-  await new Promise((r) => setTimeout(r, 0));
+  // 后台 run 必须等它结算完再退场：否则 afterEach 删树会撞上还在飞的终态写盘。
+  await getWorkflowEngine()?.settled(result.runId);
 });
 
 // ═══════════════════════════════════════════════════════════════

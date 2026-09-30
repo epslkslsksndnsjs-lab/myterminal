@@ -152,6 +152,18 @@ const mutations = [
   { name: 'WF-34: 续跑不从断点接键链（键位撞车，重放歧义）', file: 'src/workflows/engine.ts', find: 'chainPrefix: lastChainKey(index) ?? argsChainSeed(index.args),', replace: 'chainPrefix: argsChainSeed(index.args),' },
   { name: 'WF-35: 终态封口移除（迟归的一路改写终态机器件）', file: 'src/workflows/engine.ts', find: 'if (context.settled || !context.open) return null;', replace: 'if (false) return null;' },
   { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));', replace: 'this.windowSize = Math.max(1, Math.floor(requested));' },
+
+  // ── src/workflows/ (10) — #224 补口 · 结算故障注入点 + 重命名双写窗口 ──
+  { name: 'WF-37: 通知前那一帧不触发（三点矩阵缺一帧）', file: 'src/workflows/engine.ts', find: "this.crash('before-notice');\n", replace: '' },
+  { name: 'WF-38: env 命中判据反向（命中的不动、其余的全动）', file: 'src/workflows/crash.ts', find: 'if (point !== target) return;', replace: 'if (point === target) return;' },
+  { name: 'WF-39: env 值不 trim（带空格的合法帧名认不出来）', file: 'src/workflows/crash.ts', find: 'const normalized = raw.trim();', replace: 'const normalized = raw;' },
+  { name: 'WF-40: 双写不判缺位（造出 undefined 假字段）', file: 'src/workflows/schema.ts', find: 'if (!(field in out) || out[field] === undefined) continue;', replace: 'if (false) continue;' },
+  { name: 'WF-41: 读出优先旧字段（新值被旧值盖掉）', file: 'src/workflows/schema.ts', find: 'if (!hasNew && hasOld) {', replace: 'if (hasOld) {' },
+  { name: 'WF-42: 新旧键冲突静默吞掉（§20 不许静默挑一个）', file: 'src/workflows/schema.ts', find: 'conflicts.push(field);\n', replace: '' },
+  { name: 'WF-43: 抬升后仍留双份（上层读到两份真值）', file: 'src/workflows/schema.ts', find: 'if (hasOld) delete value[previous];', replace: '' },
+  { name: 'WF-44: 空窗口表被硬编码成有表（今天形状多出旧键）', file: 'src/workflows/run-index.ts', find: 'renames: readonly FieldRename[] = RENAMED_FIELDS.index): Promise<void> {', replace: "renames: readonly FieldRename[] = [{ field: 'status', previous: 'state' }]): Promise<void> {" },
+  { name: 'WF-45: 后台终止记错审计动作（结算失败被当启动）', file: 'src/workflows/engine.ts', find: "this.deps.audit?.({ runId, action: 'workflow_settle', actor: request.ownerSessionId, status: 'failed', reason: 'settle-failed',", replace: "this.deps.audit?.({ runId, action: 'workflow_start', actor: request.ownerSessionId, status: 'failed', reason: 'settle-failed'," },
+  { name: 'WF-46: 终态宣告后又被改判第二次', file: 'src/workflows/engine.ts', find: 'if (context.settled) throw error;', replace: 'if (false) throw error;' },
 ];
 
 let killedByTest = 0;

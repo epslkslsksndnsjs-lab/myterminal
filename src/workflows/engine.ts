@@ -11,6 +11,7 @@ import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type FailureEntry, typ
 import { writeSnapshot } from './snapshot.js';
 import { ensureDir, createExclusive, exists, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents } from './events.js';
+import { resolveCrashPlan, type CrashPlan, type CrashPoint } from './crash.js';
 import { createDispatchWindow, defaultConcurrencyWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
 import { canonicalAgentOpts, gateAgentOpts, type GatedAgentOpts } from './agent-opts.js';
 import { argsChainSeed, deriveAgentKey } from './keys.js';
@@ -70,6 +71,8 @@ export type WorkflowAuditEntry = {
   status: string;
   reason?: string;
   at: string;
+  /** 仅结算阶段终止异常带：原样留下出错文本，审计才说得出死在哪一步。 */
+  detail?: string;
 };
 
 export type EngineDeps = {
@@ -85,6 +88,12 @@ export type EngineDeps = {
   concurrencyWindow?: number;
   /** 终态通知缝：回传管线接线前为空实现，结算纪律不受影响。 */
   notifier?: (settled: { runId: string; status: WorkflowStatus; reason?: TerminalReason; indexPath: string }) => void;
+  /** 结算阶段故障注入缝：抛出即视为本进程在此终止（见 crash.ts 的三帧）。 */
+  crash?: (point: CrashPoint) => void;
+  /** env 路线（真 SIGKILL）的取值来源；缺省读本进程环境。 */
+  crashEnv?: Record<string, string | undefined>;
+  /** 动手动作本身，测试里注入它就能断"命中了几次"而不必真杀进程。 */
+  crashKill?: (pid: number, signal: 'SIGKILL') => void;
 };
 
 export type StartRequest = {
@@ -159,6 +168,7 @@ export class WorkflowEngine {
   private readonly events: WorkflowEvents;
   private readonly factory: AdapterFactory | undefined;
   private readonly windowSize: number;
+  private readonly crash: CrashPlan;
   private readonly runs = new Map<string, RunContext>();
 
   constructor(private readonly deps: EngineDeps) {
@@ -167,6 +177,7 @@ export class WorkflowEngine {
     this.thresholds = { ...DEFAULT_THRESHOLDS, ...(deps.thresholds ?? {}) };
     this.events = deps.events ?? new WorkflowEvents();
     this.factory = deps.adapterFactory;
+    this.crash = deps.crash ?? resolveCrashPlan({ env: deps.crashEnv ?? process.env, kill: deps.crashKill });
     const requested = deps.concurrencyWindow ?? defaultConcurrencyWindow();
     // 硬顶在这里也成立：并发值不得越过 64，无论它来自哪个设置面（T3 补 env / config 入口）。
     this.windowSize = Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(requested)));
@@ -262,6 +273,13 @@ export class WorkflowEngine {
 
     const completion = this.execute(context, script.content);
     context.completion = completion;
+    // 工具面拿到 runId 就走，没人接这个 promise：后台 run 在结算阶段终止时，
+    // 绝不该升级成进程级 unhandledRejection（那会把同进程的消息库与 TUI 一起带走）。
+    // 兜法不是吞：记一条 settle-failed 审计，盘面停在已写出的那一半，交由认领趟收敛。
+    void completion.catch((error: unknown) => {
+      const detail = error && typeof error === 'object' && typeof (error as Error).message === 'string' ? (error as Error).message : String(error);
+      this.deps.audit?.({ runId, action: 'workflow_settle', actor: request.ownerSessionId, status: 'failed', reason: 'settle-failed', at: this.clock.iso(), detail });
+    });
     return {
       runId,
       status: 'running',
@@ -314,6 +332,9 @@ export class WorkflowEngine {
       await this.settle(context, 'completed', 'completed');
       return context.index;
     } catch (error) {
+      // 终态已经开始宣告（哪怕只走到一半）就不再改判第二次：
+      // 注入的终止必须原样冒出去，迟到的第二笔产物只会让盘面自相矛盾。
+      if (context.settled) throw error;
       if (context.termination) {
         await this.settle(context, 'failed', context.termination.reason);
         return context.index;
@@ -559,8 +580,12 @@ export class WorkflowEngine {
     await context.indexWrites;
     await writeIndex(context.run.indexFile, context.index);
     await writeSnapshot(context.run.snapshotFile, context.index);
+    // 第一帧：快照已落、标记未落——认领趟要认出这个放大帧。
+    this.crash('after-snapshot');
     // 标记最后写：所有产物齐备后才宣告终态；已存在则静默退让（后到者不补发、不判更新版）。
     const markerWritten = await createExclusive(context.run.terminalFile, JSON.stringify({ schemaVersion: SCHEMA_VERSION, runId: context.runId, status, reason, endedAt }) + '\n');
+    // 第二帧：唯一线性化点已落地，注册表尚未推进。
+    this.crash('after-terminal');
     await upsertRegistry(this.paths.registryFile, {
       runId: context.runId,
       status,
@@ -570,6 +595,8 @@ export class WorkflowEngine {
     });
     this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status, reason, at: endedAt });
     this.events.emit({ runId: context.runId, type: 'run_settled', at: endedAt, data: { status, reason, markerWritten } });
+    // 第三帧：盘面齐、通知未投递——outbox 排空趟要能补发。
+    this.crash('before-notice');
     this.deps.notifier?.({ runId: context.runId, status, reason, indexPath: context.run.indexFile });
     return context.index;
   }

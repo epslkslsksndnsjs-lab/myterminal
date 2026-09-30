@@ -118,13 +118,13 @@ export class VersionMismatchError extends Error {
   }
 }
 
-type Record = { schemaVersion?: unknown };
+type Versioned = { schemaVersion?: unknown };
 
 /**
  * 读一个机器件：先过版本闸，再交回原对象由调用方按缺省补齐缺字段。
  * 不合格（不是对象 / 版本缺失 / 版本超前）一律抛，绝不返回半读结果。
  */
-export function readMachineRecord<T extends Record>(raw: unknown, current: number, label: string): T {
+export function readMachineRecord<T extends Versioned>(raw: unknown, current: number, label: string): T {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new VersionMismatchError(label, undefined, current);
   const record = raw as T;
   const found = record.schemaVersion;
@@ -136,4 +136,68 @@ export function readMachineRecord<T extends Record>(raw: unknown, current: numbe
 /** 序列化前补版本号，落盘统一由这里出门（防止漏写字段）。 */
 export function withSchemaVersion<T extends object>(value: T, version: number = SCHEMA_VERSION): T & { schemaVersion: number } {
   return { ...value, schemaVersion: version };
+}
+
+/**
+ * 字段重命名的双写窗口（§20 的重命名过渡期）。
+ *
+ * 规则三条，跨一个发布版：
+ *   1. 同一 schemaVersion 周期内新旧字段双写——写的时候新键为准，旧键跟着带一份同值，
+ *      让上一版读者照常读得到；窗口不 bump 版本（bump 是"改语义 / 删除"那一路）。
+ *   2. 读出优先新字段；只有旧键的产物把旧值抬升为新键后交给上层，不留双份。
+ *   3. 下一版删旧字段，删的那一刻才升版本——不弱化 fail-closed：
+ *      比读者更老的不兼容版本照旧拒读，窗口只管同版本周期内的改名。
+ *
+ * 今天没有任何字段要改名，所以表是空的：空表 = 这层等于不存在，读写形状逐字节不变。
+ * 表一旦填了条目，必须同时补一条"这份产物在窗口结束后可以删旧键"的去处，否则双写永不出清。
+ */
+export type FieldRename = { readonly field: string; readonly previous: string };
+
+export const RENAMED_FIELDS: {
+  readonly index: readonly FieldRename[];
+  readonly registry: readonly FieldRename[];
+  readonly snapshot: readonly FieldRename[];
+  readonly journal: readonly FieldRename[];
+} = {
+  index: [],
+  registry: [],
+  snapshot: [],
+  journal: [],
+};
+
+/** 写侧：新键有值才带旧键；缺位不造字段，重复条目不叠加，且不改动调用方的对象。 */
+export function withDualWrite<T extends object>(record: T, renames: readonly FieldRename[]): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(record as Record<string, unknown>) };
+  for (const { field, previous } of renames) {
+    if (!(field in out) || out[field] === undefined) continue;
+    out[previous] = out[field];
+  }
+  return out;
+}
+
+export type RenamedRead = {
+  value: Record<string, unknown>;
+  /** 从旧键抬升上来的字段名（新码读旧产物的证据）。 */
+  lifted: string[];
+  /** 新旧两键并存且值不同——以新键为准，但必须留名，不许静默挑一个。 */
+  conflicts: string[];
+};
+
+/** 读侧：优先新字段，缺新键时抬升旧键，两缺不造。 */
+export function readWithRenameWindow(raw: Record<string, unknown>, renames: readonly FieldRename[]): RenamedRead {
+  const value: Record<string, unknown> = { ...raw };
+  const lifted: string[] = [];
+  const conflicts: string[] = [];
+  for (const { field, previous } of renames) {
+    const hasNew = field in value;
+    const hasOld = previous in value;
+    if (!hasNew && hasOld) {
+      value[field] = value[previous];
+      lifted.push(field);
+    } else if (hasNew && hasOld && value[field] !== value[previous]) {
+      conflicts.push(field);
+    }
+    if (hasOld) delete value[previous];
+  }
+  return { value, lifted, conflicts };
 }

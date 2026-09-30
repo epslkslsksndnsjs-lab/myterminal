@@ -1,8 +1,12 @@
 import { readJson, writeJsonAtomic } from './atomic.js';
 import {
   readMachineRecord,
+  readWithRenameWindow,
+  withDualWrite,
+  RENAMED_FIELDS,
   type DispatchRecord,
   type FailureEntry,
+  type FieldRename,
   type RunIndex,
   type WorkflowStatus,
   SCHEMA_VERSION,
@@ -57,9 +61,10 @@ function asFailure(value: unknown): FailureEntry | undefined {
 }
 
 /** additive 兼容：老产物缺的字段在这里补齐，绝不因缺字段拒读。 */
-export function normalizeIndex(raw: unknown, readerVersion: number = SCHEMA_VERSION): RunIndex {
+export function normalizeIndex(raw: unknown, readerVersion: number = SCHEMA_VERSION, renames: readonly FieldRename[] = RENAMED_FIELDS.index): RunIndex {
   const record = readMachineRecord<RunIndex>(raw, readerVersion, 'index.json');
-  const value = record as unknown as Record<string, unknown>;
+  // 重命名窗口在版本闸之后：窗口只处理同版本周期内的改名，不放松拒读。
+  const value = readWithRenameWindow(record as unknown as Record<string, unknown>, renames).value;
   const dispatches = Array.isArray(value.dispatches) ? value.dispatches.map(asDispatch).filter((d): d is DispatchRecord => Boolean(d)) : [];
   const failures = Array.isArray(value.failures) ? value.failures.map(asFailure).filter((f): f is FailureEntry => Boolean(f)) : [];
   const tokens = value.tokens && typeof value.tokens === 'object' ? (value.tokens as { spent?: unknown }) : {};
@@ -85,12 +90,12 @@ export function normalizeIndex(raw: unknown, readerVersion: number = SCHEMA_VERS
   };
 }
 
-export async function writeIndex(file: string, index: RunIndex): Promise<void> {
-  await writeJsonAtomic(file, index);
+export async function writeIndex(file: string, index: RunIndex, renames: readonly FieldRename[] = RENAMED_FIELDS.index): Promise<void> {
+  await writeJsonAtomic(file, withDualWrite(index, renames));
 }
 
-export async function readIndex(file: string, readerVersion: number = SCHEMA_VERSION): Promise<RunIndex | undefined> {
+export async function readIndex(file: string, readerVersion: number = SCHEMA_VERSION, renames: readonly FieldRename[] = RENAMED_FIELDS.index): Promise<RunIndex | undefined> {
   const raw = await readJson(file);
   if (raw === undefined) return undefined;
-  return normalizeIndex(raw, readerVersion);
+  return normalizeIndex(raw, readerVersion, renames);
 }
