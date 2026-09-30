@@ -343,6 +343,15 @@ const mutations = [
   { name: 'WF-404: 技能名漂走（列表查不到，且打穿 #235 逐字引用的共享常量）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: "  ['workflow-authoring', {", replace: "  ['workflow-authoring-v2', {" },
   { name: 'WF-405: 技能 mode 从 inline 漂到 fork（读正文变成起 subagent）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: "    mode: 'inline',\n    content: WORKFLOW_AUTHORING_CONTENT,", replace: "    mode: 'fork',\n    content: WORKFLOW_AUTHORING_CONTENT," },
   { name: 'WF-406: WORKFLOWS 段标题被改（双版锚点序与抽取锚失效）', file: 'docs/GPT_INSTRUCTIONS.md', tests: 'test/issue-234-*.test.mjs', find: 'WORKFLOWS\n- When: run only', replace: 'WORKFLOW RUNS\n- When: run only' },
+  // ── src/mcp.ts (T12 #235, 7) — MCP/Apps 通道面：直连两条 / 对外独立文本 / 单源派生 / instructions 一条 / 形状与 _meta 与注解 ──
+  // 每条对应 #235 票面 AC1–AC2 的一条钉死语义，全部由 test/issue-235-*.test.mjs 行为杀（非仅编译杀、非等价豁免）。
+  { name: "MCP-1: 直连名单少一条（对外 workflow_cancel 根本不存在）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "  registerDirect('workflow_cancel', 'Cancel Workflow', ", replace: "  if (false) registerDirect('workflow_cancel', 'Cancel Workflow', " },
+  { name: "MCP-2: 对外描述退回内部 canonical（防漂移矩阵三分破防 = 跨份同文）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "'Cancel a whole workflow run and stop its local agents. Idempotent — a terminal run returns its current status. The reducer still reports what finished.',", replace: "'Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.'," },
+  { name: "MCP-3: inputSchema 不再从单源派生（退回不派生的空形状）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "    const derived = jsonSchemaToZod(BUILTIN_INPUT_SCHEMAS[name], name) as z.ZodObject<z.ZodRawShape>;", replace: "    const derived = z.object({}) as unknown as z.ZodObject<z.ZodRawShape>;" },
+  { name: "MCP-4: instructions 里出现第二条 Workflows 行（追加被写成重复追加）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "      'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.',", replace: "      'Workflows: see workflow_start.',\n      'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.'," },
+  { name: "MCP-5: extraShape 混入工具专属键（传输层越权）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "      title, description, inputSchema: derived.extend({ ...extraShape, identity: optionalIdentitySchema }), outputSchema: responseSchema, annotations,", replace: "      title, description, inputSchema: derived.extend({ ...extraShape, probeFlag: z.string().optional(), identity: optionalIdentitySchema }), outputSchema: responseSchema, annotations," },
+  { name: "MCP-6: _meta 不再按 title 生成（写死一份通用文案）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "      _meta: { 'openai/toolInvocation/invoking': `Running ${title}…`, 'openai/toolInvocation/invoked': `${title} ready` },", replace: "      _meta: { 'openai/toolInvocation/invoking': 'Running tool…', 'openai/toolInvocation/invoked': 'Tool ready' }," },
+  { name: "MCP-7: 注解集不镜像既有 abort 先例（退回 safeRead）", file: "src/mcp.ts", tests: 'test/issue-235-*.test.mjs', find: "this conversation staying open.', safeLocalMutation);", replace: "this conversation staying open.', safeRead);" },
 
 ];
 
@@ -359,10 +368,11 @@ const TEST_GLOB = 'test/*.test.mjs';
  *  1) --bail：首个失败即停——检测只需知道红没红，无需跑完 1464 例。
  *     ⚠ 前提：基线必须绿（见下方 preflight），否则 --bail 会在既有红上误判 KILLED。
  *  2) 逐点窄口：变异点可带 `tests` 字段显式指定覆盖测试；src/workflows/ 下的点
- *     自动回退到 workflows 测试（issue-224..228），其余回退全量。
+ *     自动回退到 workflows 测试（issue-224..231 + 234/235），其余回退全量。
+ *     #232 落地时照此追加；新增票若已显式写 tests: 字段则不受这条影响。
  * 不做"全局排除 e2e"——cluster/mcp 类变异的杀手测试恰是集成测试，排掉会漏杀。
  */
-const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs test/issue-228-*.test.mjs test/issue-229-*.test.mjs test/issue-230-*.test.mjs test/issue-231-*.test.mjs';
+const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs test/issue-228-*.test.mjs test/issue-229-*.test.mjs test/issue-230-*.test.mjs test/issue-231-*.test.mjs test/issue-234-*.test.mjs test/issue-235-*.test.mjs';
 const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，
