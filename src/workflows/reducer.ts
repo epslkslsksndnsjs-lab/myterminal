@@ -133,18 +133,18 @@ export async function decideReducerAdmission(
   input: { runId: string; agentId: string; ownerSessionId: string; at: string; gates: WorkflowGates },
 ): Promise<ReducerAdmission> {
   const indexPath = runPaths(paths, input.runId).indexFile;
+  const refuseExisting = (waiter: ReducerWaiter): ReducerRefusal => ({
+    ok: false,
+    reason: 'reducer-waiter-exists',
+    noticeOnly: false,
+    runBlocked: false,
+    indexPath,
+    waiter,
+    message: `Run ${input.runId} already has a waiting reducer (${waiter.agentId}). Wait for it, or start a new one with the same runId after it settles.`,
+  });
+  // 已有等待者先判：这不是配额的 notice-only 降级——那一位就是这件事的。
   const holder = await readWaiter(paths, input.runId);
-  if (holder) {
-    return {
-      ok: false,
-      reason: 'reducer-waiter-exists',
-      noticeOnly: false,
-      runBlocked: false,
-      indexPath,
-      waiter: holder,
-      message: `Run ${input.runId} already has a waiting reducer (${holder.agentId}). Wait for it, or start a new one with the same runId after it settles.`,
-    };
-  }
+  if (holder) return refuseExisting(holder);
   const waiting = await countReducerWaiters(paths);
   if (waiting >= input.gates.reducerQuota) {
     return {
@@ -156,18 +156,9 @@ export async function decideReducerAdmission(
       message: `Reducer quota is full (${waiting}/${input.gates.reducerQuota} waiting reducers). The run keeps going: its settled-notice and the files on disk carry the result, and a reducer can start later with the same runId.`,
     };
   }
+  // 独占创建才是"同一 run 至多一个等待者"的线性化点；并发补起时输的那一个在这里被挡下。
   const claim = await claimReducerWaiter(paths, input);
-  if (!claim.ok) {
-    return {
-      ok: false,
-      reason: claim.reason,
-      noticeOnly: false,
-      runBlocked: false,
-      indexPath,
-      waiter: claim.waiter,
-      message: `Run ${input.runId} already has a waiting reducer (${claim.waiter.agentId}).`,
-    };
-  }
+  if (!claim.ok) return refuseExisting(claim.waiter);
   return { ok: true, noticeOnly: false, runBlocked: false, waiter: claim.waiter };
 }
 

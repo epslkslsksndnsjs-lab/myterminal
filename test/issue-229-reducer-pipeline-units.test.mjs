@@ -281,6 +281,7 @@ test('budget-1: 默认档三者对齐——runGate 30 / budget 35 = gate + slack
   const gates = defaultWorkflowGates(8);
   assert.equal(gates.runGateMs, 30 * 60_000);
   assert.equal(gates.reducerBudgetMs, 35 * 60_000);
+  assert.equal(gates.reducerBudgetMs, gates.runGateMs + gates.reduceSlackMs, 'reducerBudget = runGate + reduceSlack');
   assert.equal(gates.reducerTimeoutMs, gates.reducerBudgetMs + gates.reduceSlackMs, '默认档 = reducerBudget + reduceSlack（40 分钟）');
   assert.equal(gates.reduceSlackMs, 5 * 60_000, '+5 分钟防"结算在闸内、标记稍后才落地"的竞态');
   const budget = resolveReducerBudget(gates, { startedAt: 1_000_000, now: () => 1_000_000 });
@@ -374,6 +375,21 @@ test('slot-3b: 登记读不动也占位——配额宁少不多（多占一个�
   fs.writeFileSync(run.waiterFile, '{ 坏掉的登记', 'utf8');
   assert.equal(await countReducerWaiters(temp.paths), 1, '解析不动的登记必须仍占位');
   assert.equal(run.waiterFile, path.join(run.dir, 'reducer-waiter.json'), '登记件名属公共约定');
+});
+
+test('slot-8: 并发补起同 runId —— 恰一个赢，输的那个报"已有等待者"（线性化点 = 独占创建）', async () => {
+  const temp = tempWorkspace();
+  const gates = defaultWorkflowGates(8);
+  const input = (agentId) => ({ runId: RUN_ID, agentId, ownerSessionId: 'sess-a', at: '2026-10-01T00:00:00.000Z', gates });
+  const [a, b] = await Promise.all([
+    decideReducerAdmission(temp.paths, input('sa_a')),
+    decideReducerAdmission(temp.paths, input('sa_b')),
+  ]);
+  assert.equal([a, b].filter((decision) => decision.ok).length, 1, '同 run 至多一个等待者：并发也只能赢一个');
+  const loser = [a, b].find((decision) => !decision.ok);
+  assert.equal(loser.reason, 'reducer-waiter-exists');
+  assert.equal(loser.noticeOnly, false, '同 run 冲突不是配额降级');
+  assert.equal(await countReducerWaiters(temp.paths), 1);
 });
 
 test('slot-4: 计数跨 run 汇总，释放即减（配额读的就是这个数）', async () => {
