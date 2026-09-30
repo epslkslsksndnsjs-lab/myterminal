@@ -394,8 +394,9 @@ export class WorkflowEngine {
     this.assertBudget(context);
     context.agentCount += 1;
     if (context.agentCount > this.thresholds.agentCap) {
-      this.terminate(context, 'agent-cap', new WorkflowAgentCapExceededError(this.thresholds.agentCap).message);
-      throw new WorkflowAgentCapExceededError(this.thresholds.agentCap);
+      const error = new WorkflowAgentCapExceededError(this.thresholds.agentCap);
+      this.terminate(context, 'agent-cap', error.message);
+      throw error;
     }
 
     const sequence = ++context.seq;
