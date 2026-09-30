@@ -41,6 +41,8 @@ export type RunPaths = {
   digestFile: string;
   /** 等待位登记：独占创建，同一 run 至多一个等待中的汇总体。 */
   waiterFile: string;
+  /** resume 排他锁（owner pid + epoch）：第二路续跑含另一会话一律拒（ADR-0052 §17）。 */
+  lockFile: string;
   /** 这一跑起出去的后台命令，输出落在这里（独占创建、按字节帽截断）。 */
   bgDir: string;
 };
@@ -75,6 +77,7 @@ export function runPaths(paths: WorkflowPaths, runId: string): RunPaths {
     agentsDir: path.join(dir, 'agents'),
     digestFile: path.join(dir, 'digest'),
     waiterFile: path.join(dir, 'reducer-waiter.json'),
+    lockFile: path.join(dir, 'resume.lock'),
     bgDir: path.join(dir, 'bg'),
   };
 }

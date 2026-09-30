@@ -11,13 +11,15 @@ import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type FailureEntry, typ
 import { writeSnapshot } from './snapshot.js';
 import { buildSettledNotice, markNoticeDelivered, putNotice, sha256File, type OutboxItem } from './notice.js';
 import { concludeReducer, decideReducerAdmission, resolveReducerBudget, type ReducerAdmit, type ReducerVerdict } from './reducer.js';
-import { ensureDir, createExclusive, exists, writeJsonAtomic } from './atomic.js';
+import { ensureDir, createExclusive, exists, removeFile, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents } from './events.js';
 import { resolveCrashPlan, type CrashPlan, type CrashPoint } from './crash.js';
 import { createDispatchWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
 import { DEFAULT_GATES, HARD_AGENT_CAP_CEILING, describeClockNesting, validateClockNesting, type WorkflowGates } from './gates.js';
 import { canonicalAgentOpts, gateAgentOpts, type GatedAgentOpts } from './agent-opts.js';
-import { argsChainSeed, deriveAgentKey } from './keys.js';
+import { deriveAgentKey } from './keys.js';
+import { buildReplayCache, replayChainSeed, type ReplayCache } from './cache.js';
+import { acquireResumeLock, releaseResumeLock, type LockProbe } from './lock.js';
 import {
   AgentCallShapeError,
   WorkflowAgentCapExceededError,
@@ -54,7 +56,7 @@ export const DEFAULT_OUTPUT_TOKENS = 32_000;
 
 export type WorkflowAuditEntry = {
   runId: string;
-  action: 'workflow_start' | 'workflow_settle';
+  action: 'workflow_start' | 'workflow_settle' | 'workflow_cancel' | 'workflow_pause' | 'workflow_resume' | 'workflow_paused_resume';
   actor: string;
   status: string;
   reason?: string;
@@ -83,6 +85,8 @@ export type EngineDeps = {
   crashEnv?: Record<string, string | undefined>;
   /** 动手动作本身，测试里注入它就能断"命中了几次"而不必真杀进程。 */
   crashKill?: (pid: number, signal: 'SIGKILL') => void;
+  /** resume 排他锁的本机身份探针：pid + epoch + 存活判定 + 时钟；缺省走本进程，测试整体替换。 */
+  lockProbe?: LockProbe;
 };
 
 export type StartRequest = {
@@ -91,6 +95,11 @@ export type StartRequest = {
   resumeFromRunId?: string;
   args?: unknown;
   ownerSessionId: string;
+  /**
+   * 归属确权候选（自 + continuesSessionId 祖先链）：resume 的"是不是本 root 名下"用它判，
+   * 缺省退回 [ownerSessionId]。三场景（重启 / 换凭证 / session_inherit）由接线方把链算好传进来。
+   */
+  ownerCandidates?: readonly string[];
 };
 
 export type StartResult = {
@@ -140,6 +149,27 @@ type RunContext = {
   indexWrites: Promise<unknown>;
   gateHandle?: { id: unknown };
   completion?: Promise<RunIndex>;
+  /**
+   * 结算触发信号：墙钟到期或 run 级终结（含取消）时由 terminate() 打断执行段，
+   * 与脚本赛跑——在飞的路随信号止损、结算照走，绝不等一个永不归来的模型调用。
+   */
+  stop?: () => void;
+  /** 续跑重放的缓存视图：只在 resumeFromRunId 时为非空；首跑恒 null（无跨 run 记忆）。 */
+  replay: ReplayCache | null;
+  /** 重放命中要复用的前记录（key → 已完成的那一路），命中的调用把它接回账本、不重跑。 */
+  replayRecords: Map<string, DispatchRecord>;
+  /** 前缀屏障：第一个未命中的调用起，其后一律 live（哪怕脚本后面没改）。 */
+  replayBarrierBroken: boolean;
+  /** 续跑排他锁的持有身份；非 resume 或未取到锁时为空。结算/异常出口按它释放。 */
+  lock?: LockProbe;
+  /** 暂停标志：墙钟冻结、新调用在 admission 处原地等待，恢复即放行。 */
+  paused: boolean;
+  /** 暂停时墙钟已用毫秒（冻结在暂停那一刻，恢复后按剩余量续跑）。 */
+  gateRemainingMs: number;
+  /** 本段计时器武装的时刻，用于暂停时结算已走时长。 */
+  gateArmedAt: number;
+  /** 协作式暂停的放行闸：暂停时挂起、resume 时兑现，新调用在此排队。 */
+  pauseHold?: { promise: Promise<void>; release: () => void };
 };
 
 /** 墙钟到期的内部信号：只用于把 race 拉出执行段，不对外暴露。 */
@@ -150,6 +180,23 @@ class RunGateReached extends Error {
   }
 }
 
+/** pid 存活判定：ESRCH = 没这个进程；EPERM = 有但无权信号（照算活着）。 */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** 缺省锁探针：本进程 pid + 以构造时刻当 epoch（重启必得更晚的 epoch，兜住 pid 复用窗口）。 */
+function defaultLockProbe(clock: Clock): LockProbe {
+  const epoch = clock.now();
+  return { pid: process.pid, epoch, isAlive: isPidAlive, now: () => clock.now(), iso: () => clock.iso() };
+}
+
 export class WorkflowEngine {
   private readonly clock: Clock;
   private readonly paths: WorkflowPaths;
@@ -158,6 +205,7 @@ export class WorkflowEngine {
   private readonly factory: AdapterFactory | undefined;
   private readonly windowSize: number;
   private readonly crash: CrashPlan;
+  private readonly lockProbe: LockProbe;
   private readonly runs = new Map<string, RunContext>();
 
   constructor(private readonly deps: EngineDeps) {
@@ -177,6 +225,7 @@ export class WorkflowEngine {
     this.events = deps.events ?? new WorkflowEvents();
     this.factory = deps.adapterFactory;
     this.crash = deps.crash ?? resolveCrashPlan({ env: deps.crashEnv ?? process.env, kill: deps.crashKill });
+    this.lockProbe = deps.lockProbe ?? defaultLockProbe(this.clock);
     this.windowSize = this.gates.concurrencyWindow;
     // 有引擎在跑 = 宿主愿意接单：关机流程把进程级的"停接单"置下去之后，
     // 同一进程里重建引擎（重启 runtime、测试换宿主）就是重新开闸的唯一去处，
@@ -225,20 +274,54 @@ export class WorkflowEngine {
 
     let journalDropped = 0;
     let previous: RunIndex | undefined;
+    let replay: ReplayCache | null = null;
+    let replayRecords = new Map<string, DispatchRecord>();
+    let lock: LockProbe | undefined;
+    let priorSeq = 0;
     if (request.resumeFromRunId) {
+      const ownerCandidates = request.ownerCandidates ?? [request.ownerSessionId];
       previous = await readIndex(run.indexFile);
       if (!previous) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run not found: ${request.resumeFromRunId}.`);
-      if (previous.ownerSessionId !== request.ownerSessionId) throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
+      // 归属 = ownerSessionId 相等或其延续链包含（§3④）；换凭证不改归属，session_inherit 继承全部名下 run。
+      if (!ownerCandidates.includes(previous.ownerSessionId)) throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
+      // 判据 = 脚本引用（路径 / 名）一致；内容编辑不改引用（改动按缓存语义从变更调用起重跑），引用不同 = 新 run。
       if (previous.sourceRef.id !== script.sourceRef.id) throw new WorkflowStartError('VALIDATION', 'source-mismatch', `Resuming a run requires the same script reference (${previous.sourceRef.id}); got ${script.sourceRef.id}.`);
-      if (await exists(run.terminalFile)) throw new WorkflowStartError('VALIDATION', 'run-already-terminal', `Workflow run ${runId} already settled as ${previous.status}; reopening a terminal run is not allowed.`);
-      // 账本卫生：截断至最长良前缀，丢弃段显式记账（不静默丢）。
-      const report = await this.journalFor(run).truncateToGoodPrefix();
+      // 终态 run 里只有 cancelled 可被 resume 重开（§19：取消后想接着干 = 对同一 runId 续跑）；completed / failed 恒封口。
+      if (previous.status !== 'cancelled') {
+        if (await exists(run.terminalFile)) throw new WorkflowStartError('VALIDATION', 'run-already-terminal', `Workflow run ${runId} already settled as ${previous.status}; reopening a terminal run is not allowed.`);
+      }
+      // 缺一即拒：盘上脚本已由 scriptPath 闸门保证，journal 缺失就没有可重放的账，也不能当空跑（§17 数据安全边界）。
+      if (!(await exists(run.journalFile))) throw new WorkflowStartError('NOT_FOUND', 'journal-missing', `Workflow run ${runId} has no journal on disk, so there is nothing to replay; start a new run instead.`);
+      // 排他锁（owner pid + epoch）：第二个续跑者含另一会话一律拒，防共写目录 / 标记 / worktree 与双份全量重跑。
+      const acquired = await acquireResumeLock(run.lockFile, request.ownerSessionId, this.lockProbe);
+      if (!acquired.ok) {
+        const why = acquired.reason === 'unreadable'
+          ? 'the resume lock exists but is unreadable (refusing to double-resume on uncertain ground)'
+          : `it is held by pid ${String(acquired.holder?.pid)} (epoch ${String(acquired.holder?.epoch)})`;
+        throw new WorkflowStartError('FORBIDDEN', 'resume-locked', `Workflow run ${runId} cannot be resumed: ${why}.`);
+      }
+      lock = this.lockProbe;
+      // 账本卫生：先截断至最长良前缀，丢弃段显式记账（不静默丢）；截断先行，预启动门据此放行。
+      const journalForTruncate = this.journalFor(run);
+      const report = await journalForTruncate.truncateToGoodPrefix();
       journalDropped = report.dropped;
+      // 重放缓存 = 良前缀 journal 的 result 投影：未变前缀推回同键即零 token 复用，
+      // 第一个变 / 缺的调用起其后全部 live（§17 最长未变前缀）。命中时把对应已完成记录接回账本。
+      const records = await journalForTruncate.read();
+      replay = buildReplayCache(records);
+      for (const record of previous.dispatches) {
+        if (record.status === 'completed' && record.key && replay.has(record.key)) replayRecords.set(record.key, record);
+      }
+      // 槽位游标接在断点之后：journal 已写到的最大 seq 之后才落新行（append-only 绝不覆写旧行，重跑记成新的 admission 序号）。
+      priorSeq = records.reduce((max, record) => ('seq' in record && typeof record.seq === 'number' ? Math.max(max, record.seq) : max), 0);
     }
 
     await ensureDir(run.dir);
     await ensureDir(run.agentsDir);
     await ensureDir(run.outboxDir);
+    // 取消后重开：清掉旧终态标记，让新的结算能独占创建自己的线性化点（§15 至少一次投递，
+    // 消费侧按 (runId, sha256) 去重——旧 notice 与新 notice 是"更新版"关系，不重复计账）。
+    if (request.resumeFromRunId && previous?.status === 'cancelled') await removeFile(run.terminalFile);
 
     const journal = this.journalFor(run);
     const startedAt = this.clock.iso();
@@ -246,21 +329,27 @@ export class WorkflowEngine {
       schemaVersion: SCHEMA_VERSION,
       runId,
       status: 'running',
-      ownerSessionId: request.ownerSessionId,
+      ownerSessionId: previous?.ownerSessionId ?? request.ownerSessionId,
       scriptPath: script.path,
       sourceRef: script.sourceRef,
       argsRecorded: request.args !== undefined,
       ...(request.args !== undefined ? { args: request.args } : {}),
       startedAt: previous?.startedAt ?? startedAt,
-      dispatches: previous?.dispatches ?? [],
-      failures: previous?.failures ?? [],
+      // 续跑账从空开始：命中的调用把对应已完成记录接回，未命中的 live 路重记——
+      // 如此索引恰等于"这一跑真实跑过的调用"，改 args / 改 prompt 都不会留下被取代的旧记录。
+      dispatches: [],
+      failures: [],
       tokens: { spent: previous?.tokens.spent ?? 0 },
     };
     await writeIndex(run.indexFile, index);
-    await upsertRegistry(this.paths.registryFile, { runId, status: 'running', ownerSessionId: request.ownerSessionId, startedAt: index.startedAt });
+    await upsertRegistry(this.paths.registryFile, { runId, status: 'running', ownerSessionId: index.ownerSessionId, startedAt: index.startedAt });
 
-    const sequence = index.dispatches.length;
+    // 续跑：seq / 槽位接在所有已 admission 之后（新 live 路不撞旧槽），键链从 args 种子重推（与首跑同串才谈得上重放），
+    // agentCount 归零——缓存命中的调用不进预算门与计数，live 路 fresh 计一次。
+    const resume = request.resumeFromRunId !== undefined;
+    const sequence = resume ? priorSeq : 0;
     journal.prime(sequence + 1);
+    const gateRemainingMs = this.gates.runGateMs;
     const context: RunContext = {
       runId,
       run,
@@ -273,14 +362,21 @@ export class WorkflowEngine {
       controller: new AbortController(),
       window: createDispatchWindow(this.windowLimit),
       indexWrites: Promise.resolve(),
-      chainPrefix: lastChainKey(index) ?? argsChainSeed(index.args),
-      agentCount: sequence,
+      chainPrefix: replayChainSeed(index.args),
+      agentCount: 0,
+      replay,
+      replayRecords,
+      replayBarrierBroken: false,
+      lock,
+      paused: false,
+      gateRemainingMs,
+      gateArmedAt: this.clock.now(),
     };
     this.runs.set(runId, context);
 
-    if (!request.resumeFromRunId) await journal.append({ type: 'launched', runId, at: startedAt });
-    this.deps.audit?.({ runId, action: 'workflow_start', actor: request.ownerSessionId, status: 'running', at: startedAt });
-    this.events.emit({ runId, type: 'run_started', at: startedAt, data: { scriptPath: script.path, resumed: Boolean(request.resumeFromRunId), concurrencyWindow: this.windowLimit } });
+    if (!resume) await journal.append({ type: 'launched', runId, at: startedAt });
+    this.deps.audit?.({ runId, action: resume ? 'workflow_resume' : 'workflow_start', actor: request.ownerSessionId, status: 'running', at: startedAt });
+    this.events.emit({ runId, type: 'run_started', at: startedAt, data: { scriptPath: script.path, resumed: Boolean(request.resumeFromRunId), concurrencyWindow: this.windowLimit, replayHits: replay?.size ?? 0, journalDropped } });
 
     const completion = this.execute(context, script.content);
     context.completion = completion;
@@ -327,8 +423,8 @@ export class WorkflowEngine {
     return { ...admission, timeoutSec: budget.timeoutSec, budgetEndsAt: budget.budgetEndsAt };
   }
 
-  /** 汇总体收场判定：只认盘面证据，并释放等待位。 */
-  async concludeReducer(info: { runId: string; agentId: string; digestPath: string }): Promise<ReducerVerdict> {
+  /** 汇总体收场判定：只认盘面证据，并释放等待位；顺带累加汇总体用量第三档。 */
+  async concludeReducer(info: { runId: string; agentId: string; digestPath: string; reducerOutputTokens?: number }): Promise<ReducerVerdict> {
     return await concludeReducer(this.paths, info);
   }
 
@@ -339,17 +435,16 @@ export class WorkflowEngine {
   private async execute(context: RunContext, source: string): Promise<RunIndex> {
     // 墙钟与脚本赛跑：墙钟先到即中止在飞的路并结算，脚本先到按结果结算。
     // 计时与中止都走注入时钟与本 run 的 controller，不接受系统定时器。
-    const gate = new Promise<never>((_resolve, reject) => {
-      context.gateHandle = this.clock.setTimeout(() => {
-        this.terminate(context, 'run-gate', 'The run reached its wall-clock gate.');
-        reject(new RunGateReached());
-      }, this.gates.runGateMs);
+    // 取消也走同一条 break：terminate 兑现 stop，让一个挂在模型里的路不必等墙钟。
+    const stop = new Promise<never>((_resolve, reject) => {
+      context.stop = () => reject(new RunGateReached());
     });
+    this.armGate(context);
 
     try {
-      const outcome = await Promise.race([runInSandbox({ source, args: context.index.args, timeoutMs: 30_000, host: this.hostFor(context, false) }), gate]);
+      const outcome = await Promise.race([runInSandbox({ source, args: context.index.args, timeoutMs: 30_000, host: this.hostFor(context, false) }), stop]);
       if (context.termination) {
-        await this.settle(context, 'failed', context.termination.reason);
+        await this.settle(context, statusForTermination(context.termination.reason), context.termination.reason);
         return context.index;
       }
       if (!outcome.ok) {
@@ -372,7 +467,7 @@ export class WorkflowEngine {
       // 注入的终止必须原样冒出去，迟到的第二笔产物只会让盘面自相矛盾。
       if (context.settled) throw error;
       if (context.termination) {
-        await this.settle(context, 'failed', context.termination.reason);
+        await this.settle(context, statusForTermination(context.termination.reason), context.termination.reason);
         return context.index;
       }
       const reason = error instanceof RunGateReached ? 'run-gate' : 'script-failed';
@@ -381,6 +476,28 @@ export class WorkflowEngine {
       return context.index;
     } finally {
       if (context.gateHandle) this.clock.clearTimeout(context.gateHandle);
+    }
+  }
+
+  /**
+   * 武装墙钟闸：从剩余毫秒起一只表。暂停把剩余量冻结、恢复重新武装——
+   * paused 期间墙钟不走（§19），恢复后接着跑那同一段余量，绝不重放已走时间。
+   */
+  private armGate(context: RunContext): void {
+    if (context.gateHandle) this.clock.clearTimeout(context.gateHandle);
+    context.gateArmedAt = this.clock.now();
+    context.gateHandle = this.clock.setTimeout(() => {
+      this.terminate(context, 'run-gate', 'The run reached its wall-clock gate.');
+    }, Math.max(0, context.gateRemainingMs));
+  }
+
+  /** 暂停结算已走的墙钟时长，把余量冻在暂停这一刻；重复暂停不重复扣时。 */
+  private freezeGate(context: RunContext): void {
+    if (context.gateHandle) {
+      this.clock.clearTimeout(context.gateHandle);
+      context.gateHandle = undefined;
+      const used = Math.max(0, this.clock.now() - context.gateArmedAt);
+      context.gateRemainingMs = Math.max(0, context.gateRemainingMs - used);
     }
   }
 
@@ -473,11 +590,25 @@ export class WorkflowEngine {
     if (face.refusal) throw new AgentCallShapeError(`${face.refusal.message} (reason: ${face.refusal.reason})`);
     const toolNames = face.names;
 
+    // 协作式暂停：新调用在 admission 处原地等待，恢复即放行——暂停不派新活、不吃墙钟（§19）。
+    await this.waitWhilePaused(context);
+
     // 键先滚动，再过预算门与计数（ADR §17 顺序契约）：链是"调用序列"的函数，
     // 不能因为某一次被闸门拒掉就不计位——否则同一脚本在不同闸下会派生出不同的链。
-    const sequence = ++context.seq;
     const key = deriveAgentKey(context.chainPrefix, prompt, canonicalAgentOpts(gated));
     context.chainPrefix = key;
+
+    // 缓存查询在预算门与计数之前（§17 顺序契约）：续跑命中未变前缀即零 token 复用，不占槽、不计 agent 数。
+    // 前缀屏障：第一个未命中的调用起，其后一律 live（哪怕脚本后面没改）。
+    if (context.replay && !context.replayBarrierBroken && context.replay.has(key)) {
+      // 命中：把对应的已完成记录接回账本（每路 usage 与结果都在里面），token 不重算、不重复扣预算。
+      const reused = context.replayRecords.get(key);
+      if (reused) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };
+      return context.replay.get(key);
+    }
+    if (context.replay) context.replayBarrierBroken = true;
+
+    const sequence = ++context.seq;
 
     this.assertBudget(context);
     context.agentCount += 1;
@@ -662,6 +793,129 @@ export class WorkflowEngine {
     context.window.abort();
     // 整个 run 终结：在飞的命令树按进程组收（燃烧就地停，不留无主进程）。
     void collectRunCommands(context.runId).catch(() => undefined);
+    // 打断执行段：取消与墙钟同走这条 break，绝不等一个挂在模型里永不归来的调用（§8 "快调用"）。
+    // 若此刻没有活跃 execute（例如尚未起跑的续跑），stop 缺席即 no-op，由后续 execute 依 termination 结算。
+    context.stop?.();
+  }
+
+  /**
+   * 归属确权（§3④）：run 的 ownerSessionId 落在 actor 的候选链里即本 root 名下。
+   * 候选链 = 自 sessionId + continuesSessionId 祖先，由工具层算好传入；引擎不碰会话存储。
+   */
+  private ownsRun(ownerSessionId: string, ownerCandidates: readonly string[]): boolean {
+    return ownerCandidates.includes(ownerSessionId);
+  }
+
+  /** 协作式暂停的等待闸：非暂停即空过；暂停则挂起，直到 resume 释放。 */
+  private waitWhilePaused(context: RunContext): Promise<void> {
+    if (!context.paused) return Promise.resolve();
+    if (context.pauseHold) return context.pauseHold.promise;
+    let release: () => void = () => {};
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    context.pauseHold = { promise, release };
+    return promise;
+  }
+
+  /**
+   * 取消整 run（GPT 面第二个工具的引擎面，ADR-0052 §8 / §19）：
+   *   仅本 root、幂等（终态返回当前状态）、粒度整 run；效果 = 在飞随 abort 中止、队列丢弃、
+   *   结算 cancelled（三件套照发）→ 汇总体醒来报 cancelled partial。
+   * 快调用语义靠 terminate 打断执行段兑现，不等墙钟；已结算的 run 原样回其当前状态。
+   */
+  async cancel(runId: string, ownerCandidates: readonly string[]): Promise<{ runId: string; status: WorkflowStatus }> {
+    if (!isRunId(runId)) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run not found: ${runId}.`);
+    const context = this.runs.get(runId);
+    if (context) {
+      if (!this.ownsRun(context.index.ownerSessionId, ownerCandidates)) {
+        throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
+      }
+      if (isTerminal(context.index.status)) return { runId, status: context.index.status };
+      const at = this.clock.iso();
+      this.terminate(context, 'cancelled', 'Workflow run cancelled by its owner.');
+      let status: WorkflowStatus = 'cancelled';
+      try {
+        const final = context.completion ? await context.completion : undefined;
+        status = final?.status ?? (await readIndex(context.run.indexFile))?.status ?? 'cancelled';
+      } catch {
+        // 结算在 execute 里已按 cancelled 落定；completion 的迟到拒绝只回读盘面终态，不改判。
+        status = (await readIndex(context.run.indexFile))?.status ?? 'cancelled';
+      }
+      // settle 已发 run_settled 与 workflow_settle 审计；这里只补一条 cancel 归因，不重复发事件。
+      this.deps.audit?.({ runId, action: 'workflow_cancel', actor: ownerCandidates[0] ?? context.index.ownerSessionId, status, reason: 'cancelled', at });
+      return { runId, status };
+    }
+    // 不在本进程内存：读盘面。终态即幂等返回；活跃但非本进程所起（崩溃未扫）不改判、只回当前状态。
+    const run = runPaths(this.paths, runId);
+    const index = await readIndex(run.indexFile);
+    if (!index) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run not found: ${runId}.`);
+    if (!this.ownsRun(index.ownerSessionId, ownerCandidates)) {
+      throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
+    }
+    return { runId, status: index.status };
+  }
+
+  /**
+   * 暂停整 run（仅 TUI 面；GPT 面无 pause，§19）：pausing→paused 状态与事件可观察受理，
+   * 墙钟冻结、reducer 等待预算经 index.status 冻结（读侧见 T6），恢复原地继续。
+   */
+  async pause(runId: string, ownerCandidates: readonly string[]): Promise<{ runId: string; status: WorkflowStatus }> {
+    const context = this.activeOwnedContext(runId, ownerCandidates, 'pause');
+    if (isTerminal(context.index.status)) return { runId, status: context.index.status };
+    if (context.paused) return { runId, status: context.index.status };
+    const actor = ownerCandidates[0] ?? context.index.ownerSessionId;
+    context.index = { ...context.index, status: 'pausing' };
+    await this.persistStatus(context, 'pausing');
+    this.events.emit({ runId, type: 'run_pausing', at: this.clock.iso(), data: { actor } });
+    // 受理即冻结：墙钟把余量停在暂停那一刻，新调用挂到恢复闸上。
+    context.paused = true;
+    this.freezeGate(context);
+    context.index = { ...context.index, status: 'paused' };
+    await this.persistStatus(context, 'paused');
+    this.deps.audit?.({ runId, action: 'workflow_pause', actor, status: 'paused', at: this.clock.iso() });
+    this.events.emit({ runId, type: 'run_paused', at: this.clock.iso(), data: { actor, gateRemainingMs: context.gateRemainingMs } });
+    return { runId, status: 'paused' };
+  }
+
+  /**
+   * 原地恢复被暂停的 run（TUI 面）：解冻墙钟按剩余量续跑、放行挂起的新调用。
+   * 非 paused（含续跑 resumeFromRunId 那条）不改状态——"paused-resume" 只服务暂停过的 run。
+   */
+  async resume(runId: string, ownerCandidates: readonly string[]): Promise<{ runId: string; status: WorkflowStatus }> {
+    const context = this.activeOwnedContext(runId, ownerCandidates, 'resume');
+    if (isTerminal(context.index.status)) return { runId, status: context.index.status };
+    if (!context.paused) return { runId, status: context.index.status };
+    const actor = ownerCandidates[0] ?? context.index.ownerSessionId;
+    context.paused = false;
+    context.pauseHold?.release();
+    context.pauseHold = undefined;
+    this.armGate(context);
+    context.index = { ...context.index, status: 'running' };
+    await this.persistStatus(context, 'running');
+    this.deps.audit?.({ runId, action: 'workflow_paused_resume', actor, status: 'running', at: this.clock.iso() });
+    this.events.emit({ runId, type: 'run_resumed', at: this.clock.iso(), data: { actor, gateRemainingMs: context.gateRemainingMs } });
+    return { runId, status: 'running' };
+  }
+
+  /** pause / resume 共同的取上下文 + 归属闸：不在本进程 = NOT_FOUND（暂停/恢复只作用于活着的本地 run）。 */
+  private activeOwnedContext(runId: string, ownerCandidates: readonly string[], op: 'pause' | 'resume'): RunContext {
+    if (!isRunId(runId)) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run not found: ${runId}.`);
+    const context = this.runs.get(runId);
+    if (!context) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run ${runId} is not running in this process, so it cannot be ${op === 'pause' ? 'paused' : 'resumed'}.`);
+    if (!this.ownsRun(context.index.ownerSessionId, ownerCandidates)) {
+      throw new WorkflowStartError('FORBIDDEN', 'run-not-owned', `Workflow run ${runId} belongs to another session.`);
+    }
+    return context;
+  }
+
+  /** 运行态 status 落盘（原子写）——读侧契约（wait_for_path / 查询面）都认这里的 index.status。 */
+  private async persistStatus(context: RunContext, status: WorkflowStatus): Promise<void> {
+    await writeIndex(context.run.indexFile, context.index);
+    await upsertRegistry(this.paths.registryFile, {
+      runId: context.runId,
+      status,
+      ownerSessionId: context.index.ownerSessionId,
+      startedAt: context.index.startedAt,
+    });
   }
 
   private assertOpen(context: RunContext): void {
@@ -712,6 +966,8 @@ export class WorkflowEngine {
     this.events.emit({ runId: context.runId, type: 'run_settled', at: endedAt, data: { status, reason, markerWritten } });
     // 第三帧：盘面齐、通知未投递——outbox 排空趟要能补发。
     await this.deliverSettledNotice(context, notice);
+    // 终态即让位：续跑取到的排他锁在此释放；崩溃留下的锁文件（进程已死）由下次 resume 依 pid+epoch 接管。
+    if (context.lock) await releaseResumeLock(context.run.lockFile, context.lock).catch(() => undefined);
     return context.index;
   }
 
@@ -770,13 +1026,12 @@ export class WorkflowEngine {
   }
 }
 
-/** 续跑接链：从最后一条已 admission 的键接着滚，缺键的老产物退回 args 种子。 */
-function lastChainKey(index: RunIndex): string | undefined {
-  for (let i = index.dispatches.length - 1; i >= 0; i--) {
-    const key = index.dispatches[i].key;
-    if (typeof key === 'string' && key) return key;
-  }
-  return undefined;
+/**
+ * run 级终结的终态：取消坍缩到 cancelled，其余（墙钟 / 预算 / cap / 嵌套）都是 failed。
+ * 三态之外不设第四态——汇总体据 status 报 cancelled partial，据 reason 报具体击穿。
+ */
+function statusForTermination(reason: RunTerminationReason | string): WorkflowStatus {
+  return reason === 'cancelled' ? 'cancelled' : 'failed';
 }
 
 /** 排一次索引写：入队顺序即落盘顺序，最后落盘的必是最新版。 */

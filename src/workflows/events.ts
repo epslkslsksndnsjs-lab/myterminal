@@ -5,7 +5,13 @@
  * 所以这里刻意只做进程内广播，不做跨进程投递。
  */
 
-export type WorkflowEventType = 'run_started' | 'dispatch_settled' | 'run_settled';
+export type WorkflowEventType =
+  | 'run_started'
+  | 'dispatch_settled'
+  | 'run_settled'
+  | 'run_pausing'
+  | 'run_paused'
+  | 'run_resumed';
 
 export type WorkflowEvent = {
   runId: string;

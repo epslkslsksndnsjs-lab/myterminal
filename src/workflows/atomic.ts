@@ -91,6 +91,11 @@ export async function exists(file: string): Promise<boolean> {
   }
 }
 
+/** 静默删除（force）：文件本就不存在不是错误，用于重开终态标记 / 释放锁。 */
+export async function removeFile(file: string): Promise<void> {
+  await rm(file, { force: true }).catch(() => undefined);
+}
+
 /** 单写者按行追加：journal 的写入口，每次一行，写完即落盘。 */
 export async function appendLine(file: string, line: string, mode: number = FILE_MODE): Promise<void> {
   await ensureParent(file);

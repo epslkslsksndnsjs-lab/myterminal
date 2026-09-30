@@ -117,7 +117,7 @@ const mutations = [
   { name: 'WF-6: 版本超前拒读移除（半读半猜）', file: 'src/workflows/schema.ts', find: 'if (found > current) throw new VersionMismatchError(label, found, current);', replace: 'if (false) throw new VersionMismatchError(label, found, current);' },
   { name: 'WF-7: journal 丢弃段不记账（静默丢）', file: 'src/workflows/journal.ts', find: 'const dropped = lines.length - kept.length;', replace: 'const dropped = 0;' },
   { name: 'WF-8: token 记账移除（每路用量不累加）', file: 'src/workflows/engine.ts', find: '      context.spent += result.outputTokens;', replace: '      void result.outputTokens;' },
-  { name: 'WF-9: 续跑归属校验移除（可续别人的 run）', file: 'src/workflows/engine.ts', find: 'if (previous.ownerSessionId !== request.ownerSessionId) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'', replace: 'if (false) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'' },
+  { name: 'WF-9: 续跑归属校验移除（可续别人的 run）', file: 'src/workflows/engine.ts', find: 'if (!ownerCandidates.includes(previous.ownerSessionId)) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'', replace: 'if (false) throw new WorkflowStartError(\'FORBIDDEN\', \'run-not-owned\'' },
   { name: 'WF-10: 续跑终态闸门移除（终态 run 可被重开）', file: 'src/workflows/engine.ts', find: 'if (await exists(run.terminalFile)) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'', replace: 'if (await exists(`${run.terminalFile}.absent`)) throw new WorkflowStartError(\'VALIDATION\', \'run-already-terminal\'' },
   { name: 'WF-11: args 记录位恒假（链种子丢失）', file: 'src/workflows/engine.ts', find: 'argsRecorded: request.args !== undefined,', replace: 'argsRecorded: false,' },
   { name: 'WF-12: saved 同名即复用（覆盖已有脚本）', file: 'src/workflows/saved.ts', find: 'if (existing === source) {', replace: 'if (true) {' },
@@ -145,11 +145,11 @@ const mutations = [
   { name: 'WF-28: 脚本头部 meta 不再剥离（真脚本编译失败）', file: 'src/workflows/sandbox.ts', find: 'prepared = stripWorkflowMeta(options.source);', replace: 'prepared = options.source;' },
   { name: 'WF-29: 嵌套层也注入 workflow()（单层限制失守）', file: 'src/workflows/engine.ts', find: 'host.workflow = nested ? () => this.nestingRefused(context) : async (ref, args, opts) => await this.runNested(context, ref, args, opts);', replace: 'host.workflow = async (ref, args, opts) => await this.runNested(context, ref, args, opts);' },
   { name: 'WF-30: pipeline 的 null 哨兵短路移除（失败 item 继续跑）', file: 'src/workflows/fanout.ts', find: 'if (stage > 0 && previous === null) return null;', replace: 'if (false) return null;' },
-  { name: 'WF-31: 每路槽位不再唯一（独立 adapter 实例失去凭证）', file: 'src/workflows/engine.ts', find: 'const adapter = factory({ runId: context.runId, dispatchId: record.id });', replace: "const adapter = factory({ runId: context.runId, dispatchId: 'd0000' });" },
+  { name: 'WF-31: 每路槽位不再唯一（独立 adapter 实例失去凭证）', file: 'src/workflows/engine.ts', find: 'const adapter = factory({ runId: context.runId, dispatchId: record.id, clock: this.clock });', replace: "const adapter = factory({ runId: context.runId, dispatchId: 'd0000', clock: this.clock });" },
   { name: 'WF-32: isolation 标记不随每路记账', file: 'src/workflows/engine.ts', find: '      ...(gated.isolation ? { isolation: gated.isolation } : {}),\n', replace: '' },
   // ── 评审补钉（#225）：接链 / 封口 / 链级拒 / 硬顶 —— 每条都由测试杀 ──
   { name: 'WF-33: pipeline 段内 run 级错误被吞成该 item null', file: 'src/workflows/fanout.ts', find: '        if (isRunLevelError(error)) throw error;', replace: '        if (false) throw error;' },
-  { name: 'WF-34: 续跑不从断点接键链（键位撞车，重放歧义）', file: 'src/workflows/engine.ts', find: 'chainPrefix: lastChainKey(index) ?? argsChainSeed(index.args),', replace: 'chainPrefix: argsChainSeed(index.args),' },
+  { name: 'WF-34: 续跑不重推 args 种子键链（缓存全落空，重放失效）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'chainPrefix: replayChainSeed(index.args),', replace: 'chainPrefix: replayChainSeed({ __wf_bust_replay__: index.args }),' },
   { name: 'WF-35: 终态封口移除（迟归的一路改写终态机器件）', file: 'src/workflows/engine.ts', find: 'if (context.settled || !context.open) return null;', replace: 'if (false) return null;' },
   // #226 之后硬顶挪到闸门归一化那一步（构造期仍成立，口径没变，只是位置收敛）。
   { name: 'WF-36: 并发窗口硬顶移除（越 64 直接生效）', file: 'src/workflows/engine.ts', find: 'concurrencyWindow: Math.min(HARD_CONCURRENCY_CEILING, Math.max(1, Math.floor(window))),', replace: 'concurrencyWindow: Math.max(1, Math.floor(window)),' },
@@ -278,6 +278,17 @@ const mutations = [
   { name: 'WF-141: 投递成功不标 delivered（模块侧再次漏标）', file: 'src/workflows/engine.ts', tests: 'test/issue-229-*.test.mjs', find: '    if (sent) await markNoticeDelivered(context.run, item, this.clock.iso()).catch(() => undefined);', replace: '    if (sent) { /* mutation: 不标投递位 */ }' },
   { name: 'WF-142: 崩溃帧移除（先落盘再投递的判据演不出来）', file: 'src/workflows/engine.ts', tests: 'test/issue-229-*.test.mjs', find: "    this.crash('before-notice');", replace: '    void 0;' },
   { name: 'WF-143: 汇总体槽位上限回退到 4（池上限扩到 10 白扩）', file: 'src/config.ts', tests: 'test/issue-229-*.test.mjs', find: '    maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 10),', replace: '    maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4),' },
+
+  // ── src/workflows/ (T7 #230) — 控制与续跑：cancel / pause / resume / 缓存重放 / 排他锁 ──
+  // 每条对应票面一条钉死语义，全部由 test/issue-230-*.test.mjs 行为杀（非仅编译杀）。
+  { name: 'WF-200: 续跑不查缓存（命中前缀照样全 live，重放形同虚设）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (context.replay && !context.replayBarrierBroken && context.replay.has(key)) {', replace: 'if (context.replay && !context.replayBarrierBroken && false) {' },
+  { name: 'WF-201: 缓存命中不把已完成记录接回账本（每路 usage 丢、X/Y 算虚）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (reused) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };', replace: 'if (reused && false) context.index = { ...context.index, dispatches: [...context.index.dispatches, reused] };' },
+  { name: 'WF-202: run 级终结一律坍缩成 failed（取消不再是 cancelled 三态之一）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: "return reason === 'cancelled' ? 'cancelled' : 'failed';", replace: "return 'failed';" },
+  { name: 'WF-203: 存活进程反被当失效锁（他人续跑被放行，双写目录）', file: 'src/workflows/lock.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (!isAlive(holder.pid)) return true;', replace: 'if (isAlive(holder.pid)) return true;' },
+  { name: 'WF-204: pid 复用窗口的 epoch 兜底移除（复用 pid 打不死接管）', file: 'src/workflows/lock.ts', tests: 'test/issue-230-*.test.mjs', find: 'if (holder.pid === self.pid && holder.epoch < self.epoch) return true;', replace: 'if (holder.pid === self.pid && holder.epoch < self.epoch) return false;' },
+  { name: 'WF-205: pause 不把 paused 落 index.status（T6 读侧冻结等待预算失去依据）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: "context.index = { ...context.index, status: 'paused' };", replace: "context.index = { ...context.index, status: 'running' };" },
+  { name: 'WF-206: cancel 不以 cancelled 终结（在飞按墙钟归因，取消语义失真）', file: 'src/workflows/engine.ts', tests: 'test/issue-230-*.test.mjs', find: "this.terminate(context, 'cancelled', 'Workflow run cancelled by its owner.');", replace: "this.terminate(context, 'run-gate', 'x');" },
+  { name: 'WF-207: 汇总体用量第三档不累加（reducer 账永远为 0）', file: 'src/workflows/reducer.ts', tests: 'test/issue-230-*.test.mjs', find: 'reducerTokens: { spent: (index.reducerTokens?.spent ?? 0) + Math.floor(outputTokens) }', replace: 'reducerTokens: { spent: (index.reducerTokens?.spent ?? 0) + 0 }' },
 ];
 
 let killedByTest = 0;

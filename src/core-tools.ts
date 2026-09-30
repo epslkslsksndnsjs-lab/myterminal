@@ -207,6 +207,24 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     return context.authenticatedSession;
   };
 
+  // 会话延续链（含自身）：换控制者不改"run 是谁的"，但换了 sessionId 就要靠它认亲（ADR-0052 §3④）。
+  // 归属判据 = actor 的 sessionId 等于 ownerSessionId，或其 continuesSessionId 祖先链包含它。
+  // reduce 校验与 workflow resume / cancel 共用这一份，杜绝两处各写一条漂移。
+  const ownershipChain = (sessionId: string): string[] => {
+    const ids: string[] = [];
+    let current: string | undefined = sessionId;
+    while (current && ids.length < 32) {
+      if (ids.includes(current)) break;
+      ids.push(current);
+      try {
+        current = store.session(current).continuesSessionId ?? undefined;
+      } catch {
+        current = undefined;
+      }
+    }
+    return ids;
+  };
+
   add({
     name: 'workspace_info', title: 'Workspace info', description: 'Inspect the single authorized workspace and MyTerminal runtime.',
     inputSchema: BUILTIN_INPUT_SCHEMAS.workspace_info, annotations: readOnly,
@@ -696,22 +714,6 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const session = actor(context);
       const runner = getSubagentRunner();
 
-      /** 会话延续链（含自身）：换控制者不改"run 是谁的"，但换了 sessionId 就要靠它认亲。 */
-      function ownershipChain(sessionId: string): string[] {
-        const ids: string[] = [];
-        let current: string | undefined = sessionId;
-        while (current && ids.length < 32) {
-          if (ids.includes(current)) break;
-          ids.push(current);
-          try {
-            current = store.session(current).continuesSessionId ?? undefined;
-          } catch {
-            current = undefined;
-          }
-        }
-        return ids;
-      }
-
       // ADR-0052 §8 I9：reduce 在工具层先校验（形状 / 归属 / 根本没有的旋钮），
       // 拒在起 subagent 之前——归属判据是 §3④：ownerSessionId 相等或其延续链包含它。
       async function checkReduce(args: JsonObject, sessionId: string): Promise<{ runId: string; digestPath: string } | undefined> {
@@ -787,8 +789,43 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
           ...(typeof input.resumeFromRunId === 'string' ? { resumeFromRunId: input.resumeFromRunId } : {}),
           ...(input.args !== undefined ? { args: input.args } : {}),
           ownerSessionId: session.id,
+          ownerCandidates: ownershipChain(session.id),
         });
-        return { runId: started.runId, status: started.status, scriptPath: started.scriptPath } as JsonObject;
+        return {
+          runId: started.runId,
+          status: started.status,
+          scriptPath: started.scriptPath,
+          // 续跑显式说明：journal 被截断到最长良前缀时，丢弃了多少行（不静默丢，§17/AC9）。
+          ...(started.journalDropped ? { journalDropped: started.journalDropped } : {}),
+        } as JsonObject;
+      } catch (error) {
+        const mapped = mapStartError(error);
+        if (mapped) throw new MyTerminalError(mapped.code, mapped.message, mapped.details);
+        throw error;
+      }
+    },
+  });
+
+  // ── Workflows 取消面（ADR-0052 §8 / §19：GPT 面第二个新工具，独立成工具不并入 start）──
+  // 参数仅 runId；仅 root（subagent 通道 FORBIDDEN）；幂等（终态返回当前状态）；
+  // 归属只限本 root 名下（延续链外 FORBIDDEN）；响应 {runId, status} 小对象、快调用适配 K5。
+  add({
+    name: 'workflow_cancel', title: 'Cancel workflow',
+    description: 'Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.',
+    inputSchema: BUILTIN_INPUT_SCHEMAS.workflow_cancel,
+    annotations: SUBAGENT_ANNOTATIONS,
+    invoke: async (input, context) => {
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot cancel workflow runs.', { reason: 'subagent-channel' } as JsonObject);
+      }
+      const session = actor(context);
+      const engine = getWorkflowEngine();
+      if (!engine) {
+        throw new MyTerminalError('FORBIDDEN', 'Workflow runs need the model endpoint configured (baseUrl / apiKey / model).', { reason: 'endpoint-not-configured' } as JsonObject);
+      }
+      try {
+        const result = await engine.cancel(asString(input.runId, 'runId'), ownershipChain(session.id));
+        return { runId: result.runId, status: result.status } as JsonObject;
       } catch (error) {
         const mapped = mapStartError(error);
         if (mapped) throw new MyTerminalError(mapped.code, mapped.message, mapped.details);

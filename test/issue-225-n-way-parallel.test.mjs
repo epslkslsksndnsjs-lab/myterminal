@@ -500,7 +500,7 @@ test('AC4 纯展示项不进键：同一位置只换 label / phase / stepId → 
 // AC10 评审补钉：接链 / 封口 / 嵌套批内拒 / 硬顶（每条都是"改了就红"）
 // ═══════════════════════════════════════════════════════════════
 
-test('AC10 续跑接上断点处的键链：新调用的键不复用已有槽位', async () => {
+test('AC10 续跑从 args 种子重推键链：槽位接在断点之后，未变前缀的键被复用（重放前提）', async () => {
   const temp = tempWorkspace();
   const hang = new Promise(() => { /* 在飞永不归：模拟进程被打断 */ });
   const first = engineFor(temp, { adapterFactory: scripted(() => hang).factory, concurrencyWindow: 2 });
@@ -509,17 +509,24 @@ test('AC10 续跑接上断点处的键链：新调用的键不复用已有槽位
   await until(ledgerRows(temp, started.runId, 2), '两路 admission 落账');
   const before = rawLines(temp, started.runId).filter((r) => r.type === 'started');
   assert.equal(before.length, 2, '两路都已 admission，run 未终态');
+  const seedKey1 = deriveAgentKey(argsChainSeed(undefined), 'a', '{}');
+  assert.equal(before[0].key, seedKey1, '首路键 = H(args 种子, 本路入参)');
 
-  // 换一个引擎实例（进程重启的形状），按 T1 的续跑闸从盘上接上同一条 run。
+  // 换一个引擎实例（进程重启的形状），按 T7 的续跑闸从盘上接上同一条 run。
   const again = engineFor(temp, { adapterFactory: scripted().factory, concurrencyWindow: 2 });
   const resumed = await again.engine.start({ scriptPath: started.scriptPath, resumeFromRunId: started.runId, ownerSessionId: 'sess-a' });
   const index = await resumed.completion;
 
   const rows = rawLines(temp, started.runId).filter((r) => r.type === 'started');
+  // 槽位仍接在断点之后（append-only 账本不覆写旧行，重跑记成新的 admission 序号）。
   assert.deepEqual(rows.map((r) => r.seq), [1, 2, 3, 4], '续跑的两路接在断点之后');
-  assert.equal(new Set(rows.map((r) => r.key)).size, 4, '键不复用——前缀必须从上一路的键接着滚');
-  assert.equal(rows[2].key, deriveAgentKey(rows[1].key, 'a', '{}'), '第 3 路键 = H(第 2 路键, 本路入参)');
-  assert.equal(rows[3].key, deriveAgentKey(rows[2].key, 'b', '{}'), '第 4 路键 = H(第 3 路键, 本路入参)');
+  // 键从 args 种子整串重推：这一跑没有任何 result 可命中（都停在在飞），于是全走 live，
+  // 但重推出的键与原样一致——"未变前缀推回同键"正是 T7 缓存重放能对齐调用的地基（§17）。
+  assert.equal(new Set(rows.map((r) => r.key)).size, 2, '重放从种子重推，同一路的键被复用（非滚动新键）');
+  assert.equal(rows[2].key, rows[0].key, '续跑第 1 路键 = 断点第 1 路键');
+  assert.equal(rows[3].key, rows[1].key, '续跑第 2 路键 = 断点第 2 路键');
+  assert.equal(rows[0].key, deriveAgentKey(argsChainSeed(undefined), 'a', '{}'), '第 1 路键 = H(args 种子, a)');
+  assert.equal(rows[1].key, deriveAgentKey(rows[0].key, 'b', '{}'), '第 2 路键 = H(第 1 路键, b)');
   assert.equal(index.status, 'completed');
 });
 

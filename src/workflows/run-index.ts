@@ -68,6 +68,7 @@ export function normalizeIndex(raw: unknown, readerVersion: number = SCHEMA_VERS
   const dispatches = Array.isArray(value.dispatches) ? value.dispatches.map(asDispatch).filter((d): d is DispatchRecord => Boolean(d)) : [];
   const failures = Array.isArray(value.failures) ? value.failures.map(asFailure).filter((f): f is FailureEntry => Boolean(f)) : [];
   const tokens = value.tokens && typeof value.tokens === 'object' ? (value.tokens as { spent?: unknown }) : {};
+  const reducerTokens = value.reducerTokens && typeof value.reducerTokens === 'object' ? (value.reducerTokens as { spent?: unknown }) : undefined;
   const sourceRef = value.sourceRef && typeof value.sourceRef === 'object' ? (value.sourceRef as { id?: unknown; revision?: unknown }) : {};
   const status = value.status as WorkflowStatus;
   const scriptError = value.scriptError && typeof value.scriptError === 'object' ? (value.scriptError as { kind?: unknown; message?: unknown }) : undefined;
@@ -86,6 +87,9 @@ export function normalizeIndex(raw: unknown, readerVersion: number = SCHEMA_VERS
     dispatches,
     failures,
     tokens: { spent: typeof tokens.spent === 'number' && Number.isFinite(tokens.spent) ? tokens.spent : 0 },
+    ...(reducerTokens && typeof reducerTokens.spent === 'number' && Number.isFinite(reducerTokens.spent)
+      ? { reducerTokens: { spent: reducerTokens.spent } }
+      : {}),
     ...(scriptError ? { scriptError: { kind: asString(scriptError.kind, 'script-failed'), message: asString(scriptError.message, '') } } : {}),
   };
 }

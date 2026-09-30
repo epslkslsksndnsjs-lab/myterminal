@@ -67,7 +67,7 @@ export type SubagentRunnerDeps = {
    */
   reducer?: {
     admit(info: { agentId: string; runId: string; ownerSessionId: string }): Promise<ReducerAdmit>;
-    conclude(info: { agentId: string } & ReducerLink): Promise<ReducerSettlement>;
+    conclude(info: { agentId: string; reducerOutputTokens?: number } & ReducerLink): Promise<ReducerSettlement>;
   };
 };
 
@@ -140,10 +140,12 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
   ): Promise<void> {
     const childIdentity = childIdentities.get(agentId);
     const reduce = getSubagent(agentId)?.reduce;
+    // 汇总体用量（ADR-0052 §19 第三档）：把本汇总体这次的输出 token 回写 run 索引，累加记账。
+    const reducerOutputTokens = getSubagent(agentId)?.usage.outputTokens;
     // 汇总体收场：判定权在盘面证据（终态标记 + digest），不在模型的自述——
     // 同时这一步释放等待位，死亡后同 runId 才补得起来。
     const settlement = reduce && deps.reducer
-      ? await deps.reducer.conclude({ agentId, runId: reduce.runId, digestPath: reduce.digestPath })
+      ? await deps.reducer.conclude({ agentId, runId: reduce.runId, digestPath: reduce.digestPath, ...(reducerOutputTokens !== undefined ? { reducerOutputTokens } : {}) })
         .catch((err: unknown) => ({ status: 'failed' as const, reason: 'conclude-failed', report: err instanceof Error ? err.message : String(err) }))
       : undefined;
     // 决策 7/10：更新 subagent store 状态 + checkpoint + message_send
@@ -270,7 +272,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
           updateSubagentStatus(subagentId, 'failed', { error });
           // 汇总体死在路上：等待位必须随之释放（否则同 runId 永远补不起来），判定结果在这里用不上。
           if (input.reduce && deps.reducer) {
-            void deps.reducer.conclude({ agentId: subagentId, runId: input.reduce.runId, digestPath: input.reduce.digestPath }).catch(() => {});
+            const deadReducerTokens = getSubagent(subagentId)?.usage.outputTokens;
+            void deps.reducer.conclude({ agentId: subagentId, runId: input.reduce.runId, digestPath: input.reduce.digestPath, ...(deadReducerTokens !== undefined ? { reducerOutputTokens: deadReducerTokens } : {}) }).catch(() => {});
           }
           const storedIdentity = childIdentities.get(subagentId);
           if (storedIdentity) {

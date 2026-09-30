@@ -1159,6 +1159,30 @@
       "additionalProperties": false
     }
   },
+  "workflow_cancel": {
+    "title": "Cancel workflow",
+    "description": "Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "runId"
+      ],
+      "additionalProperties": false
+    }
+  },
   "subagent_abort": {
     "title": "Abort subagent",
     "description": "Abort a running subagent. Idempotent — calling on an already-terminal subagent returns its current status.",

@@ -1,6 +1,6 @@
 import { readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { createExclusive, exists, readJson } from './atomic.js';
+import { createExclusive, exists, readJson, writeJsonAtomic } from './atomic.js';
 import { readIndex } from './run-index.js';
 import { runPaths, type WorkflowPaths } from './paths.js';
 import { assertRunId, isRunId } from './ids.js';
@@ -240,19 +240,35 @@ export type ReducerVerdict =
   | { status: 'failed'; reason: 'wait-timeout' | 'no-digest'; report: string; released: boolean };
 
 /**
+ * 累加汇总体用量（ADR-0052 §19 第三档）——读索引、把本次汇总体输出加进 reducerTokens.spent、
+ * 原子回写。汇总体在 run 结算之后才收场，所以这一档回写索引、不改终态快照。
+ * 取消不退、不重算：这里只累加，永不减。索引不在（未接线的补起）即静默跳过，收场判定不因此变。
+ */
+export async function bumpReducerTokens(paths: WorkflowPaths, runId: string, outputTokens: number): Promise<void> {
+  if (!Number.isFinite(outputTokens) || outputTokens <= 0) return;
+  const run = runPaths(paths, runId);
+  const index = await readIndex(run.indexFile);
+  if (!index) return;
+  const next = { ...index, reducerTokens: { spent: (index.reducerTokens?.spent ?? 0) + Math.floor(outputTokens) } };
+  await writeJsonAtomic(run.indexFile, next);
+}
+
+/**
  * 收场判定：只认盘面证据，不认模型自述。
  *   · 终态标记在场 + digest 在场 → completed，摘要消息首行 KV 带 digest 字节哈希；
  *   · 终态标记不在场 → failed(wait-timeout)：模型说什么都没用，未结算就是未结算（禁止 completed 掩盖）；
  *   · 已结算但 digest 没写出 → failed(no-digest)：半成品不算交付。
  * 三种收场都释放等待位（死亡后可同 runId 补起）。
+ * 传了 reducerOutputTokens 就顺带回写用量第三档（累加，不改判定）。
  */
 export async function concludeReducer(
   paths: WorkflowPaths,
-  input: { runId: string; agentId: string; digestPath: string },
+  input: { runId: string; agentId: string; digestPath: string; reducerOutputTokens?: number },
 ): Promise<ReducerVerdict> {
   const run = runPaths(paths, input.runId);
   // 释放先于读盘：收场是本汇总体最后的义务，读摘要失败不该把等待位钉死到下次启动扫描。
   const released = (await releaseReducerWaiter(paths, { runId: input.runId, agentId: input.agentId })).released;
+  if (input.reducerOutputTokens !== undefined) await bumpReducerTokens(paths, input.runId, input.reducerOutputTokens).catch(() => undefined);
   const settled = await exists(run.terminalFile);
   const digestSha = await sha256FileIfPresent(input.digestPath);
   const counts = await settledCounts(run.indexFile);

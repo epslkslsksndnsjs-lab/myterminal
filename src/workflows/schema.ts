@@ -87,6 +87,12 @@ export type RunIndex = {
   /** 每路失败的具名清单（部分失败即带警告交付的依据）。 */
   failures: FailureEntry[];
   tokens: { spent: number };
+  /**
+   * 汇总体用量——累加记账的第三档（每路 usage + run 总计 + Reducer 用量，ADR-0052 §19）。
+   * 汇总体在 run 结算之后才收场，所以这一档只回写索引、进不了终态快照那一刻；
+   * additive 字段，旧产物缺省按 0 处理。取消不退、不重算。
+   */
+  reducerTokens?: { spent: number };
   /** 脚本级失败的原因（run 级终结与脚本自身的错都记在这里，终态可查）。 */
   scriptError?: { kind: string; message: string };
 };

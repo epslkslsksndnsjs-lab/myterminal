@@ -98,6 +98,8 @@ const IDEMPOTENCY_LEDGER = {
   subagent_abort: [false, '维持 SUBAGENT_ANNOTATIONS 现状；其 description 自称幂等属已知矛盾，ADR-0034 登记为观察项，不在本刀范围'],
   // #224：每次调用产出新 runId 并建一条 run 目录；重放会留下第二条 run（非幂等创建）
   workflow_start: [false, '每次调用新建一个 run（新 runId + 新 run 目录）；重放留下第二条 run，故不声明幂等'],
+  // 注解集镜像 subagent_abort（ADR-0052 §23②）：幂等语义写进描述、不作注解约束（§19 括注的 =true 照 spec④不采纳）。
+  workflow_cancel: [false, '镜像 subagent_abort 注解集；"终态返回当前状态、no-op"的幂等性在描述里声明，idempotentHint 不置 true'],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

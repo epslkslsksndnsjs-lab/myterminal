@@ -412,16 +412,20 @@ test('AC4 缺版本号或脏产物同样拒（不许半读半猜）', async () =
 // AC5：工具面分账
 // ═══════════════════════════════════════════════════════════════
 
-test('AC5 工具面分账：只加 workflow_start，不新增 workflow_status / workflow_list', () => {
+test('AC5 工具面分账：只有 workflow_start / workflow_cancel，不新增 workflow_status / workflow_list', () => {
   const { workspaceDir, stateDir } = tempWorkspace();
   const tools = createBuiltinTools(makeConfig(workspaceDir, stateDir), STORE);
   assert.ok(tools.has('workflow_start'));
   assert.equal(tools.has('workflow_status'), false);
   assert.equal(tools.has('workflow_list'), false);
-  assert.equal(tools.has('workflow_cancel'), false, '取消面不属本票');
+  // T7（#230）把取消面立成独立工具（ADR-0052 §8/§19），故 workflow_cancel 现在在清单里；
+  // 本条锁的仍是"不新增 status / list"这两个有意排除项，以及 GPT 面 workflow_ 工具恰为 start + cancel 两个。
+  assert.ok(tools.has('workflow_cancel'), 'T7 已落地取消面');
+  assert.equal(tools.has('workflow_pause'), false, 'GPT 面无 pause 入口（pause 只留 TUI，ADR-0052 §8）');
+  assert.equal(tools.has('workflow_resume'), false, '续跑走 workflow_start(resumeFromRunId)，不另立工具');
   assert.equal(TOOL_SHAPES.has('workflow_start'), false, '控制字段 passthrough，不进整形表');
-  const names = [...tools.keys()].filter((n) => n.startsWith('workflow_'));
-  assert.deepEqual(names, ['workflow_start']);
+  const names = [...tools.keys()].filter((n) => n.startsWith('workflow_')).sort();
+  assert.deepEqual(names, ['workflow_cancel', 'workflow_start']);
 });
 
 test('AC5 workflow_start schema 形状：只四种参数、无闸门参数', () => {
