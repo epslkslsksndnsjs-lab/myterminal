@@ -52,6 +52,35 @@ async function settle(rounds = 4) {
 }
 
 /**
+ * 等一个可观测条件成立，而不是等固定 tick 数。
+ * 补位起跑与账本落盘都要过真 fs（线程池），机器一忙四个 tick 就不够——
+ * 固定 tick 的等待在高负载下会假红，负向断言还会假绿。条件等待两边都稳。
+ */
+async function until(condition, what, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await condition()) return;
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${what}`);
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
+/** 等第 n 笔请求真的到达模型（起跑），用于水位与补位序断言。 */
+function ran(model, n) {
+  return () => model.state.prompts.length >= n;
+}
+
+/** 等账本上出现 k 条 started 行（落盘），用于 admission 记账断言。 */
+function ledgerRows(temp, runId, k) {
+  return () => rawLines(temp, runId).filter((r) => r.type === 'started').length >= k;
+}
+
+/** 等账本上出现 k 条 result 行：负向断言要卡在"这一路真结算了"的那一刻才有效。 */
+function ledgerResults(temp, runId, k) {
+  return () => rawLines(temp, runId).filter((r) => r.type === 'result').length >= k;
+}
+
+/**
  * 假模型剧本：每次调用可挂起（gate）、可抛错、可返回文本。
  * 计数面：adapter 实例数、调用序、在飞水位与最高水位——都是票面要断言的量。
  */
@@ -151,29 +180,30 @@ test('AC1 窗口内滚动补位：水位不越限、补位序 = admission 序', 
   const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 2 });
   const started = await engine.start({ script: FIVE_WIDE, ownerSessionId: 'sess-a' });
 
+  await until(ran(model, 2), '窗口前两路起跑');
   await settle();
   assert.deepEqual(model.state.prompts, ['p0', 'p1'], '窗口 2：只起两路');
   assert.equal(model.state.highWater, 2);
   assert.equal(model.state.live, 2);
 
   // N 路全员入队：五路都已 admission（账上有五条 started），只有两路真在飞。
+  await until(ledgerRows(temp, started.runId, 5), '五路 admission 落账');
   const rows = rawLines(temp, started.runId);
   assert.equal(rows.filter((r) => r.type === 'started').length, 5, '全员入队 = 五路都已记账');
 
   // 第二路先结算 → 补第三路（不是等整组跑完）
   box.release('p1');
-  await settle();
+  await until(ran(model, 3), 'p1 结算后补起 p2');
   assert.deepEqual(model.state.prompts, ['p0', 'p1', 'p2'], '任一路结算即补下一路');
 
   // 补位按 admission：p0 结算后补的是 p3（第三个入队的），不是最后入队的 p4。
   box.release('p0');
-  await settle();
+  await until(ran(model, 4), 'p0 结算后补起 p3');
   assert.deepEqual(model.state.prompts, ['p0', 'p1', 'p2', 'p3'], '补位序 = admission 序');
   box.release('p4');
-  await settle();
   assert.equal(model.state.prompts.length, 4, 'p4 提前放行手闸也排不到前面——窗口只认队列');
   box.release('p2');
-  await settle();
+  await until(ran(model, 5), '腾出的槽位补最后一队');
   assert.deepEqual(model.state.prompts, ['p0', 'p1', 'p2', 'p3', 'p4'], '腾出槽位即补最后一队');
 
   for (const key of ['p3', 'p4']) box.release(key);
@@ -207,11 +237,11 @@ test('AC2 pipeline 默认无组间栅栏：第一路第二段可在其余第一�
   (prev, item) => agent('polish:' + prev + ':' + item));
 return out.length;`;
   const started = await engine.start({ script, ownerSessionId: 'sess-a' });
-  await settle();
+  await until(ran(model, 3), '三路第一段落起跑');
   assert.deepEqual(model.state.prompts, ['draft-0', 'draft-1', 'draft-2'], '三路同时起步');
 
   box.release('draft-0');
-  await settle();
+  await until(ran(model, 4), '0 号无栅栏进入第二段');
   assert.deepEqual(model.state.prompts, ['draft-0', 'draft-1', 'draft-2', 'polish:done:draft-0:0'], '只有 0 号进入第二段，无栅栏');
   assert.equal(model.state.prompts.filter((p) => p.startsWith('polish')).length, 1, '其余两路仍卡在第一段（各自独立）');
 
@@ -247,14 +277,14 @@ test('AC2 显式分段才出现栅栏：第二段全部等第一段结算完', a
 const second = await parallel(first.map((v, i) => () => agent('group2-' + i)));
 return [first.length, second.length];`;
   const started = await engine.start({ script, ownerSessionId: 'sess-a' });
-  await settle();
+  await until(ran(model, 3), '第一组三路起跑');
   assert.deepEqual(model.state.prompts, ['group1-0', 'group1-1', 'group1-2'], '栅栏前只有第一组');
   box.release('group1-0');
-  await settle();
+  await until(ledgerResults(temp, started.runId, 1), '第一路结算落账');
   assert.equal(model.state.prompts.some((p) => p.startsWith('group2')), false, '第一组未全结算 → 一组都不起');
   box.release('group1-1');
   box.release('group1-2');
-  await settle();
+  await until(ran(model, 6), '栅栏后整组齐发');
   assert.deepEqual(model.state.prompts.slice(3), ['group2-0', 'group2-1', 'group2-2'], '栅栏后整组齐发');
   for (const k of ['group2-0', 'group2-1', 'group2-2']) box.release(k);
   assert.equal((await started.completion).status, 'completed');
@@ -348,10 +378,11 @@ test('AC3 嵌套共享并发窗口与预算：窗口 1 时父子合计不越限'
     script: `const fan = await parallel([() => agent('parent-a'), () => workflow('child')]);\nreturn fan.length;`,
     ownerSessionId: 'sess-a',
   });
+  await until(ran(model, 1), '父层第一路起跑');
   await settle();
   assert.deepEqual(model.state.prompts, ['parent-a'], '窗口 1：一次只一路');
   box.release('parent-a');
-  await settle();
+  await until(ran(model, 2), '子层接上同一个窗口');
   assert.deepEqual(model.state.prompts, ['parent-a', 'child-b'], '父子共用同一个窗口排队');
   assert.equal(model.state.highWater, 1, '合计水位仍不越限（嵌套不另开窗口）');
   for (const k of ['child-b', 'child-c']) box.release(k);
@@ -414,7 +445,7 @@ test('AC4 乱序完成：键链按 admission，账本与索引归位不动', asy
   const script = `const out = await parallel([0,1,2,3].map((i) => () => agent('call-' + i, { label: 'K' + i, phase: 'P' + i })));
 return out.length;`;
   const started = await engine.start({ script, args: { run: 'seed' }, ownerSessionId: 'sess-a' });
-  await settle();
+  await until(ledgerRows(temp, started.runId, 4), '四路 admission 落账');
 
   const rows = rawLines(temp, started.runId);
   const startedRows = rows.filter((r) => r.type === 'started');
@@ -475,7 +506,7 @@ test('AC10 续跑接上断点处的键链：新调用的键不复用已有槽位
   const first = engineFor(temp, { adapterFactory: scripted(() => hang).factory, concurrencyWindow: 2 });
   const script = `await parallel([() => agent('a', { label: 'A' }), () => agent('b', { label: 'B' })]);return 1;`;
   const started = await first.engine.start({ script, ownerSessionId: 'sess-a' });
-  await settle();
+  await until(ledgerRows(temp, started.runId, 2), '两路 admission 落账');
   const before = rawLines(temp, started.runId).filter((r) => r.type === 'started');
   assert.equal(before.length, 2, '两路都已 admission，run 未终态');
 
@@ -519,7 +550,7 @@ test('AC10 终态已宣告后，迟归的一路不再改动任何机器件', asy
     script: `const out = await parallel([() => agent('late'), () => agent('fast')]);return out.length;`,
     ownerSessionId: 'sess-a',
   });
-  await settle();
+  await until(() => model.state.prompts.length >= 2 && release !== undefined, '两路都已起跑、迟归那一路挂在手闸上');
   clock.advance(1000);
   const index = await started.completion;
   assert.equal(index.status, 'failed');
@@ -527,6 +558,7 @@ test('AC10 终态已宣告后，迟归的一路不再改动任何机器件', asy
   const snapshotBefore = fs.readFileSync(runPaths(temp.paths, started.runId).snapshotFile, 'utf8');
 
   release.resolve({ text: 'too late', outputTokens: 40 });
+  await until(() => model.state.live === 0, '迟归那一路真的从模型返回');
   await settle(6);
 
   const after = await readIndex(runPaths(temp.paths, started.runId).indexFile);

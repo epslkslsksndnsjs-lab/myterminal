@@ -39,6 +39,16 @@ async function settleInto(temp, options) {
   return await engine.start({ script: "await agent('x', { label: 'X' });\nreturn 1;", ownerSessionId: 'sess-a' });
 }
 
+/** 等一个可观测条件成立，而不是睡固定毫秒：后台那趟要过真 fs，负载一高固定值就不够。 */
+async function until(condition, what, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await condition()) return;
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for: ${what}`);
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
 async function settleAndCapture(temp, point) {
   const notices = [];
   const started = await settleInto(temp, {
@@ -193,7 +203,10 @@ test('没人接的后台 run 终止：不升级成进程级异常，但留一条
     crash: (point) => { if (point === 'after-snapshot') throw new Error('background death'); },
   });
   // 故意先不 await completion——工具面就是这个形状：拿到 runId 就走，没人接这个 promise。
-  await new Promise((r) => setTimeout(r, 20));
+  // 所以这里不能"睡固定毫秒"：后台那一趟要过真 fs，机器一忙 20ms 不够，就会假红。
+  // 改成等它自己到——审计条目是在拒绝往外冒之前写下的，等它不等于接 promise。
+  await until(() => auditLog.some((entry) => entry.reason === 'settle-failed'), '后台终止留下 settle-failed 审计');
+  for (let i = 0; i < 4; i++) await new Promise((r) => setTimeout(r, 0));
   const failures = auditLog.filter((entry) => entry.reason === 'settle-failed');
   assert.equal(failures.length, 1, '终止必须留账，兜法不是吞');
   assert.equal(failures[0].action, 'workflow_settle');
