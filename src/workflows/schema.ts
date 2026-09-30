@@ -36,16 +36,38 @@ export function isActive(status: WorkflowStatus): boolean {
 /** 终态原因：中断认领与墙钟到期各有具名，不许用空串蒙混。 */
 export type TerminalReason = 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'settle-timeout' | 'run-gate' | (string & {});
 
+/**
+ * 一路失败的具名条目：模块不做语义判断，只把"哪一路、什么种类、为什么"逐条记全。
+ * 失败清单是索引的一等字段，不靠遍历 dispatches 拼出来——汇总体与查询面都读它。
+ */
+export type FailureEntry = {
+  seq?: number;
+  label: string;
+  kind: string;
+  message: string;
+  reason?: string;
+};
+
 export type DispatchRecord = {
   id: string;
+  /** admission 序号（= 缓存键链的位置）。老产物可缺。 */
+  seq?: number;
+  /** 本路的前缀哈希链键；续跑重放按它对齐。 */
+  key?: string;
   label: string;
   status: 'running' | 'completed' | 'failed';
   attempts: number;
   startedAt: string;
   endedAt?: string;
   outputTokens: number;
-  error?: { kind: string; message: string };
+  error?: { kind: string; message: string; reason?: string };
   result?: unknown;
+  /** 该路声明的隔离形态（标记而已，隔离执行属 T8）。 */
+  isolation?: string;
+  phase?: string;
+  model?: string;
+  effort?: string;
+  schema?: boolean;
 };
 
 export type RunIndex = {
@@ -62,7 +84,11 @@ export type RunIndex = {
   startedAt: string;
   endedAt?: string;
   dispatches: DispatchRecord[];
+  /** 每路失败的具名清单（部分失败即带警告交付的依据）。 */
+  failures: FailureEntry[];
   tokens: { spent: number };
+  /** 脚本级失败的原因（run 级终结与脚本自身的错都记在这里，终态可查）。 */
+  scriptError?: { kind: string; message: string };
 };
 
 export type RunSnapshot = RunIndex & { schemaVersion: number };

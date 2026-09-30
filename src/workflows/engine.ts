@@ -2,22 +2,41 @@ import { Clock, systemClock } from './clock.js';
 import { dispatchId, newRunId } from './ids.js';
 import { Journal } from './journal.js';
 import { scanDeterminism } from './lint.js';
-import { loadScript, persistScript } from './saved.js';
+import { loadScript, persistScript, SCRIPT_NAME_PATTERN } from './saved.js';
 import { agentFile, managedRootFor, runPaths, workflowPaths, type RunPaths, type WorkflowPaths } from './paths.js';
 import { readIndex, writeIndex } from './run-index.js';
 import { upsertRegistry } from './registry.js';
-import { runInSandbox } from './sandbox.js';
-import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type RunIndex, type TerminalReason, type WorkflowStatus } from './schema.js';
+import { runInSandbox, type SandboxHost } from './sandbox.js';
+import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type FailureEntry, type RunIndex, type TerminalReason, type WorkflowStatus } from './schema.js';
 import { writeSnapshot } from './snapshot.js';
 import { ensureDir, createExclusive, exists, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents } from './events.js';
-import type { AdapterFactory } from './adapter.js';
+import { createDispatchWindow, defaultConcurrencyWindow, type DispatchWindow } from './scheduler.js';
+import { canonicalAgentOpts, gateAgentOpts, type GatedAgentOpts } from './agent-opts.js';
+import { argsChainSeed, deriveAgentKey } from './keys.js';
+import {
+  AgentCallShapeError,
+  WorkflowAgentCapExceededError,
+  WorkflowBudgetExceededError,
+  classifyAdapterError,
+  isRunLevelError,
+  runLevelError,
+  silenceFailure,
+  type RunTerminationReason,
+  type SettledFailure,
+} from './failures.js';
+import { AGENT_SYSTEM_PROMPT, type AdapterFactory } from './adapter.js';
 
 /**
- * run 生命周期：建 run → 跑脚本（每路一个独立 adapter 实例）→ 结算。
+ * run 生命周期：建 run → 脚本在窗口里 fan-out（每路一个独立 adapter 实例）→ 结算。
  *
- * 结算只有一处（settle），且终态标记最后写、独占创建——后到者读到已有标记即退让。
- * 一切时间经注入时钟，一切模型调用经注入工厂，state 根可整体重定向。
+ * 三处纪律：
+ *   1. admission 是同步的一段：校验 → 键滚动 → 计数 → 记账，全部在任何 await 之前。
+ *      N 路并发扇出时微任务爆发也只按调用序进键，完成顺序改不了账本；
+ *   2. 每路结算三态各归各位：该路失败 = null 并具名记账（run 继续），调用形状错 =
+ *      reject（不 admission、不进失败清单），run 级 = throw（整批拒、在飞中止、队列丢弃）；
+ *   3. 结算只有一处（settle），终态标记最后写、独占创建——后到者读到已有标记即退让。
+ * 一切时间经注入时钟，一切模型调用经注入工厂，state 根与并发窗口可整体重定向。
  */
 
 export type EngineThresholds = {
@@ -29,6 +48,8 @@ export type EngineThresholds = {
   waitMs: number;
   /** 单 run 输出 token 硬顶。 */
   tokenCap: number;
+  /** 单 run 的 agent() 调用数硬顶。 */
+  agentCap: number;
 };
 
 export const DEFAULT_THRESHOLDS: EngineThresholds = {
@@ -36,7 +57,11 @@ export const DEFAULT_THRESHOLDS: EngineThresholds = {
   stallMs: 180_000,
   waitMs: 600_000,
   tokenCap: 8_000_000,
+  agentCap: 1000,
 };
+
+/** 单路一次调用的输出上限（本票不表达为脚本可传的旋钮）。 */
+export const DEFAULT_OUTPUT_TOKENS = 32_000;
 
 export type WorkflowAuditEntry = {
   runId: string;
@@ -56,6 +81,8 @@ export type EngineDeps = {
   events?: WorkflowEvents;
   audit?: (entry: WorkflowAuditEntry) => void;
   thresholds?: Partial<EngineThresholds>;
+  /** 并发窗口：默认按核数公式；注入即所断言的窗口（闸门的设置面属 T3）。 */
+  concurrencyWindow?: number;
   /** 终态通知缝：回传管线接线前为空实现，结算纪律不受影响。 */
   notifier?: (settled: { runId: string; status: WorkflowStatus; reason?: TerminalReason; indexPath: string }) => void;
 };
@@ -97,8 +124,17 @@ type RunContext = {
   seq: number;
   spent: number;
   settled: boolean;
-  /** 整 run 的中止信号：墙钟到期即 abort，在飞的路随之中止（燃烧停止）。 */
+  /** 整 run 的中止信号：墙钟到期或 run 级终结即 abort，在飞的路随之止损。 */
   controller: AbortController;
+  /** 共享并发窗口：嵌套的 workflow() 用的就是这一个窗口，不另开。 */
+  window: DispatchWindow;
+  /** 前缀哈希链的游标（键序 = 调用序的地基）。 */
+  chainPrefix: string;
+  /** admission 计数（increment-then-check）。 */
+  agentCount: number;
+  /** run 级终结后账就封口：之后的调用一律拒。 */
+  open: boolean;
+  termination?: { reason: RunTerminationReason; message: string };
   gateHandle?: { id: unknown };
   completion?: Promise<RunIndex>;
 };
@@ -117,6 +153,7 @@ export class WorkflowEngine {
   private readonly thresholds: EngineThresholds;
   private readonly events: WorkflowEvents;
   private readonly factory: AdapterFactory | undefined;
+  private readonly windowSize: number;
   private readonly runs = new Map<string, RunContext>();
 
   constructor(private readonly deps: EngineDeps) {
@@ -125,6 +162,13 @@ export class WorkflowEngine {
     this.thresholds = { ...DEFAULT_THRESHOLDS, ...(deps.thresholds ?? {}) };
     this.events = deps.events ?? new WorkflowEvents();
     this.factory = deps.adapterFactory;
+    const requested = deps.concurrencyWindow ?? defaultConcurrencyWindow();
+    this.windowSize = Math.max(1, Math.floor(requested));
+  }
+
+  /** 本引擎的并发窗口大小（观测面：滚动补位的上限水位）。 */
+  get windowLimit(): number {
+    return this.windowSize;
   }
 
   /** 启动一条 run：做完所有"烧 token 前"的校验，立即返回，余下在后台跑。 */
@@ -181,26 +225,33 @@ export class WorkflowEngine {
       ...(request.args !== undefined ? { args: request.args } : {}),
       startedAt: previous?.startedAt ?? startedAt,
       dispatches: previous?.dispatches ?? [],
+      failures: previous?.failures ?? [],
       tokens: { spent: previous?.tokens.spent ?? 0 },
     };
     await writeIndex(run.indexFile, index);
     await upsertRegistry(this.paths.registryFile, { runId, status: 'running', ownerSessionId: request.ownerSessionId, startedAt: index.startedAt });
 
+    const sequence = index.dispatches.length;
+    journal.prime(sequence + 1);
     const context: RunContext = {
       runId,
       run,
       journal,
       index,
-      seq: index.dispatches.length,
+      seq: sequence,
       spent: index.tokens.spent,
       settled: false,
+      open: true,
       controller: new AbortController(),
+      window: createDispatchWindow(this.windowLimit, { signal: undefined }),
+      chainPrefix: argsChainSeed(index.args),
+      agentCount: sequence,
     };
     this.runs.set(runId, context);
 
     if (!request.resumeFromRunId) await journal.append({ type: 'launched', runId, at: startedAt });
     this.deps.audit?.({ runId, action: 'workflow_start', actor: request.ownerSessionId, status: 'running', at: startedAt });
-    this.events.emit({ runId, type: 'run_started', at: startedAt, data: { scriptPath: script.path, resumed: Boolean(request.resumeFromRunId) } });
+    this.events.emit({ runId, type: 'run_started', at: startedAt, data: { scriptPath: script.path, resumed: Boolean(request.resumeFromRunId), concurrencyWindow: this.windowLimit } });
 
     const completion = this.execute(context, script.content);
     context.completion = completion;
@@ -229,31 +280,39 @@ export class WorkflowEngine {
     // 计时与中止都走注入时钟与本 run 的 controller，不接受系统定时器。
     const gate = new Promise<never>((_resolve, reject) => {
       context.gateHandle = this.clock.setTimeout(() => {
-        context.controller.abort();
+        this.terminate(context, 'run-gate', 'The run reached its wall-clock gate.');
         reject(new RunGateReached());
       }, this.thresholds.runGateMs);
     });
 
     try {
-      const outcome = await Promise.race([
-        runInSandbox({
-          source,
-          args: context.index.args,
-          timeoutMs: 30_000,
-          host: {
-            agent: async (prompt, opts) => await this.dispatch(context, prompt, opts),
-          },
-        }),
-        gate,
-      ]);
+      const outcome = await Promise.race([runInSandbox({ source, args: context.index.args, timeoutMs: 30_000, host: this.hostFor(context, false) }), gate]);
+      if (context.termination) {
+        await this.settle(context, 'failed', context.termination.reason);
+        return context.index;
+      }
       if (!outcome.ok) {
+        context.index.scriptError = { kind: outcome.kind, message: outcome.message };
         await this.settle(context, 'failed', outcome.kind === 'timeout' ? 'run-gate' : 'script-failed');
+        return context.index;
+      }
+      // run 级判定只有机器三态：全败即 failed，部分失败仍 completed（带警告交付）。
+      const succeeded = context.index.dispatches.some((record) => record.status === 'completed');
+      const admitted = context.index.dispatches.length > 0;
+      if (admitted && !succeeded) {
+        context.index.scriptError = { kind: 'all-paths-failed', message: `All ${context.index.dispatches.length} agent paths failed.` };
+        await this.settle(context, 'failed', 'failed');
         return context.index;
       }
       await this.settle(context, 'completed', 'completed');
       return context.index;
     } catch (error) {
+      if (context.termination) {
+        await this.settle(context, 'failed', context.termination.reason);
+        return context.index;
+      }
       const reason = error instanceof RunGateReached ? 'run-gate' : 'script-failed';
+      context.index.scriptError = { kind: reason, message: (error as Error)?.message ?? String(error) };
       await this.settle(context, 'failed', reason);
       return context.index;
     } finally {
@@ -261,62 +320,204 @@ export class WorkflowEngine {
     }
   }
 
-  /** 一路 agent：独立 adapter 实例、独立槽位、独立账。 */
-  private async dispatch(context: RunContext, prompt: string, opts?: Record<string, unknown>): Promise<unknown> {
-    if (typeof prompt !== 'string' || prompt.trim().length === 0) throw new Error('agent() requires a non-empty prompt.');
-    const sequence = context.seq + 1;
-    context.seq = sequence;
-    const slot = dispatchId(sequence);
-    const label = typeof opts?.label === 'string' && opts.label.trim() ? opts.label : `agent-${sequence}`;
-    const startedAt = this.clock.iso();
-    const record: DispatchRecord = { id: slot, label, status: 'running', attempts: 1, startedAt, outputTokens: 0 };
-    context.index.dispatches = [...context.index.dispatches, record];
-    await writeIndex(context.run.indexFile, context.index);
-    await context.journal.append({ type: 'started', seq: sequence, label, at: startedAt });
-
-    const factory = this.factory;
-    if (!factory) {
-      const error = { kind: 'no-adapter', message: 'No model adapter is wired for this run.' };
-      return await this.finishDispatch(context, record, { ok: false as const, error });
-    }
-    try {
-      const adapter = factory({ runId: context.runId, dispatchId: slot });
-      const result = await adapter.complete({
-        system: typeof opts?.system === 'string' ? opts.system : '',
-        prompt,
-        maxTokens: typeof opts?.maxTokens === 'number' ? opts.maxTokens : 32_000,
-        ...(typeof opts?.model === 'string' ? { model: opts.model } : {}),
-        signal: context.controller.signal,
-      });
-      context.spent += result.outputTokens;
-      return await this.finishDispatch(context, record, { ok: true as const, text: result.text, outputTokens: result.outputTokens });
-    } catch (error) {
-      const kind = (error as { name?: string }).name === 'AbortError' ? 'aborted' : 'error';
-      return await this.finishDispatch(context, record, { ok: false as const, error: { kind, message: (error as Error).message } });
-    }
+  /**
+   * 沙箱宿主面。nested = true 时不给 workflow()——单层嵌套的限制就是这么实现的：
+   * 不是计数器，是第二层根本拿不到这个函数。
+   */
+  private hostFor(context: RunContext, nested: boolean): SandboxHost {
+    const host: SandboxHost = {
+      agent: async (prompt, opts) => await this.countedDispatch(context, prompt, opts),
+      budget: {
+        total: this.thresholds.tokenCap,
+        spent: () => context.spent,
+        remaining: () => Math.max(0, this.thresholds.tokenCap - context.spent),
+      },
+    };
+    if (!nested) host.workflow = async (ref, args, opts) => await this.runNested(context, ref, args, opts);
+    return host;
   }
 
-  private async finishDispatch(
+  /** 嵌套复用已保存脚本：共享同一 run 的键链、窗口、预算与注册表。 */
+  private async runNested(context: RunContext, ref: unknown, args?: unknown, opts?: unknown): Promise<unknown> {
+    if (context.termination) throw runLevelError(context.termination.reason, context.termination.message);
+    const loaded = await this.resolveSaved(ref);
+    const nestedViolations = scanDeterminism(loaded.content);
+    if (nestedViolations.length > 0) {
+      throw new Error(`workflow() refused: the saved script uses non-deterministic calls (${nestedViolations.map((v) => v.literal).join(', ')}).`);
+    }
+    const outcome = await runInSandbox({ source: loaded.content, args, host: this.hostFor(context, true), timeoutMs: 30_000 });
+    if (!outcome.ok) throw new Error(`workflow(${JSON.stringify(String(loaded.name))}) failed (${outcome.kind}): ${outcome.message}`);
+    return outcome.value;
+  }
+
+  private async resolveSaved(ref: unknown): Promise<{ name: string; content: string }> {
+    if (typeof ref === 'string') {
+      // 名字面就限死在 saved 根内：路径形态当名字用即拒，不按字符串去读盘。
+      if (!SCRIPT_NAME_PATTERN.test(ref)) {
+        throw new AgentCallShapeError(`workflow() expects a saved script name (letters, digits and dashes); received: ${JSON.stringify(ref)}`);
+      }
+      const loaded = await loadScript(this.paths, `${this.paths.savedRoot}/${ref}.js`);
+      if (!loaded.ok) throw new Error(`workflow() could not load the saved script ${ref}.js (${loaded.reason}).`);
+      return { name: ref, content: loaded.content };
+    }
+    if (ref && typeof ref === 'object' && !Array.isArray(ref)) {
+      const record = ref as Record<string, unknown>;
+      if (typeof record.scriptPath === 'string') {
+        const loaded = await loadScript(this.paths, record.scriptPath);
+        if (!loaded.ok) throw new Error(`workflow() could not load ${record.scriptPath} (${loaded.reason}).`);
+        return { name: record.scriptPath, content: loaded.content };
+      }
+      if (typeof record.name === 'string') return await this.resolveSaved(record.name);
+    }
+    throw new AgentCallShapeError('workflow() expects a saved script name or { scriptPath }.');
+  }
+
+  /**
+   * 一路 agent：同步走完 admission（校验 → 键滚动 → 闸门 → 记账），
+   * 之后才进窗口排队。顺序即正确性，任何一步都不许挪到 await 之后。
+   */
+  private async countedDispatch(context: RunContext, prompt: string, rawOpts?: Record<string, unknown>): Promise<unknown> {
+    this.assertOpen(context);
+    if (typeof prompt !== 'string' || prompt.trim().length === 0) {
+      throw new AgentCallShapeError('agent() requires a non-empty prompt.');
+    }
+    // 形状错在这一刻就拒：不占键位、不计数、不进失败清单。
+    const gated = gateAgentOpts(rawOpts);
+
+    // 预算入口门（软检查）先于计数：超限即 run 级终结，多烧的那点由取槽二检兜。
+    this.assertBudget(context);
+    context.agentCount += 1;
+    if (context.agentCount > this.thresholds.agentCap) {
+      this.terminate(context, 'agent-cap', new WorkflowAgentCapExceededError(this.thresholds.agentCap).message);
+      throw new WorkflowAgentCapExceededError(this.thresholds.agentCap);
+    }
+
+    const sequence = ++context.seq;
+    const key = deriveAgentKey(context.chainPrefix, prompt, canonicalAgentOpts(gated));
+    context.chainPrefix = key;
+
+    const slot = dispatchId(sequence);
+    const label = typeof gated.label === 'string' && gated.label.trim() ? gated.label : `agent-${sequence}`;
+    const startedAt = this.clock.iso();
+    const record: DispatchRecord = {
+      id: slot,
+      seq: sequence,
+      key,
+      label,
+      status: 'running',
+      attempts: 1,
+      startedAt,
+      outputTokens: 0,
+      ...(gated.isolation ? { isolation: gated.isolation } : {}),
+      ...(gated.phase ? { phase: gated.phase } : {}),
+      ...(gated.model ? { model: gated.model } : {}),
+      ...(gated.effort ? { effort: gated.effort } : {}),
+      ...(gated.schema ? { schema: true } : {}),
+    };
+    context.index = { ...context.index, dispatches: [...context.index.dispatches, record] };
+    void writeIndex(context.run.indexFile, context.index).catch(() => undefined);
+    void context.journal.append({ type: 'started', seq: sequence, key, label, at: startedAt }).catch(() => undefined);
+
+    return await this.runPath(context, record, prompt, gated);
+  }
+
+  /** 叶子任务才进窗口：排队不占键位，取槽时再过一次预算门。 */
+  private runPath(context: RunContext, record: DispatchRecord, prompt: string, gated: GatedAgentOpts): Promise<unknown> {
+    return context.window.run(async () => {
+      this.assertOpen(context);
+      this.assertBudget(context);
+      const factory = this.factory;
+      if (!factory) {
+        return await this.settlePath(context, record, { ok: false, failure: { kind: 'error', message: 'No model adapter is wired for this run.', reason: 'no-adapter' } });
+      }
+      // 每路独立实例：缓存断点是实例态，共享实例会让一路撞到的 4xx 关掉全部并发路的断点。
+      const adapter = factory({ runId: context.runId, dispatchId: record.id });
+      let result;
+      try {
+        result = await adapter.complete({
+          system: AGENT_SYSTEM_PROMPT,
+          prompt,
+          maxTokens: DEFAULT_OUTPUT_TOKENS,
+          ...(gated.model ? { model: gated.model } : {}),
+          signal: context.controller.signal,
+        });
+      } catch (error) {
+        if (isRunLevelError(error)) throw error;
+        return await this.settlePath(context, record, { ok: false, failure: classifyAdapterError(error) });
+      }
+      context.spent += result.outputTokens;
+      if (gated.schema) {
+        const structured = parseStructured(result.text);
+        if (!structured.ok) {
+          return await this.settlePath(context, record, { ok: false, failure: { kind: 'no_structured_output', message: structured.message } });
+        }
+        return await this.settlePath(context, record, { ok: true, value: structured.value, outputTokens: result.outputTokens });
+      }
+      if (!result.text || !result.text.trim()) {
+        return await this.settlePath(context, record, { ok: false, failure: silenceFailure('this agent') });
+      }
+      return await this.settlePath(context, record, { ok: true, value: result.text, outputTokens: result.outputTokens });
+    });
+  }
+
+  /**
+   * 一路的结算唯一出口：写每路文件 → 写索引（按 admission 位归位）→ 具名记账 →
+   * 归位序进账本 → 发事件。失败即返回 null（脚本槽位与裸 await 同值），成功即返回该路值。
+   */
+  private async settlePath(
     context: RunContext,
     record: DispatchRecord,
-    outcome: { ok: true; text: string; outputTokens: number } | { ok: false; error: { kind: string; message: string } },
+    outcome: { ok: true; value: unknown; outputTokens: number } | { ok: false; failure: SettledFailure },
   ): Promise<unknown> {
     const endedAt = this.clock.iso();
     const next: DispatchRecord = outcome.ok
       ? { ...record, status: 'completed', endedAt, outputTokens: outcome.outputTokens }
-      : { ...record, status: 'failed', endedAt, error: outcome.error };
+      : { ...record, status: 'failed', endedAt, error: { kind: outcome.failure.kind, message: outcome.failure.message, ...(outcome.failure.reason ? { reason: outcome.failure.reason } : {}) } };
     context.index.dispatches = context.index.dispatches.map((item) => (item.id === record.id ? next : item));
     context.index.tokens = { spent: context.spent };
-    await writeJsonAtomic(agentFile(context.run, record.id), { schemaVersion: SCHEMA_VERSION, ...next, ...(outcome.ok ? { result: outcome.text } : {}) });
+    if (!outcome.ok) {
+      const entry: FailureEntry = {
+        ...(record.seq !== undefined ? { seq: record.seq } : {}),
+        label: record.label,
+        kind: outcome.failure.kind,
+        message: outcome.failure.message,
+        ...(outcome.failure.reason ? { reason: outcome.failure.reason } : {}),
+      };
+      context.index.failures = [...context.index.failures, entry];
+    }
+    await writeJsonAtomic(agentFile(context.run, record.id), { schemaVersion: SCHEMA_VERSION, ...next, ...(outcome.ok ? { result: outcome.value } : {}) });
     await writeIndex(context.run.indexFile, context.index);
-    await context.journal.append(
-      outcome.ok
-        ? { type: 'result', seq: Number(record.id.slice(1)), value: outcome.text, at: endedAt }
-        : { type: 'failed', seq: Number(record.id.slice(1)), error: outcome.error, at: endedAt },
-    );
+    void context.journal
+      .appendOrdered(record.seq as number, outcome.ok
+        ? { type: 'result', seq: record.seq as number, key: record.key, value: outcome.value, at: endedAt }
+        : { type: 'failed', seq: record.seq as number, key: record.key, error: { kind: outcome.failure.kind, message: outcome.failure.message }, at: endedAt })
+      .catch(() => undefined);
     this.events.emit({ runId: context.runId, type: 'dispatch_settled', at: endedAt, data: { dispatchId: record.id, status: next.status } });
-    // 该路自身失败 = null（脚本侧与批量槽位同值），run 继续。
-    return outcome.ok ? outcome.text : null;
+    return outcome.ok ? outcome.value : null;
+  }
+
+  /** run 级终结：一旦封口，后续调用一律拒，在飞的路随信号止损，队列丢弃。 */
+  private terminate(context: RunContext, reason: RunTerminationReason, message: string): void {
+    if (!context.open) return;
+    context.open = false;
+    context.termination = { reason, message };
+    context.controller.abort();
+    context.window.abort();
+  }
+
+  private assertOpen(context: RunContext): void {
+    if (context.open) return;
+    const termination = context.termination;
+    throw runLevelError(termination?.reason ?? 'cancelled', termination?.message ?? 'The run is no longer accepting work.');
+  }
+
+  /** 两级软检查的第一级（入口）；第二级在取槽时。 */
+  private assertBudget(context: RunContext): void {
+    const cap = this.thresholds.tokenCap;
+    if (context.spent < cap) return;
+    const error = new WorkflowBudgetExceededError(context.runId, context.spent, cap);
+    this.terminate(context, 'token-budget', error.message);
+    throw error;
   }
 
   /** 结算唯一出口：一切终态路径都收敛到这里，终态标记最后写且独占创建。 */
@@ -347,5 +548,19 @@ export class WorkflowEngine {
   /** 终态判定（供查询面使用）：终态一律正向枚举。 */
   static isTerminal(status: WorkflowStatus): boolean {
     return isTerminal(status);
+  }
+}
+
+/** schema 模式下的出口：该路必须交回一个 JSON 对象，否则按缺结构化输出判败。 */
+function parseStructured(text: string): { ok: true; value: unknown } | { ok: false; message: string } {
+  if (!text || !text.trim()) return { ok: false, message: 'The agent produced no structured submission.' };
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, message: 'The structured submission is not a JSON object.' };
+    }
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, message: `The structured submission is not valid JSON: ${(error as Error).message}` };
   }
 }

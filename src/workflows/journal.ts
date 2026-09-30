@@ -31,6 +31,10 @@ export type TruncationReport = {
 export class Journal {
   /** 单写者锁：append 串行化，避免并发路交错写坏行边界。 */
   private tail: Promise<unknown> = Promise.resolve();
+  /** 归位游标：下一条应落盘的 admission 序号。 */
+  private expected = 1;
+  /** 乱序归位缓冲：先完成的路等着前一路，账才按调用序连续。 */
+  private readonly holding = new Map<number, { line: string; settle: () => void }>();
 
   constructor(private readonly file: string) {}
 
@@ -41,15 +45,77 @@ export class Journal {
   /** 记账一行。返回已排队的写盘 promise（fire-and-forget 场景可不安 await）。 */
   append(record: JournalInput): Promise<void> {
     const line = JSON.stringify({ version: SCHEMA_VERSION, ...record });
+    return this.enqueue(line);
+  }
+
+  private enqueue(line: string): Promise<void> {
     const next = this.tail.then(() => appendLine(this.file, line));
     // 锁链自身永不因单点失败而断：后续行仍要写，失败由调用方从 drain() 观察。
     this.tail = next.catch(() => undefined);
     return next;
   }
 
+  /**
+   * 按 admission 序归位地记一行（seq = 调用序，1 起）。
+   *
+   * 前面还有没结算的路时，这一行先在缓冲里等着——完成顺序绝不改写账本顺序。
+   * 返回的 promise 在该行真正落盘时兑现；调用方按 fire-and-forget 处理，
+   * 结算前 flushPending() 把等不到口的行升序补齐（不静默丢）。
+   */
+  appendOrdered(seq: number, record: JournalInput): Promise<void> {
+    if (!Number.isInteger(seq) || seq < 1) {
+      return Promise.reject(new TypeError(`journal sequence must be a positive integer; received: ${String(seq)}`));
+    }
+    if (seq < this.expected) {
+      // 重放的旧序号（同一路的第二张账）不再进链，直接落盘。
+      return this.enqueue(JSON.stringify({ version: SCHEMA_VERSION, seq, ...record }));
+    }
+    const line = JSON.stringify({ version: SCHEMA_VERSION, seq, ...record });
+    return new Promise<void>((resolve) => {
+      this.holding.set(seq, { line, settle: resolve });
+      this.pumpOrdered();
+    });
+  }
+
+  /** 把能连续的行依次落盘（缺口留在缓冲里等）。 */
+  private pumpOrdered(): void {
+    while (this.holding.has(this.expected)) {
+      const seq = this.expected;
+      const held = this.holding.get(seq) as { line: string; settle: () => void };
+      this.holding.delete(seq);
+      this.expected = seq + 1;
+      void this.enqueue(held.line).then(held.settle, held.settle);
+    }
+  }
+
+  /** 缓冲里还压着几行（观测面）。 */
+  pendingCount(): number {
+    return this.holding.size;
+  }
+
+  /**
+   * 终态前的补齐：把等不到前序的行按 seq 升序写完。
+   * 在飞被打断的路本就无账可记，缺口保留原样——"started 无 result" 即那一路的账。
+   */
+  async flushPending(): Promise<void> {
+    const seqs = [...this.holding.keys()].sort((a, b) => a - b);
+    for (const seq of seqs) {
+      const held = this.holding.get(seq) as { line: string; settle: () => void };
+      this.holding.delete(seq);
+      this.expected = Math.max(this.expected, seq + 1);
+      void this.enqueue(held.line).then(held.settle, held.settle);
+    }
+    await this.tail;
+  }
+
+  /** 续跑入参：已有几路记账，游标就从几 + 1 起。 */
+  prime(nextSeq: number): void {
+    this.expected = Number.isInteger(nextSeq) && nextSeq > 0 ? nextSeq : 1;
+  }
+
   /** 等所有排队中的写入落盘（结算前必调）。 */
   async drain(): Promise<void> {
-    await this.tail;
+    await this.flushPending();
   }
 
   async read(): Promise<JournalRecord[]> {
@@ -81,6 +147,9 @@ export class Journal {
     }
     const dropped = lines.length - kept.length;
     if (dropped > 0) await replaceLinesAtomic(this.file, kept);
+    // 文件换了，缓冲与游标必须跟着重算：留旧游标会把该落盘的行永远压在缓冲里。
+    this.holding.clear();
+    this.expected = 1;
     return { kept: kept.length, dropped };
   }
 }

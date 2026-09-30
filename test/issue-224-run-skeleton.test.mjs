@@ -317,16 +317,21 @@ test('AC3 终态标记独占创建：后到者读到已有标记即退让，不�
   assert.equal(second, false, '独占创建：已存在即 false');
 });
 
-test('AC3 该路自身失败 = null 并记账，run 不因此终结', async () => {
+test('AC3 该路自身失败 = null 并记账，脚本仍跑到尾（判定见 T2 的 run 级规则）', async () => {
   const { workspaceDir, managedRoot } = tempWorkspace();
   const failing = fakeFactory({ fail: true });
   const engine = engineFor(workspaceDir, managedRoot, { adapterFactory: failing.factory });
   const started = await engine.start({ script: INLINE_SCRIPT, ownerSessionId: 'sess-a' });
   const index = await started.completion;
-  assert.equal(index.status, 'completed', '单路失败记账后脚本仍走完');
+  // #225 钉死 run 级判定：全败 → failed、部分失败 → completed（带警告）、无"几路算过"阈值。
+  // 单路 run 里唯一的一路失败即"全败"，所以终态是 failed——注意脚本本身仍跑到了尾（不是被中断）。
+  assert.equal(index.status, 'failed');
+  assert.equal(index.reason, 'failed');
   assert.equal(index.dispatches[0].status, 'failed');
   assert.equal(index.dispatches[0].error.kind, 'error');
-  assert.equal(index.dispatches[0].outputTokens, 0);
+  assert.equal(index.dispatches[0].outputTokens, 0, '该路没交回结果就不计用量');
+  assert.equal(index.failures.length, 1, '失败作为具名条目记入索引');
+  assert.equal(index.failures[0].label, 'summarise');
   const run = runPaths(workflowPaths(managedRoot), started.runId);
   const journal = fs.readFileSync(run.journalFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.ok(journal.some((l) => l.type === 'failed'), '失败进账');
