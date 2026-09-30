@@ -13,11 +13,10 @@ import { createHash } from 'node:crypto';
  */
 
 export const JOURNAL_KEY_VERSION = 'v2';
-export const KEY_PATTERN = /^v2:[0-9a-f]{64}$/;
 /** args 深度上限：超深按不可序列化处理，绝不让 JSON.stringify 栈溢出。 */
 export const KEYS_MAX_DEPTH = 64;
 /** 不可序列化 args 的固定回退——同一串输入永远得到同一颗种子。 */
-export const NON_SERIALIZABLE_ARGS = 'non-serializable-args';
+const NON_SERIALIZABLE_ARGS = 'non-serializable-args';
 
 function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');

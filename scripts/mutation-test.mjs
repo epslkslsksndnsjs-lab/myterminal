@@ -136,7 +136,9 @@ const mutations = [
   { name: 'WF-21: 未知选项闸移除（形状错静默通过并占键位）', file: 'src/workflows/agent-opts.ts', find: 'if (unknown.length > 0) {', replace: 'if (false) {' },
   { name: 'WF-22: agentCap 检查移除（run 级终结少一臂）', file: 'src/workflows/engine.ts', find: 'if (context.agentCount > this.thresholds.agentCap) {', replace: 'if (false) {' },
   { name: 'WF-23: token 预算软检查移除（超限照常扇出）', file: 'src/workflows/engine.ts', find: 'if (context.spent < cap) return;', replace: 'if (true) return;' },
-  { name: 'WF-24: run 级错误在批内被降成 null（整批该拒不拒）', file: 'src/workflows/fanout.ts', find: 'if (isRunLevelError(entry.reason)) throw entry.reason;', replace: 'if (false) throw entry.reason;', all: true },
+  // 恒假条件会让 TS 丢掉 allSettled 的判别收窄（.reason 直接编译不过）——只被编译器杀没意义；
+  // 换成"认错态：把 run 级当形状错"，编译过、行为错，由测试杀。
+  { name: 'WF-24: run 级错误在批内被降成 null（整批该拒不拒）', file: 'src/workflows/fanout.ts', find: 'if (isRunLevelError(entry.reason)) throw entry.reason;', replace: 'if (entry.reason instanceof AgentCallShapeError) throw entry.reason;', all: true },
   { name: 'WF-25: 失败不具名记入索引（清单静默为空）', file: 'src/workflows/engine.ts', find: '      context.index.failures = [...context.index.failures, entry];\n', replace: '' },
   { name: 'WF-26: 全败判定移除（假完整交付）', file: 'src/workflows/engine.ts', find: 'if (admitted && !succeeded) {', replace: 'if (false) {' },
   { name: 'WF-27: 账本缓冲被绕过（完成序即账本序）', file: 'src/workflows/journal.ts', find: 'this.holding.set(seq, { line, settle: resolve });', replace: 'void this.enqueue(line).then(() => resolve());' },
