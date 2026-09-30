@@ -80,10 +80,15 @@ export function worktreesRootFor(managedRoot: string): string {
   return path.join(managedRoot, 'worktrees');
 }
 
-/** 一路的 worktree 本体路径。id 已过形态闸（runId + 槽位），不在此处再拼模型可控串。 */
-export function worktreePathFor(managedRoot: string, id: string): string {
+/** 一路的 worktree 本体路径。id 先过形态闸——它是拼进路径的字符串，与 runId 同族规矩。 */
+export function worktreePathFor(worktreesRoot: string, id: string): string {
   assertWorktreeId(id);
-  return path.join(worktreesRootFor(managedRoot), id);
+  return path.join(worktreesRoot, id);
+}
+
+/** 候选路径是否落在隔离区内（含区根本身）：分隔符对齐判定，同名前缀的兄弟目录不算。 */
+export function isInsideWorktreesRoot(managedRoot: string, candidate: string): boolean {
+  return isWithinBoundary(path.resolve(candidate), worktreesRootFor(path.resolve(managedRoot)));
 }
 
 const WORKTREE_ID_PATTERN = /^wf_[0-9a-f]+-d\d{4}$/;
@@ -94,11 +99,6 @@ export function assertWorktreeId(value: unknown): string {
     throw new Error(`worktree id must match ${WORKTREE_ID_PATTERN.source}; received: ${String(value)}`);
   }
   return value;
-}
-
-/** 候选路径是否落在隔离区内（含区根本身）：分隔符对齐判定，同 managed 根下的同名前缀不算。 */
-export function isInsideWorktreesRoot(managedRoot: string, candidate: string): boolean {
-  return isWithinBoundary(path.resolve(candidate), worktreesRootFor(path.resolve(managedRoot)));
 }
 
 /** run 目录与其下全部固定件。runId 先过形态闸，防路径穿越。 */

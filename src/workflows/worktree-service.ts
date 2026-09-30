@@ -4,7 +4,8 @@ import path from 'node:path';
 import { statfs } from 'node:fs/promises';
 
 import { ensureDir } from './atomic.js';
-import { isWithinBoundary } from './tool-boundary.js';
+import { isRunId } from './ids.js';
+import { isInsideWorktreesRoot, worktreePathFor } from './paths.js';
 import { WorktreeRegistry, worktreeIdFor, type WorktreeEntry } from './worktree-registry.js';
 import { directoryBytes, evaluateQuota, preservedTotals, type QuotaVerdict } from './worktree-quota.js';
 import {
@@ -21,6 +22,7 @@ import {
   worktreeBranchFor,
   worktreeHasWork,
   type GitRunner,
+  type GitRunResult,
 } from './worktree-git.js';
 
 /**
@@ -132,7 +134,45 @@ export class WorktreeService {
     return this.enqueue(async () => {
       await this.registry.load();
       this.loaded = true;
+      await this.reconcileStale();
     });
+  }
+
+  /**
+   * 死路的隔离件收场（§12"死 agent 的 worktree"这一档）。
+   *
+   * 进程半路死掉时 release() 永远不会跑，条目停在 starting / active：那既不计配额也不上面板，
+   * 于是磁盘上界与"唯一减法 = 人"同时落空——字节在盘上，账上却查无此件。
+   * 判据保守：只动它所属 run 已结算（有 terminal 标记）或 run 目录已不在的条目，在跑的一律不碰；
+   * 收场走与 release 完全同一套谓词与去向（有改动 → 保留待处置，clean → 删）。
+   */
+  private async reconcileStale(): Promise<void> {
+    const runsRoot = path.join(path.dirname(this.worktreesRoot), 'workflows', 'runs');
+    for (const entry of this.registry.entries()) {
+      if (entry.state !== 'starting' && entry.state !== 'active') continue;
+      if (!isRunId(entry.runId)) continue;
+      const runDir = path.join(runsRoot, entry.runId);
+      const abandoned = !fs.existsSync(runDir) || fs.existsSync(path.join(runDir, 'terminal'));
+      if (!abandoned) continue;
+      await this.dispose(entry);
+    }
+    await this.dropStaleTrash();
+  }
+
+  /** fence 位里的残件：登记里已经没有这件的在飞身份，就可以清了。 */
+  private async dropStaleTrash(): Promise<void> {
+    const trash = path.join(this.worktreesRoot, WORKTREE_TRASH_DIR);
+    let names: string[];
+    try {
+      names = await fs.promises.readdir(trash);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const entry = this.registry.entry(name);
+      if (entry && (entry.state === 'starting' || entry.state === 'active')) continue;
+      await fs.promises.rm(path.join(trash, name), { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   /** 串行列入口：任何一步都排在上一步之后（并发创建不互踩登记与目录）。 */
@@ -224,13 +264,13 @@ export class WorktreeService {
     if (!repoRoot) {
       return { ok: false, reason: 'worktree-not-a-repository', message: `The working directory is not a git repository, so isolation: "worktree" cannot be honoured for ${id}.` };
     }
-    if (isWithinBoundary(repoRoot, this.worktreesRoot)) {
+    if (isInsideWorktreesRoot(path.dirname(this.worktreesRoot), repoRoot)) {
       return { ok: false, reason: 'worktree-nested', message: `${repoRoot} is already inside this module's isolation zone; a worktree cannot be created from a worktree.` };
     }
     if (!(await isGitRepository(this.git, repoRoot))) {
       return { ok: false, reason: 'worktree-not-a-repository', message: `git does not report ${repoRoot} as a work tree, so isolation: "worktree" cannot be honoured for ${id}.` };
     }
-    if (await hasUncommittedChanges(this.git, repoRoot)) {
+    if (await hasUncommittedChanges(this.git, repoRoot, this.managedRootOutsideRepo ? undefined : this.managedRootRelToRepo)) {
       return { ok: false, reason: 'worktree-dirty-tree', message: `${repoRoot} has uncommitted changes; a run cannot branch off a dirty tree (commit or stash them first).` };
     }
     const quota = await this.quotaVerdict();
@@ -256,7 +296,21 @@ export class WorktreeService {
   }
 
   private locationFor(id: string): string {
-    return path.join(this.worktreesRoot, id);
+    return worktreePathFor(this.worktreesRoot, id);
+  }
+
+  /** 托管根相对仓库顶层的路径；不在仓库内就不给排除位（无效 pathspec 会让脏检查整体失灵）。 */
+  private get managedRootRelToRepo(): string | undefined {
+    const repoRoot = this.repoRootCache ?? this.repoRootOverride;
+    if (!repoRoot) return undefined;
+    const managedRoot = path.dirname(this.worktreesRoot);
+    const relative = path.relative(repoRoot, managedRoot).split(path.sep).join('/');
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return undefined;
+    return `${relative}/`;
+  }
+
+  private get managedRootOutsideRepo(): boolean {
+    return this.managedRootRelToRepo === undefined;
   }
 
   private async resolveRepoRoot(): Promise<string | null> {
@@ -286,14 +340,18 @@ export class WorktreeService {
     return this.enqueue(async () => {
       await this.ensureLoaded();
       const entry = this.requireEntry(id);
-      const kept = await this.hasWorkInside(entry, options.hasWork);
-      if (kept) return await this.preserve(entry);
-      if (!(await this.fenceAway(entry.path, id))) return await this.preserve(entry);
-      const removed = await removeWorktree(this.git, { repoRoot: await this.requiredRepoRoot(), worktreePath: entry.path, branch: entry.branch, deleteBranch: true });
-      await this.dropFenced(id);
-      await this.registry.setState(id, 'removed', this.clock.iso());
-      return { kept: false, id, path: entry.path, branch: entry.branch, ...(removed.branchPreserved ? { branchPreserved: true } : {}) };
+      return await this.dispose(entry, options.hasWork);
     });
+  }
+
+  /** 一路的收场唯一形状：有改动 → 保留并量字节；clean → fence 走再删。 */
+  private async dispose(entry: WorktreeEntry, override?: boolean | (() => boolean | Promise<boolean>)): Promise<Released> {
+    if (await this.hasWorkInside(entry, override)) return await this.preserve(entry);
+    if (!(await this.fenceAway(entry.path, entry.id))) return await this.preserve(entry);
+    const removed = await removeWorktree(this.git, { repoRoot: await this.requiredRepoRoot(), worktreePath: entry.path, branch: entry.branch, deleteBranch: true });
+    await this.dropFenced(entry.id);
+    await this.registry.setState(entry.id, 'removed', this.clock.iso());
+    return { kept: false, id: entry.id, path: entry.path, branch: entry.branch, ...(removed.branchPreserved ? { branchPreserved: true } : {}) };
   }
 
   private async hasWorkInside(entry: WorktreeEntry, override: boolean | (() => boolean | Promise<boolean>) | undefined): Promise<boolean> {
@@ -332,6 +390,9 @@ export class WorktreeService {
     const trash = path.join(this.worktreesRoot, WORKTREE_TRASH_DIR);
     try {
       await ensureDir(trash);
+      // 目录本就不在（被人先删了、或从没落地）：没什么可 fence 的，直接算过了这一关——
+      // 判成"没过"会把一件不存在的东西标成永久保留，而 discard 之后永远卡在同一处重命名上。
+      if (!fs.existsSync(worktreePath)) return true;
       fs.renameSync(worktreePath, path.join(trash, id));
       return true;
     } catch {
@@ -383,8 +444,10 @@ export class WorktreeService {
 
   /** 配额档位（面板顶部那一行与审计用同一把尺）。 */
   async quotaSummary(): Promise<QuotaVerdict> {
-    await this.ensureLoaded();
-    return await this.quotaVerdict();
+    return this.enqueue(async () => {
+      await this.ensureLoaded();
+      return await this.quotaVerdict();
+    });
   }
 
   /**
@@ -399,6 +462,12 @@ export class WorktreeService {
       const outcomes: { id: string; ok: boolean; message?: string }[] = [];
       for (const entry of this.registry.preserved()) {
         if (Date.parse(entry.at) > cutoff) continue;
+        // 无损承诺优先：bundle 只带得走 commit，未提交的写入打进去也是一场空。
+        // 这类件一律留给人的合并 / 丢弃——"有改动的 worktree 永不自动删"（§12）。
+        if (await worktreeHasWork(this.git, entry.path)) {
+          outcomes.push({ id: entry.id, ok: false, message: 'kept work is not committed; a bundle would carry none of it. Merge or discard it by hand.' });
+          continue;
+        }
         const bundleFile = path.join(this.worktreesRoot, WORKTREE_ARCHIVE_DIR, `${entry.id}.bundle`);
         await ensureDir(path.dirname(bundleFile));
         const repoRoot = await this.requiredRepoRoot();
@@ -454,7 +523,7 @@ async function defaultFreeBytes(at: string): Promise<number> {
 /** 默认 git 执行体：spawn 一条 git，收齐 stdout / stderr 与退出码。 */
 function spawnGit(): GitRunner {
   return async (argv, cwd) =>
-    await new Promise<GitRunnerResult>((resolve) => {
+    await new Promise<GitRunResult>((resolve) => {
       const child = spawn('git', argv, { cwd });
       let stdout = '';
       let stderr = '';
@@ -469,4 +538,4 @@ function spawnGit(): GitRunner {
     });
 }
 
-type GitRunnerResult = { code: number | null; stdout: string; stderr: string };
+

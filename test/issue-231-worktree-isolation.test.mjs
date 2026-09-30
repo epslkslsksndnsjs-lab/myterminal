@@ -650,9 +650,67 @@ test('pin 到未注册目录不会被"看起来像 worktree"蒙住：伪造的 .
   fs.writeFileSync(path.join(impostor, 'looks-normal.txt'), 'x');
   const model = scriptedModel(() => done('x', 1));
   const index = await (await engineFor(temp, { adapterFactory: model.factory, gates: GATES }).engine.start({
-    script: `await agent('impostor', { workingDir: ${JSON.stringify(impostor)}, tools: ['write_file'], label: 'I' });\nreturn 1;`,
+    script: `await agent('impostor', { workingDir: ${JSON.stringify(impostor)}, tools: ['read_file'], label: 'I' });\nreturn 1;`,
     ownerSessionId: 'sess-a',
   })).completion;
   assert.equal(index.dispatches[0].error.reason, 'worktree-not-registered');
   assert.equal(model.count(), 0);
+});
+
+test('pin 只挪读边界，不放开写权限：写面只随模块自己建出来的那件出现（ADR-0052 §11）', { skip: skipOnWin }, async () => {
+  const temp = gitWorkspace();
+  const registered = path.join(temp.workspaceDir, 'borrowed-tree');
+  git(['worktree', 'add', '-b', 'worktree-borrowed', registered, 'HEAD'], temp.workspaceDir);
+  const model = scriptedModel(() => done('read only', 1));
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
+  const index = await (await engine.start({
+    script: `await agent('borrow', { workingDir: ${JSON.stringify(registered)}, label: 'B' });\nreturn 1;`,
+    ownerSessionId: 'sess-a',
+  })).completion;
+  assert.equal(index.dispatches[0].status, 'completed', JSON.stringify(index.failures));
+  assert.equal(model.toolNames(0).includes('write_file'), false, 'pin 那一轮的工具表里没有写工具');
+  assert.equal(model.toolNames(0).includes('execute_cli'), true, '读面照旧');
+  assert.equal(index.dispatches[0].worktree, undefined, '不建件、不登记、不计配额');
+});
+
+test('pin 路上点名要写 = 同样判败 isolation-required（写必隔离不因借树而开口子）', { skip: skipOnWin }, async () => {
+  const temp = gitWorkspace();
+  const registered = path.join(temp.workspaceDir, 'borrowed-for-write');
+  git(['worktree', 'add', '-b', 'worktree-borrow2', registered, 'HEAD'], temp.workspaceDir);
+  const model = scriptedModel(() => done('never', 1));
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
+  const index = await (await engine.start({
+    script: `await agent('borrow to write', { workingDir: ${JSON.stringify(registered)}, tools: ['write_file'], label: 'W' });\nreturn 1;`,
+    ownerSessionId: 'sess-a',
+  })).completion;
+  assert.equal(index.dispatches[0].error.reason, 'isolation-required');
+  assert.equal(model.count(), 0, '零 token');
+});
+
+test('仓库没把托管目录写进 .gitignore 也照样能建件：模块自己的账本不算用户未提交的工作', { skip: skipOnWin }, async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-231-')));
+  TMP.push(root);
+  const workspaceDir = path.join(root, 'workspace');
+  fs.mkdirSync(workspaceDir, { recursive: true });
+  fs.writeFileSync(path.join(workspaceDir, 'keep.txt'), 'original\n');
+  git(['init', '-q', '.'], workspaceDir);
+  git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], workspaceDir);
+  git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'baseline'], workspaceDir);
+  const temp = { workspaceDir, managedRoot: path.join(workspaceDir, '.myterminal'), paths: workflowPaths(path.join(workspaceDir, '.myterminal')) };
+  const model = scriptedModel((request, n) => (n === 1 ? toolUse('w', 'write_file', { path: 'first.txt', content: 'one\n' }) : done('one', 1)));
+  const first = await (await engineFor(temp, { adapterFactory: model.factory, gates: GATES }).engine.start({
+    script: `await agent('a', { isolation: 'worktree', tools: ['write_file'], label: 'A' });\nreturn 1;`,
+    ownerSessionId: 'sess-a',
+  })).completion;
+  assert.equal(first.dispatches[0].status, 'completed', '第一条写路不被脏检查挡住：' + JSON.stringify(first.failures));
+  const second = scriptedModel((request, n) => (n === 1 ? toolUse('w', 'write_file', { path: 'second.txt', content: 'two\n' }) : done('two', 1)));
+  const again = await (await engineFor(temp, { adapterFactory: second.factory, gates: GATES }).engine.start({
+    script: `await agent('b', { isolation: 'worktree', tools: ['write_file'], label: 'B' });\nreturn 1;`,
+    ownerSessionId: 'sess-a',
+  })).completion;
+  assert.equal(again.dispatches[0].status, 'completed', '跑过一轮、托管根里已有账，第二条写路照样能建：' + JSON.stringify(again.failures));
+  // 边界说清楚：§10/§11 的"gitignored"是对托管根布局的约定（本仓库 .gitignore:5 已钉），
+  // 模块不擅自往用户仓库的 .gitignore 里写规则；这里锁的是更强的那条——
+  // 就算用户没 ignore，建件的脏检查也不把我们自己的账本算成他没提交的活。
+  assert.equal(git(['status', '--porcelain'], workspaceDir).trim(), '?? .myterminal/', '没 ignore 时它就是一条未跟踪目录，不是脏改动');
 });

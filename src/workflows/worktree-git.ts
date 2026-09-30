@@ -65,21 +65,6 @@ export async function repoTopLevel(runner: GitRunner, cwd: string): Promise<stri
 }
 
 /**
- * 主 worktree 路径：`git worktree list --porcelain` 的第一条就是主树。
- * 注册表是唯一权威——主树在不在边界内由它说，不由目录包含关系说。
- */
-export async function mainWorktreePath(runner: GitRunner, cwd: string): Promise<string | null> {
-  const result = await run(runner, cwd, ['worktree', 'list', '--porcelain']);
-  if (!succeeded(result)) return null;
-  for (const line of result.stdout.split('\n')) {
-    if (!line.startsWith('worktree ')) continue;
-    const value = line.slice('worktree '.length).trim();
-    if (value) return value;
-  }
-  return null;
-}
-
-/**
  * 该路径是不是一个**已注册**的 linked worktree（pin 的门禁）。
  * 注册表 + 活性探针双检：目录被 rm 后注册记录仍可留（prunable），重建为普通目录会被活性探针拒。
  */
@@ -106,13 +91,17 @@ export async function isRegisteredLinkedWorktree(runner: GitRunner, repoRoot: st
  * 口径：只看未忽略的改动——`--ignored` 一条都不问，managed 根这类被 ignore 的目录不算脏。
  * 检查本身打不出去 / 有 stderr / 有任何条目 → 一律 true（fail-closed：判不准就当脏）。
  */
-export async function hasUncommittedChanges(runner: GitRunner, cwd: string): Promise<boolean> {
-  const result = await run(runner, cwd, ['status', '--porcelain', '--untracked-files=normal']);
+export async function hasUncommittedChanges(runner: GitRunner, cwd: string, exclude?: string): Promise<boolean> {
+  const args = ['status', '--porcelain', '--untracked-files=normal'];
+  // 排除位给"模块自己那棵账本树"用：它不算用户没提交的活，否则一个没写 ignore 的仓库
+  // 会被自己的托管目录判成脏树，从此每一路写都吃 worktree-dirty-tree。
+  if (exclude) args.push('--', '.', `:(exclude)${exclude}`);
+  const result = await run(runner, cwd, args);
   if (result.code !== 0 || result.stderr.trim() !== '') return true;
   return result.stdout.split('\n').some((line) => line.trim() !== '');
 }
 
-/** 可丢弃的构建 / 依赖输出根：命中它们的 ignored 条目不算"有活"（照参考口径，不扩表）。 */
+/** 可丢弃的构建 / 依赖输出根：命中它们的 ignored 条目不算"有活"，表不往外扩。 */
 export const DISPOSABLE_IGNORED_ROOTS: readonly string[] = ['node_modules', 'dist', 'coverage'];
 
 /**

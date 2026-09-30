@@ -328,8 +328,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
                 : tab === 4 ? <DiffScreen snapshot={diff} theme={theme} />
                   : tab === 5 ? <Extensions state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
                     : tab === 6 ? <Settings runtime={runtime} theme={theme} reveal={revealCredentials} update={update} />
+                      : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
                         : tab === 9 ? <Worktrees rows={worktreeRows} quota={worktreeQuota} selected={activeSelection} theme={theme} onSelect={selectItem} />
-                          : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
                         : <Logs runtime={runtime} logs={logs} theme={theme} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
   const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;

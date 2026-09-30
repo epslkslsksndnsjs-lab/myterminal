@@ -609,14 +609,15 @@ export class WorkflowEngine {
     // 形状错在这一刻就拒：不占键位、不计数、不进失败清单。
     const gated = gateAgentOpts(rawOpts);
 
-    // 这一路的边界从哪来，决定它能不能写：声明隔离 = 新建一件；pin 到已注册 worktree = 借那件；
-    // 两者皆无 = 跑在共享工作区里，工具面按只读执法（ADR-0052 §11 写必隔离）。
+    // 写面只随"模块自己建出来并负责收场的那件"开放（ADR-0052 §11：写工具只发给
+    // isolation:'worktree' 的 dispatch）。workingDir 的 pin 只挪读边界，不给写权限——
+    // 那棵树不归本模块创建、收场、回报与计配额，两路 pin 同一目录就会互踩，正是 §11 要防的形状。
     const boundary = dispatchBoundary(gated);
-    const gatedMode: ToolMode = boundary ? 'worktree' : 'read-only';
+    const gatedMode: ToolMode = boundary === 'worktree' ? 'worktree' : 'read-only';
     // 请求写而不标隔离排在工具面之前：这一路判败（记入索引、零 token、run 继续），不是形状错——
     // 脚本没写错到不可执行，是它要的能力这一路没有。面按写模式解析只为让请求的写工具不被
     // 认成"面上没有"而抛出去；解析结果不会派发任何东西。
-    const unisolatedWrite = boundary === undefined && requestedWriteToolNames(gated.tools).length > 0;
+    const unisolatedWrite = boundary !== 'worktree' && requestedWriteToolNames(gated.tools).length > 0;
     const face = resolveToolFace({
       mode: unisolatedWrite ? 'worktree' : gatedMode,
       tools: gated.tools,
@@ -725,7 +726,8 @@ export class WorkflowEngine {
         // 有改动的件在这里定性：保留就把 path + branch 报出去，clean 才自动删。
         if (opened.managedId) kept = await this.worktrees().release(opened.managedId).catch(() => undefined);
       }
-      return await this.settlePath(context, record, this.withWorktreeNote(record, outcome, kept));
+      if (kept) record.worktree = { path: kept.path, branch: kept.branch, preserved: kept.kept, ...(kept.branchPreserved ? { branchPreserved: true } : {}) };
+      return await this.settlePath(context, record, this.reportWorktree(outcome, kept));
     });
   }
 
@@ -826,14 +828,12 @@ export class WorkflowEngine {
   }
 
   /**
-   * 有改动保留时把 path + branch 报出去：机器件逐字段记（索引与该路文件都读得到），
-   * 文本结果再补一行让脚本与汇总体看得见。schema 模式的对象一个字节都不动——
-   * 往结构化结果里塞宿主侧的尾巴会造出第二个真相源。
+   * 文本结果补一行保留回报，让人在脚本侧与索引里看见同一句话。
+   * schema 模式的对象一个字节都不动——往结构化结果里塞宿主侧的尾巴会造出第二个真相源。
+   * （边界账本身由调用方逐字段记进该路记录。）
    */
-  private withWorktreeNote(record: DispatchRecord, outcome: SettledOutcome, kept?: Released): SettledOutcome {
-    if (!kept) return outcome;
-    record.worktree = { path: kept.path, branch: kept.branch, preserved: kept.kept, ...(kept.branchPreserved ? { branchPreserved: true } : {}) };
-    if (!kept.kept || !outcome.ok || typeof outcome.value !== 'string') return outcome;
+  private reportWorktree(outcome: SettledOutcome, kept?: Released): SettledOutcome {
+    if (!kept || !kept.kept || !outcome.ok || typeof outcome.value !== 'string') return outcome;
     return { ...outcome, value: `${outcome.value}\n[worktree preserved: ${kept.path} (branch ${kept.branch})]` };
   }
 
@@ -942,6 +942,7 @@ export class WorkflowEngine {
   /** 配额档位：面板那一行告警与审计事件出自同一次判定。 */
   async worktreeQuota() {
     const service = this.worktrees();
+    await service.refresh();
     return await service.quotaSummary();
   }
 

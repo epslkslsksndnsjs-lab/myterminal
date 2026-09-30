@@ -33,7 +33,6 @@ import {
   checkGitAvailable,
   isGitRepository,
   repoTopLevel,
-  mainWorktreePath,
   hasUncommittedChanges,
   addWorktree,
   worktreeHasWork,
@@ -424,8 +423,6 @@ describe('worktree-git：命令面与失败口径', () => {
   test('top-level 与 main worktree 解析：取 git 给的路径，取不到即 null', async () => {
     const probe = recorder({ code: 0, stdout: '/repo/main\n', stderr: '' });
     assert.equal(await repoTopLevel(probe.runner, '/repo/sub'), '/repo/main');
-    const list = recorder({ code: 0, stdout: 'worktree /repo/main\nHEAD abc\nworktree /repo/.myterminal/worktrees/w1\nHEAD def\n', stderr: '' });
-    assert.equal(await mainWorktreePath(list.runner, '/repo'), '/repo/main');
     assert.equal(await repoTopLevel(async () => ({ code: 128, stdout: '', stderr: 'not a git repository' }), '/x'), null);
   });
 
@@ -455,9 +452,10 @@ describe('worktree 登记簿（机器件：additive、版本化、单写者）',
   test('worktreesRoot 在库内 managed 根下，与 workflows/ 并列', () => {
     const root = dir();
     assert.equal(worktreesRootFor(root), path.join(root, 'worktrees'));
-    assert.equal(worktreePathFor(root, 'wf_0123456789abcdef-d0001'), path.join(root, 'worktrees', 'wf_0123456789abcdef-d0001'));
-    assert.throws(() => worktreePathFor(root, '../../escape'), /worktree id/);
-    assert.throws(() => worktreePathFor(root, 'agent-ab12cd34'), /worktree id/);
+    const zone = worktreesRootFor(root);
+    assert.equal(worktreePathFor(zone, 'wf_0123456789abcdef-d0001'), path.join(zone, 'wf_0123456789abcdef-d0001'));
+    assert.throws(() => worktreePathFor(zone, '../../escape'), /worktree id/);
+    assert.throws(() => worktreePathFor(zone, 'agent-ab12cd34'), /worktree id/);
     assert.equal(isInsideWorktreesRoot(root, path.join(root, 'worktrees', 'x')), true);
     assert.equal(isInsideWorktreesRoot(root, path.join(root, 'workflows')), false);
     assert.equal(isInsideWorktreesRoot(root, path.join(root, 'worktrees-evil')), false, '字符串前缀相同不算界内');
@@ -618,7 +616,12 @@ describe('WorktreeService：竞态纪律与保留判定', () => {
       if (argv.includes('--is-inside-work-tree')) return { code: 0, stdout: 'true\n', stderr: '' };
       if (argv.includes('--show-toplevel')) return { code: 0, stdout: `${options.repoRoot ?? '/repo'}\n`, stderr: '' };
       if (argv.includes('version')) return { code: 0, stdout: 'git version 2.50.1\n', stderr: '' };
-      if (argv.includes('status')) return { code: 0, stdout: options.dirty ? ' M file\n' : '', stderr: options.stderr ?? '' };
+      // 仓库顶层的脏与某一棵 worktree 里的脏是两件事：fake 按 cwd 分别回答。
+      if (argv.includes('status')) {
+        const insideWorktree = [...worktrees.keys()].includes(cwd);
+        const shows = insideWorktree ? (options.workDirty ?? options.dirty) : options.dirty;
+        return { code: 0, stdout: shows ? ' M file\n' : '', stderr: options.stderr ?? '' };
+      }
       if (argv.includes('rev-list')) return { code: 0, stdout: `${options.ahead ?? 0}\n`, stderr: '' };
       if (argv.includes('add')) {
         // argv 形态：<no-gc flags> worktree add -b <branch> <path> <ref>
@@ -912,8 +915,81 @@ describe('WorktreeService：竞态纪律与保留判定', () => {
     assert.equal(typeof rows[0].bytes, 'number');
   });
 
+  test('被人先删掉的件不变成幽灵：release 与 discard 都能把它收尾', async () => {
+    const probe = service();
+    const made = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'x' });
+    await probe.svc.release(made.id, { hasWork: true });
+    fs.rmSync(made.path, { recursive: true, force: true });
+    // 目录已经不在了：再判一次"有没有活"仍然是保留 → 但释放路径要认"没东西可 fence 也算过了这关"。
+    const again = await probe.svc.release(made.id);
+    assert.equal(again.kept, false, '一件不存在的 worktree 不该永远挂在保留项里');
+    assert.equal(probe.svc.registry.entry(made.id).state, 'removed');
+    assert.equal(probe.svc.preserved().length, 0, '配额与面板都被这条清了');
+  });
+
+  test('配额被永久堵死的那条路已封：discard 对已消失的件也能留痕删账', async () => {
+    const probe = service();
+    const made = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'x' });
+    await probe.svc.release(made.id, { hasWork: true });
+    fs.rmSync(made.path, { recursive: true, force: true });
+    const discarded = await probe.svc.discard(made.id, 'session-root');
+    assert.equal(discarded.ok, true, JSON.stringify(discarded));
+    assert.equal(probe.svc.preserved().length, 0);
+    assert.equal(probe.audit.filter((event) => event.result === 'discarded').length, 1);
+  });
+
+  test('归档不碰未提交的写入：bundle 带不走它，就一句"交给人"', async () => {
+    const probe = service({ workDirty: true });
+    const made = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'x' });
+    await probe.svc.release(made.id, { hasWork: true });
+    await probe.svc.registry.shiftAge(made.id, 40 * DAY_MS);
+    // 默认这条件的"有活"来自未提交写入（status 报 M）→ 不许归档，必须留着等人。
+    const outcomes = await probe.svc.archiveDue({ autoArchive: true, archiveAfterDays: 30 });
+    assert.equal(outcomes.length, 1);
+    assert.equal(outcomes[0].ok, false);
+    assert.match(outcomes[0].message, /not committed/);
+    assert.equal(fs.existsSync(made.path), true, '未提交的工作一根手指都不碰');
+    assert.equal(probe.svc.registry.entry(made.id).state, 'preserved');
+  });
+
+  test('进程半路死的件有人收：所属 run 已结算即按同一谓词定性，不再隐身', async () => {
+    const root = dir();
+    const probe = service({ root });
+    const made = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'orphan' });
+    assert.equal(probe.svc.registry.entry(made.id).state, 'active');
+    // 进程死了 → release() 再也不会跑。判据两条：run 已结算（有 terminal 标记）/ run 目录已不在。
+    const runsRoot = path.join(worktreesRootFor(probe.root), '..', 'workflows', 'runs');
+    const runDir = path.join(runsRoot, 'wf_0123456789abcdef');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'terminal'), '{}');
+    await probe.svc.refresh();
+    const settled = probe.svc.registry.entry(made.id);
+    assert.notEqual(settled.state, 'active', '孤儿件不能停在 active');
+    assert.equal(probe.svc.preserved().length, 0, '没收改动的那一件被清掉了');
+
+    // 第二条臂：run 目录整个不见（更早的崩溃），同样要收。
+    const second = await probe.svc.provision({ runId: 'wf_fedcba9876543210', dispatchId: 'd0001', label: 'orphan2' });
+    fs.rmSync(path.join(runsRoot, 'wf_fedcba9876543210'), { recursive: true, force: true });
+    await probe.svc.refresh();
+    assert.notEqual(probe.svc.registry.entry(second.id).state, 'active', 'run 目录已不在的孤儿件也要收');
+  });
+
+  test('脏检查不把模块自己的账本算成用户未提交的工作', async () => {
+    const probe = service();
+    const dirty = await hasUncommittedChanges(async (argv) => (argv.join(' ').includes(':(exclude)')
+      ? { code: 0, stdout: '', stderr: '' }
+      : { code: 0, stdout: '?? .myterminal/\n', stderr: '' }), '/repo', '.myterminal/');
+    assert.equal(dirty, false, '排除位给进去之后，托管目录不再连坐成脏树');
+    const stillDirty = await hasUncommittedChanges(async () => ({ code: 0, stdout: '?? .myterminal/\n M src/a.ts\n', stderr: '' }), '/repo', '.myterminal/');
+    assert.equal(stillDirty, true, '真改动照样算脏');
+    const none = await hasUncommittedChanges(async () => ({ code: 0, stdout: '', stderr: '' }), '/repo');
+    assert.equal(none, false);
+  });
+
   test('面板轮询与在飞创建不互踩：refresh 排在串行列里，账目不会被动荡', async () => {
     const probe = service();
+    // 在飞的 run 目录摆在那儿、没有终态标记——收尸的判据必须认它"还在跑"。
+    fs.mkdirSync(path.join(worktreesRootFor(probe.root), '..', 'workflows', 'runs', 'wf_0123456789abcdef'), { recursive: true });
     const first = await probe.svc.provision({ runId: 'wf_0123456789abcdef', dispatchId: 'd0001', label: 'a' });
     await probe.svc.release(first.id, { hasWork: true });
     await Promise.all([
@@ -925,6 +1001,9 @@ describe('WorktreeService：竞态纪律与保留判定', () => {
     ]);
     assert.equal(probe.svc.registry.entries().length, 3, '内存账齐');
     assert.equal(probe.svc.preserved().length, 1, '保留项没被重读冲掉');
+    // 收尸只碰"所属 run 已经结算或已不在"的件；还活着的一律不动。
+    assert.equal(probe.svc.registry.entry('wf_0123456789abcdef-d0002')?.state, 'active', '在跑的那一件不许被收');
+    assert.equal(probe.svc.registry.entry('wf_0123456789abcdef-d0003')?.state, 'active');
     const reopened = new WorktreeRegistry({ file: probe.serviceOptions.registryFile });
     await reopened.load();
     assert.equal(reopened.entries().length, 3, '盘面账与内存账一致');

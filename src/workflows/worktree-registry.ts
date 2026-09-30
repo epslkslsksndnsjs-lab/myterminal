@@ -72,20 +72,20 @@ export class WorktreeRegistry {
       }
     }
     this.loaded = true;
-    return { schemaVersion, entries: this.entriesInOrder() };
+    return { schemaVersion, entries: this.itemsInOrder() };
   }
 
   private ensureLoaded(): void {
     if (!this.loaded) throw new Error('The worktree registry must be loaded before it is read or written.');
   }
 
-  entriesInOrder(): WorktreeEntry[] {
+  private itemsInOrder(): WorktreeEntry[] {
     return [...this.items.values()].sort((a, b) => (a.at === b.at ? a.id.localeCompare(b.id) : a.at.localeCompare(b.at)));
   }
 
   entries(): WorktreeEntry[] {
     this.ensureLoaded();
-    return this.entriesInOrder();
+    return this.itemsInOrder();
   }
 
   entry(id: string): WorktreeEntry | undefined {
@@ -141,11 +141,11 @@ export class WorktreeRegistry {
 
   /** 保留项 = 有改动未处置，配额与面板都只吃这一档。 */
   preserved(): WorktreeEntry[] {
-    return this.entriesInOrder().filter((entry) => entry.state === 'preserved');
+    return this.itemsInOrder().filter((entry) => entry.state === 'preserved');
   }
 
   private flush(): Promise<void> {
-    const snapshot = { entries: this.entriesInOrder() };
+    const snapshot = { entries: this.itemsInOrder() };
     this.writes = this.writes.then(() => writeJsonAtomic(this.file, withSchemaVersion(snapshot))).catch(() => undefined);
     return this.writes;
   }
