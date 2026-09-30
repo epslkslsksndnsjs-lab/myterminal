@@ -1134,5 +1134,38 @@
       ],
       "additionalProperties": false
     }
+  },
+  "workflow_start": {
+    "title": "Start workflow",
+    "description": "Start a multi-agent workflow run from a script — only when the user explicitly asks for one; never start a run on your own initiative. Pass script (inline; it is saved to disk so the same scriptPath can be reused) or scriptPath; add resumeFromRunId together with scriptPath to continue a previous run. Returns { runId, status, scriptPath } immediately: the run continues locally in the background after this conversation ends, so start a reducer subagent right after and read the run index for the full account.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000
+        },
+        "scriptPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resumeFromRunId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
   }
 }

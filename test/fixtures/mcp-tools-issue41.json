@@ -2641,5 +2641,69 @@
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
     }
+  },
+  "workflow_start": {
+    "title": "Start Workflow",
+    "description": "Start a multi-agent workflow run from a script. Asynchronous: returns a runId immediately and runs locally in the background. Start a reducer subagent right after; poll the reducer for the final summary — long runs do not depend on this conversation staying open.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false
+    },
+    "_meta": {
+      "openai/toolInvocation/invoking": "Running Start Workflow…",
+      "openai/toolInvocation/invoked": "Start Workflow ready"
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000
+        },
+        "scriptPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resumeFromRunId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sessionToken": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "sessionId",
+                "sessionToken"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
   }
 }
