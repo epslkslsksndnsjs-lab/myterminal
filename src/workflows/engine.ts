@@ -28,6 +28,7 @@ import {
   type SettledFailure,
 } from './failures.js';
 import { AGENT_SYSTEM_PROMPT, type AdapterFactory } from './adapter.js';
+import { resolveStallMs, runStallResilient } from './stall.js';
 
 /**
  * run 生命周期：建 run → 脚本在窗口里 fan-out（每路一个独立 adapter 实例）→ 结算。
@@ -477,16 +478,34 @@ export class WorkflowEngine {
       }
       // 每路独立实例：缓存断点是实例态，共享实例会让一路撞到的 4xx 关掉全部并发路的断点。
       const adapter = factory({ runId: context.runId, dispatchId: record.id });
+      const stallMs = resolveStallMs(gated.stallMs, this.gates.stallMs);
+      // 重试次数随每次尝试起跑即时落到 record（成功或耗尽判败都进该路终态记账）。
+      const reportAttempt = (n: number): void => { record.attempts = n; };
       let result;
       try {
-        result = await adapter.complete({
-          system: AGENT_SYSTEM_PROMPT,
-          prompt,
-          maxTokens: DEFAULT_OUTPUT_TOKENS,
-          ...(gated.model ? { model: gated.model } : {}),
-          signal: context.controller.signal,
-        });
+        // dispatch 层：无进展 → 换控制器重试（≤3）；非 stall 失败不重试，直接抛回归类。
+        const outcome = await runStallResilient(
+          {
+            clock: this.clock,
+            stallMs,
+            dispatchWindowMs: this.gates.dispatchWindowMs,
+            dispatchTurns: this.gates.dispatchTurns,
+            parentSignal: context.controller.signal,
+            label: record.label,
+            onAttempt: reportAttempt,
+          },
+          (signal, progress) => adapter.complete({
+            system: AGENT_SYSTEM_PROMPT,
+            prompt,
+            maxTokens: DEFAULT_OUTPUT_TOKENS,
+            ...(gated.model ? { model: gated.model } : {}),
+            signal,
+            progress,
+          }),
+        );
+        result = outcome.value;
       } catch (error) {
+        // run 级终结打断在飞的等待：那不是这一路自己失败，绝不许在批里被降成 null。
         if (isRunLevelError(error)) throw error;
         return await this.settlePath(context, record, { ok: false, failure: classifyAdapterError(error) });
       }

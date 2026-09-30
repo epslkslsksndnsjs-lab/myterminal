@@ -1,11 +1,17 @@
 import { createAdapter, type LlmAdapter } from '../subagent/llm-adapter.js';
 import type { SubagentSettings } from '../types.js';
+import { systemClock, type Clock } from './clock.js';
+import { withTransientRetry } from './llm-retry.js';
+import type { StallProgress } from './stall.js';
 
 /**
  * 每路 agent 的模型通道——只继承既有 LlmAdapter，端点三元组与会话侧同源单配。
  *
  * 每路必须新建独立 adapter 实例：缓存断点是实例态，共享实例会让一路撞到的
  * 限流把其余并发路的缓存断点一起关掉。工厂签名即这条纪律的落点。
+ *
+ * 两层重试各归各位：这里挂的是 LLM 传输层的瞬态重试（withTransientRetry，backoff
+ * 上界 < stall 窗）；路级 stall 看门狗与重试在引擎的 dispatch 层，彼此独立。
  */
 
 export type WorkflowAgentRequest = {
@@ -14,6 +20,8 @@ export type WorkflowAgentRequest = {
   maxTokens: number;
   model?: string;
   signal: AbortSignal;
+  /** 引擎注入的进展通道：一次传输往返记一轮（重置无进展计时、计入轮数预算）。可缺省。 */
+  progress?: StallProgress;
 };
 
 export type WorkflowAgentResult = {
@@ -38,26 +46,33 @@ export const AGENT_SYSTEM_PROMPT = [
   'You work in isolation: another agent may be running the same task in a separate directory at the same time.',
 ].join(' ');
 
-export function llmBackedFactory(settings: SubagentSettings, make?: () => LlmAdapter): AdapterFactory {
-  return () => ({
-    complete: async (request) => {
-      // 测试注入缝：make 缺省走真实端点适配器（与会话侧同源）。
-      const adapter = make ? make() : createAdapter(settings);
-      const { message, usage } = await adapter.create(
-        {
-          model: request.model ?? settings.model,
-          system: request.system,
-          messages: [{ role: 'user', content: [{ type: 'text', text: request.prompt }] }],
-          tools: [],
-          maxTokens: request.maxTokens > 0 ? request.maxTokens : settings.maxOutput ?? 32_000,
-        },
-        request.signal,
-      );
-      const text = message.content
-        .map((block) => (block.type === 'text' ? block.text : ''))
-        .join('')
-        .trim();
-      return { text, outputTokens: usage.output_tokens ?? 0 };
-    },
-  });
+export function llmBackedFactory(settings: SubagentSettings, make?: () => LlmAdapter, clock?: Clock): AdapterFactory {
+  const transportClock = clock ?? systemClock();
+  return () => {
+    const base: WorkflowAgentAdapter = {
+      complete: async (request) => {
+        // 一次传输往返 = 一轮进展：重置 stall 计时、计入 dispatch 轮数预算。
+        request.progress?.round();
+        // 测试注入缝：make 缺省走真实端点适配器（与会话侧同源）。
+        const adapter = make ? make() : createAdapter(settings);
+        const { message, usage } = await adapter.create(
+          {
+            model: request.model ?? settings.model,
+            system: request.system,
+            messages: [{ role: 'user', content: [{ type: 'text', text: request.prompt }] }],
+            tools: [],
+            maxTokens: request.maxTokens > 0 ? request.maxTokens : settings.maxOutput ?? 32_000,
+          },
+          request.signal,
+        );
+        const text = message.content
+          .map((block) => (block.type === 'text' ? block.text : ''))
+          .join('')
+          .trim();
+        return { text, outputTokens: usage.output_tokens ?? 0 };
+      },
+    };
+    // 传输层瞬态重试（模块自持，不复用 subagent 策略）——对 dispatch 透明。
+    return withTransientRetry(base, { clock: transportClock });
+  };
 }

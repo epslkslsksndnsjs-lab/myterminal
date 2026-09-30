@@ -197,6 +197,16 @@ const mutations = [
   // 换成"校验做了、错误不上报"——编译过、行为错，由 AC3 的端点与 typo 断言杀。
   { name: 'WF-64: 设置节校验错误不上报（端点与 typo 静默放行）', file: 'src/config.ts', tests: 'test/issue-226-*.test.mjs', find: 'if (normalized.errors.length) {', replace: 'if (false) {' },
   { name: 'WF-65: TUI 字段清单与登记表断链（新键在设置屏查无此文）', file: 'src/tui/controller-logic.ts', tests: 'test/issue-226-*.test.mjs', find: 'export const WORKFLOW_SETTING_FIELDS: string[] = WORKFLOW_SETTING_KEYS.map((key) => key.field);', replace: "export const WORKFLOW_SETTING_FIELDS: string[] = ['wf-token-cap'];" },
+
+  // ── src/workflows/ (7) — #227 T4 · stall 看门狗与两层重试：无进展重试 / 取消优先 / backoff 上界 / 非 stall 不重试 ──
+  // 每条对应票面一条钉死语义（§18），由本票的 stall/llm-retry 单元或引擎测试逐条杀。
+  { name: 'WF-69: stall 耗尽前从不重试（180s 无进展应换控制器重试）', file: 'src/workflows/stall.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: 'if (attempt < MAX_STALL_ATTEMPTS) continue;', replace: '' },
+  { name: 'WF-70: 取消被当普通错重试（父信号须先判、永不重试）', file: 'src/workflows/stall.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: 'if (deps.parentSignal.aborted) {', replace: 'if (disposed) {' },
+  { name: 'WF-73: dispatch 窗口到期被当无进展（应判 timeout 不重试）', file: 'src/workflows/stall.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: "() => fire('timeout'), deps.dispatchWindowMs", replace: "() => fire('stalled'), deps.dispatchWindowMs" },
+  { name: 'WF-74: 轮数预算检查移除（越 dispatchTurns 应判 max_turns）', file: 'src/workflows/stall.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: 'if (rounds > deps.dispatchTurns) {', replace: 'if (false) {' },
+  { name: 'WF-71: 瞬态 backoff 上界越过 stall 窗（会被看门狗误判无进展）', file: 'src/workflows/llm-retry.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: '[2_000, 5_000, 10_000, 20_000, 30_000]', replace: '[2_000, 5_000, 10_000, 20_000, 30_000, 400_000]' },
+  { name: 'WF-72: 鉴权错误被当瞬态重试（auth 不是可恢复的瞬时错）', file: 'src/workflows/llm-retry.ts', tests: 'test/issue-227-stall-retry-units.test.mjs', find: "['rate_limit', 'server_overload', 'connection']", replace: "['rate_limit', 'server_overload', 'connection', 'auth']" },
+  { name: 'WF-77: 重试次数不进该路终态记账（审计看不到试了几次）', file: 'src/workflows/engine.ts', tests: 'test/issue-227-stall-retry.test.mjs', find: 'const reportAttempt = (n: number): void => { record.attempts = n; };', replace: 'const reportAttempt = (n: number): void => { void n; };' },
 ];
 
 let killedByTest = 0;
@@ -215,7 +225,7 @@ const TEST_GLOB = 'test/*.test.mjs';
  *     自动回退到本票 workflows 测试（issue-224/225），其余回退全量。
  * 不做"全局排除 e2e"——cluster/mcp 类变异的杀手测试恰是集成测试，排掉会漏杀。
  */
-const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs';
+const WORKFLOW_TESTS = 'test/issue-224-*.test.mjs test/issue-225-*.test.mjs test/issue-226-*.test.mjs test/issue-227-*.test.mjs';
 const TEST_FILES = process.env.ONLY_TESTS || TEST_GLOB;
 
 // 中断恢复（#145 REJECT 修正点②）：跟踪当前已写入的突变体，收到 SIGINT/SIGTERM 先还原再退出，
