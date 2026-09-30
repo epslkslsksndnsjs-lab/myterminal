@@ -57,7 +57,7 @@ test('A) IMPORTANT-3: childIdentity 缺失时 catch 仍须置 status=failed（�
   setRunnerDepsForTesting(deps);
   const runner = createSubagentRunner(deps);
 
-  const result = runner.start('ses_parent_90a', { objective: 'do it' }, undefined);
+  const result = await runner.start('ses_parent_90a', { objective: 'do it' }, undefined);
   const becameFailed = await waitForStatus(result.taskId, 'failed');
 
   const record = getSubagent(result.taskId);
@@ -80,7 +80,7 @@ test('B) CRITICAL-2: success 路径 finalize 内 checkpoint 失败不得把 comp
   setRunnerDepsForTesting(deps);
   const runner = createSubagentRunner(deps);
 
-  const result = runner.start('ses_parent_90b', { objective: 'do it' }, undefined);
+  const result = await runner.start('ses_parent_90b', { objective: 'do it' }, undefined);
   const stayedCompleted = await waitForStatus(result.taskId, 'completed');
 
   const record = getSubagent(result.taskId);
@@ -106,7 +106,7 @@ test('C) CRITICAL-1: failure 路径 checkpoint 失败必须静默，不得触发
   setRunnerDepsForTesting(deps);
   const runner = createSubagentRunner(deps);
 
-  const result = runner.start('ses_parent_90c', { objective: 'do it' }, undefined);
+  const result = await runner.start('ses_parent_90c', { objective: 'do it' }, undefined);
   await waitForStatus(result.taskId, 'failed');
 
   // 等一拍，让后台 promise 真正 settle
@@ -128,7 +128,7 @@ test('D) 基线: childIdentity 存在时 status=failed + checkpoint(cancelled) +
   setRunnerDepsForTesting(deps);
   const runner = createSubagentRunner(deps);
 
-  const result = runner.start('ses_parent_90d', { objective: 'do it' }, undefined);
+  const result = await runner.start('ses_parent_90d', { objective: 'do it' }, undefined);
   const becameFailed = await waitForStatus(result.taskId, 'failed');
 
   const record = getSubagent(result.taskId);

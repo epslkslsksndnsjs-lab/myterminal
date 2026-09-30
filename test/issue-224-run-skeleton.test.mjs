@@ -105,7 +105,7 @@ function engineFor(workspaceDir, managedRoot, extra = {}) {
     audit: (entry) => auditLog.push(entry),
     adapterFactory: extra.adapterFactory,
     gates: extra.gates,
-    ...(extra.notifier ? { notifier: extra.notifier } : {}),
+    ...(extra.deliverNotice ? { deliverNotice: extra.deliverNotice } : {}),
   });
 }
 

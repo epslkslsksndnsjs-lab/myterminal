@@ -15,7 +15,7 @@ import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
 import { IGNORE_DIRECTORIES, walkFiles } from './utils/fs.js';
 import { getWorkflowEngine } from './workflows/runtime.js';
-import { mapStartError, validateStartArgs } from './workflows/start.js';
+import { mapStartError, validateReduce, validateStartArgs } from './workflows/start.js';
 
 // Bounded wall-clock budget for search_text. The regex-safety gate (see
 // validateSafeRegex) blocks the catastrophic-backtracking class; this is a
@@ -656,7 +656,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const runner = getSubagentRunner();
       try {
         // 决策 15：objective 加 skill 前缀；决策 6：forkOptions 覆盖默认配置；决策 14：origin 传入
-        const started = runner.start(session.id, {
+        const started = await runner.start(session.id, {
           objective: `执行技能 "${name}" 的指令：\n\n${record.content}`,
           background: record.description,
           ...record.forkOptions,
@@ -695,12 +695,47 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       }
       const session = actor(context);
       const runner = getSubagentRunner();
+
+      /** 会话延续链（含自身）：换控制者不改"run 是谁的"，但换了 sessionId 就要靠它认亲。 */
+      function ownershipChain(sessionId: string): string[] {
+        const ids: string[] = [];
+        let current: string | undefined = sessionId;
+        while (current && ids.length < 32) {
+          if (ids.includes(current)) break;
+          ids.push(current);
+          try {
+            current = store.session(current).continuesSessionId ?? undefined;
+          } catch {
+            current = undefined;
+          }
+        }
+        return ids;
+      }
+
+      // ADR-0052 §8 I9：reduce 在工具层先校验（形状 / 归属 / 根本没有的旋钮），
+      // 拒在起 subagent 之前——归属判据是 §3④：ownerSessionId 相等或其延续链包含它。
+      async function checkReduce(args: JsonObject, sessionId: string): Promise<{ runId: string; digestPath: string } | undefined> {
+        if (args.reduce === undefined) return undefined;
+        const engine = getWorkflowEngine();
+        if (!engine) {
+          throw new MyTerminalError('NOT_FOUND', 'No workflow run can be reduced here: the workflows module is not wired (baseUrl / apiKey / model must be configured).', { reason: 'workflow-not-wired' } as JsonObject);
+        }
+        const check = await validateReduce(engine, { reduce: args.reduce, timeoutSec: args.timeoutSec }, ownershipChain(sessionId));
+        if (!check.present) return undefined;
+        if (!check.ok) {
+          throw new MyTerminalError(check.code === 'VALIDATION' ? 'EXTENSION_ERROR' : check.code, check.message, { reason: check.reason } as JsonObject);
+        }
+        return { runId: check.runId, digestPath: check.paths.digest };
+      }
+
+      const reduce = await checkReduce(input, session.id);
       // D3：外部契约只留 objective + 三覆盖；内部四字段由 skills fork 等内部路径直供（SubagentStartInput 保留可选）
-      return runner.start(session.id, {
+      return await runner.start(session.id, {
         objective: asString(input.objective, 'objective'),
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
         readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,
+        ...(reduce ? { reduce } : {}),
       }) as unknown as JsonObject;
     },
   });

@@ -186,9 +186,9 @@ test.skipIf(skipOnWin)('AC5c 非 sleep 命令超时转后台（echo 首命令可
   assert.ok(result.stdout.includes('fast'));
 });
 
-test.skipIf(skipOnWin)('AC6 无 cli_output 新增：8 工具不变 + schema 契约', async () => {
+test.skipIf(skipOnWin)('AC6 无 cli_output 新增：工具表只随票涨（ADR-0052 §8 后为 9）+ schema 契约', async () => {
   const schemas = getAllToolSchemas();
-  assert.strictEqual(schemas.length, 8, '8 工具不变');
+  assert.strictEqual(schemas.length, 9, '8 + wait_for_path（ADR-0052 §8）');
   assert.ok(!schemas.some((s) => s.name === 'cli_output'), '无 cli_output 新增');
 
   const exec = schemas.find((s) => s.name === 'execute_cli');

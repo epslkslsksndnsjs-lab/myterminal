@@ -52,7 +52,7 @@ async function until(condition, what, timeoutMs = 15_000) {
 async function settleAndCapture(temp, point) {
   const notices = [];
   const started = await settleInto(temp, {
-    notifier: () => notices.push('notice'),
+    deliverNotice: () => { notices.push('notice'); return true; },
     ...(point === undefined ? {} : { crash: (p) => { if (p === point) throw new Error(`simulated death at ${p}`); } }),
   });
   let rejected = null;
@@ -137,7 +137,7 @@ test('钩子不抛不杀就等于没注入：终态与产物照常', async () =>
   const notices = [];
   const started = await settleInto(temp, {
     crash: () => { /* 观察型钩子：记一下就走 */ },
-    notifier: () => notices.push('notice'),
+    deliverNotice: () => { notices.push('notice'); return true; },
   });
   const index = await started.completion;
   assert.equal(index.status, 'completed', '钩子不能顺手把 run 判坏');

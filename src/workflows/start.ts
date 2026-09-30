@@ -1,5 +1,5 @@
-import { isRunId } from './ids.js';
-import { WorkflowStartError } from './engine.js';
+import { isRunId, RUN_ID_PATTERN } from './ids.js';
+import { WorkflowStartError, type WorkflowEngine } from './engine.js';
 import type { MyTerminalStore } from '../store.js';
 import type { JsonObject, ToolAuditEvent, ToolAuditStatus } from '../types.js';
 import type { WorkflowAuditEntry } from './engine.js';
@@ -59,6 +59,49 @@ export function validateStartArgs(input: StartArgs): StartValidation {
     return { ok: false, code: 'VALIDATION', reason: 'args-not-object', message: 'args must be an object when provided.' };
   }
   return { ok: true, form: hasResume ? 'resume' : hasScript ? 'inline' : 'script-path' };
+}
+
+/**
+ * reduce 校验（ADR-0052 §8 I9）：工具层在起 subagent 之前跑完，schema + 归属 + 旋钮三闸。
+ *
+ * 三条判据：
+ *   1. 形状不对 / 带了根本不存在的旋钮 / 想用 timeoutSec 覆盖推导值 = VALIDATION；
+ *   2. runId 合形态但盘上没这条 run = NOT_FOUND；
+ *   3. run 在、但不是本 root 名下（含延续链）= FORBIDDEN——归属判据是 §3④ 的 ownerSessionId。
+ */
+export type ReduceCheck =
+  | { present: false }
+  | { present: true; ok: true; runId: string; paths: { index: string; terminal: string; digest: string } }
+  | { present: true; ok: false; code: 'VALIDATION' | 'NOT_FOUND' | 'FORBIDDEN'; reason: string; message: string };
+
+export async function validateReduce(
+  engine: WorkflowEngine,
+  input: { reduce?: unknown; timeoutSec?: unknown },
+  ownerCandidates: readonly string[],
+): Promise<ReduceCheck> {
+  if (input.reduce === undefined) return { present: false };
+  const reduce = input.reduce;
+  if (!reduce || typeof reduce !== 'object' || Array.isArray(reduce)) {
+    return { present: true, ok: false, code: 'VALIDATION', reason: 'reduce-shape', message: 'reduce must be an object shaped { runId }.' };
+  }
+  const record = reduce as Record<string, unknown>;
+  const knobs = Object.keys(record).filter((key) => key !== 'runId');
+  if (knobs.length > 0) {
+    return { present: true, ok: false, code: 'VALIDATION', reason: 'reduce-knobs', message: `reduce carries knobs that do not exist (${knobs.join(', ')}): the waiting budget comes from local settings, not from the model面.` };
+  }
+  if (!isRunId(record.runId)) {
+    return { present: true, ok: false, code: 'VALIDATION', reason: 'run-id-shape', message: `reduce.runId must match ${RUN_ID_PATTERN.source}; received: ${String(record.runId)}.` };
+  }
+  if (input.timeoutSec !== undefined) {
+    return { present: true, ok: false, code: 'VALIDATION', reason: 'reduce-timeout-not-settable', message: 'A reducer derives its own timeoutSec from the waiting budget; pass no timeoutSec together with reduce.' };
+  }
+  const runId = record.runId;
+  const run = await engine.lookupRun(runId);
+  if (!run) return { present: true, ok: false, code: 'NOT_FOUND', reason: 'run-not-found', message: `Workflow run not found: ${runId}.` };
+  if (!ownerCandidates.includes(run.ownerSessionId)) {
+    return { present: true, ok: false, code: 'FORBIDDEN', reason: 'run-not-owned', message: `Workflow run ${runId} belongs to another session.` };
+  }
+  return { present: true, ok: true, runId, paths: { index: run.indexPath, terminal: run.terminalPath, digest: run.digestPath } };
 }
 
 /**

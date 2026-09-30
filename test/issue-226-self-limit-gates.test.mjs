@@ -126,7 +126,7 @@ function engineFor(temp, options = {}) {
     adapterFactory: options.adapterFactory,
     ...(options.concurrencyWindow !== undefined ? { concurrencyWindow: options.concurrencyWindow } : {}),
     gates,
-    notifier: (settled) => notices.push(settled),
+    deliverNotice: (notice) => { notices.push(notice); return true; },
   });
   return { engine, clock, notices };
 }
@@ -361,8 +361,13 @@ test('AC5 墙钟到期结算三件套齐发：快照 + 终态标记 + 终态通�
   const marker = JSON.parse(fs.readFileSync(run.terminalFile, 'utf8'));
   assert.equal(marker.status, 'failed');
   assert.equal(marker.reason, 'run-gate');
-  assert.equal(notices.length, 1, '终态消息的投递属 T6，本票钉住结算三件套的第三件已经发出');
-  assert.deepEqual(notices[0], { runId: started.runId, status: 'failed', reason: 'run-gate', indexPath: run.indexFile });
+  assert.equal(notices.length, 1, '终态三件套的第三件（≤200 码元 settled-notice）随结算发出');
+  assert.equal(notices[0].runId, started.runId);
+  assert.equal(notices[0].ownerSessionId, 'sess-a', '投递去向 = 发起会话');
+  assert.ok(notices[0].body.startsWith(`[workflow] kind=settled-notice runId=${started.runId} sha256=`), '首行 KV 照 §15 口径');
+  assert.ok(notices[0].body.includes('failed'), '通知体带终态');
+  assert.equal(notices[0].sha256.length, 64, 'sha256 = 快照文件字节哈希');
+  assert.ok(notices[0].body.length <= 200, '≤200 码元');
 });
 
 // ═══════════════════════════════════════════════════════════════

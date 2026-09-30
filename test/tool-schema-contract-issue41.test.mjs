@@ -330,7 +330,13 @@ const INPUT_SCHEMA_ALLOWLIST = new Map([
   ['subagent_status :: properties.offset.maximum', { baseline: undefined, current: 9007199254740991, reason: 'A:派生器safe-int边界(整数型必带)' }],
   ['subagent_status :: properties.limit.type', { baseline: undefined, current: 'integer', reason: 'A:票B#130新增可选分页入参limit' }],
   ['subagent_status :: properties.limit.minimum', { baseline: undefined, current: 1, reason: 'A:票B#130新增可选分页入参limit' }],
-  ['subagent_status :: properties.limit.maximum', { baseline: undefined, current: 96000, reason: 'A:票B#130新增可选分页入参limit(上限96000,三页续页)' }],]);
+  ['subagent_status :: properties.limit.maximum', { baseline: undefined, current: 96000, reason: 'A:票B#130新增可选分页入参limit(上限96000,三页续页)' }],
+  // ── ADR-0052 §8（#229 T6）：subagent_start 新增 reduce:{runId} —— 汇总体场景必填，非汇总体调用方零行为变化 ──
+  ['subagent_start :: properties.reduce.type', { baseline: undefined, current: 'object', reason: 'A:ADR-0052§8新增reduce参数' }],
+  ['subagent_start :: properties.reduce.properties.runId.type', { baseline: undefined, current: 'string', reason: 'A:ADR-0052§8新增reduce参数(runId)' }],
+  ['subagent_start :: properties.reduce.properties.runId.minLength', { baseline: undefined, current: 4, reason: 'A:ADR-0052§8新增reduce参数(runId形状下界wf_x)' }],
+  ['subagent_start :: properties.reduce.properties.runId.maxLength', { baseline: undefined, current: 128, reason: 'A:ADR-0052§8新增reduce参数(runId形状上界)' }],
+  ['subagent_start :: properties.reduce.required', { baseline: undefined, current: ['runId'], reason: 'A:ADR-0052§8新增reduce参数(零预算旋钮:除runId外无可传键)' }],]);
 function flattenSchema(node, path, out) {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) {
     out.set(path, node);
@@ -345,7 +351,7 @@ test('[LOCK-6] 全部 32 工具 inputSchema 对 main 基线快照零静默漂移
   const actual = await collectMcpTools();
   // A48-W1 低危B-5（#149 R1）：allowlist 条目数钉死——防注释/清单再漂移（此前注释 42 处失实，
   // 实际 42+6=48 键）。新增/删除条目须同步此断言与顶部注释。
-  assert.equal(INPUT_SCHEMA_ALLOWLIST.size, 12, `allowlist 条目数漂移（当前 ${INPUT_SCHEMA_ALLOWLIST.size}，基线 12）`);
+  assert.equal(INPUT_SCHEMA_ALLOWLIST.size, 17, `allowlist 条目数漂移（当前 ${INPUT_SCHEMA_ALLOWLIST.size}，基线 17）`);
   const names = Object.keys(MCP_BASELINE);
   const seen = new Set();
   const violations = [];

@@ -369,7 +369,7 @@ test('W2-07-AC7: 运行时探测 — 真实 subagent 完成后 subagent_status�
   const { getLastReq } = injectFake({ object: L3_EXTRACTED });
 
   // 真实 runner 链：start → runSubagentImpl（fake，立即完成）→ finalize → store 落 completed
-  const started = runner.start('ses_parent_w207', { objective: 'probe subagent', readOnly: true });
+  const started = await runner.start('ses_parent_w207', { objective: 'probe subagent', readOnly: true });
   assert.equal(started.status, 'running');
   let st = runner.status(started.taskId);
   for (let i = 0; i < 50 && st.status !== 'completed'; i++) {

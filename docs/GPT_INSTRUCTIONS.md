@@ -76,7 +76,7 @@ SKILL
   - mode:fork starts a subagent to run the skill asynchronously. Returns {name, description, mode, taskId, status:"running"}. Poll subagent_status(taskId) until terminal.
 - NOT_FOUND means the skill name does not exist.
 - skill list (no args) and skill inline (with args, mode=inline) do not require identity. skill fork requires identity.
-- Fork skills share the maxParallel limit with regular subagents. FORBIDDEN when at capacity. Fork subagents use the same 8-tool set and cannot load other skills.
+- Fork skills share the maxParallel limit with regular subagents. FORBIDDEN when at capacity. Fork subagents use the same 9-tool set and cannot load other skills.
 
 MESSAGES, EVENTS, AND HISTORY
 - message_send sends as the authenticated session; never invent a from field. The recipient may be a session name or ID. TUI messages typed by the human are separately attributed to user.

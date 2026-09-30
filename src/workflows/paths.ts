@@ -14,6 +14,7 @@ import { assertRunId } from './ids.js';
  *     bg/<id>.output   这一跑起出去的后台命令输出
  *     outbox/          待投递项
  *     digest           汇总产物
+ *     reducer-waiter.json  等待位登记（同一 run 至多一个等待中的汇总体）
  *   saved/<name>.js    脚本持久化
  *   registry.json      run 注册表
  *
@@ -38,6 +39,8 @@ export type RunPaths = {
   outboxDir: string;
   agentsDir: string;
   digestFile: string;
+  /** 等待位登记：独占创建，同一 run 至多一个等待中的汇总体。 */
+  waiterFile: string;
   /** 这一跑起出去的后台命令，输出落在这里（独占创建、按字节帽截断）。 */
   bgDir: string;
 };
@@ -71,6 +74,7 @@ export function runPaths(paths: WorkflowPaths, runId: string): RunPaths {
     outboxDir: path.join(dir, 'outbox'),
     agentsDir: path.join(dir, 'agents'),
     digestFile: path.join(dir, 'digest'),
+    waiterFile: path.join(dir, 'reducer-waiter.json'),
     bgDir: path.join(dir, 'bg'),
   };
 }

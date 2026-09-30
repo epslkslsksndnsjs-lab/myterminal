@@ -176,7 +176,7 @@ test('142-AC2: 全链路（runner→executor→llm-adapter→mock-llm）跑通�
   const settings = mockSettings(mock);
   setRunnerDepsForTesting(realChainDeps(settings, TMP));
   const runner = getSubagentRunner();
-  const started = runner.start('ses_parent_142', { objective: 'probe e2e', readOnly: false });
+  const started = await runner.start('ses_parent_142', { objective: 'probe e2e', readOnly: false });
   assert.equal(started.status, 'running');
 
   let st = runner.status(started.taskId);
@@ -208,7 +208,7 @@ test('142-AC3a: 微压缩端到端——7 次 execute_cli 后旧结果被替换�
   const settings = mockSettings(mock);
   setRunnerDepsForTesting(realChainDeps(settings, TMP));
   const runner = getSubagentRunner();
-  const started = runner.start('ses_parent_142', { objective: 'probe micro compact' });
+  const started = await runner.start('ses_parent_142', { objective: 'probe micro compact' });
   let st = runner.status(started.taskId);
   for (let i = 0; i < 120 && st.status === 'running'; i++) { await sleep(50); st = runner.status(started.taskId); }
   assert.equal(st.status, 'completed');
@@ -237,7 +237,7 @@ test('142-AC3b: autocompact 端到端——超阈值触发摘要请求，摘要�
   const settings = mockSettings(mock, { compactThreshold: 100 }); // 低阈值强制触发
   setRunnerDepsForTesting(realChainDeps(settings, TMP));
   const runner = getSubagentRunner();
-  const started = runner.start('ses_parent_142', { objective: 'probe autocompact' });
+  const started = await runner.start('ses_parent_142', { objective: 'probe autocompact' });
   let st = runner.status(started.taskId);
   for (let i = 0; i < 120 && st.status === 'running'; i++) { await sleep(50); st = runner.status(started.taskId); }
   assert.equal(st.status, 'completed', `autocompact 后继续到完成（${st.error ?? ''}）`);
@@ -269,7 +269,7 @@ test('142-AC3c: 熔断器端到端——连续 3 次 compact 失败 → 子 fail
   const settings = mockSettings(mock, { compactThreshold: 100 });
   setRunnerDepsForTesting(realChainDeps(settings, TMP));
   const runner = getSubagentRunner();
-  const started = runner.start('ses_parent_142', { objective: 'probe breaker' });
+  const started = await runner.start('ses_parent_142', { objective: 'probe breaker' });
   let st = runner.status(started.taskId);
   for (let i = 0; i < 120 && st.status === 'running'; i++) { await sleep(50); st = runner.status(started.taskId); }
   assert.equal(st.status, 'failed', '连续 compact 失败 → fail-fast');

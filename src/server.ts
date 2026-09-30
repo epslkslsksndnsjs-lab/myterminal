@@ -28,7 +28,7 @@ import { writeRuntimeLifecycle, type RuntimeLifecyclePhase } from './runtime-lif
 import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
-import { initWorkflowEngine } from './workflows/runtime.js';
+import { initWorkflowEngine, getWorkflowEngine } from './workflows/runtime.js';
 import { shutdownCommandTrees } from './workflows/command-tree.js';
 import { resolveWorkflowGates } from './workflows/gates.js';
 import { llmBackedFactory } from './workflows/adapter.js';
@@ -109,6 +109,23 @@ export class MyTerminalRuntime {
         const result = this.store.inherit(session.id, { claimCode });
         return { session: result.session, identity: result.identity };
       },
+      // ADR-0052 接线 #7/#9：subagent 侧不 import workflows 模块——汇总体准入与收场经这里接过去，
+      // 引擎此刻可能还没建（端点未配即无引擎），所以两侧都是惰性查找。
+      reducer: {
+        admit: async (info) => {
+          const engine = getWorkflowEngine();
+          if (!engine) return { ok: false, noticeOnly: true, reason: 'workflow-not-wired', message: 'The workflows module is not wired (baseUrl / apiKey / model), so no reducer can wait for a run.' };
+          return await engine.admitReducer(info);
+        },
+        conclude: async (info) => {
+          const engine = getWorkflowEngine();
+          if (!engine) return { status: 'failed', reason: 'workflow-not-wired', report: 'The workflows module is not wired; the reducer cannot be concluded against a run.' };
+          const verdict = await engine.concludeReducer(info);
+          return verdict.status === 'completed'
+            ? { status: 'completed' as const, firstLine: verdict.firstLine }
+            : { status: 'failed' as const, reason: verdict.reason, report: verdict.report };
+        },
+      },
     });
       // Workflows 与会话侧共用同一端点三元组（单一来源、不另开配置），但执行线彼此
       // 独立：这里只注入适配器工厂与审计汇，不复用会话侧执行器、记录库或并发池。
@@ -120,6 +137,7 @@ export class MyTerminalRuntime {
         adapterFactory: llmBackedFactory(subagentSettings),
         audit: workflowAuditSink(this.store, config.workspaceDir),
         gates: workflowGates.gates,
+        deliverNotice: (notice) => this.deliverWorkflowNotice(notice),
       });
     }
     this.mcp = new MyTerminalMcpTransport(this.extensions);
@@ -142,6 +160,22 @@ export class MyTerminalRuntime {
         controlChannel: this.controlChannel?.snapshot().phase,
       });
     } catch { /* lifecycle persistence must not mask the original runtime failure */ }
+  }
+
+  /**
+   * 终态三件套的第三件：向发起会话投一条 ≤200 码元的持久消息（ADR-0052 接线 #2）。
+   * 模块自己没有会话，所以发起会话既是收件人也是发件人——身份写在 body 首行 KV 上，
+   * sendMessage 的签名一字不动。投不出去（会话已终态 / 已不在）就把项留在 outbox，
+   * 由启动扫描的排空趟补投：投递是至少一次，这里不猜"反正没人收"。
+   */
+  private deliverWorkflowNotice(notice: { runId: string; ownerSessionId: string; body: string }): boolean {
+    try {
+      this.store.sendMessage(notice.ownerSessionId, notice.ownerSessionId, notice.body);
+      return true;
+    } catch (error) {
+      console.warn(`[workflows] settled-notice for ${notice.runId} stays in the outbox: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
   }
 
   runtimeHealth(): RuntimeHealth { return { ...this.healthState, environment: { ...this.healthState.environment } }; }

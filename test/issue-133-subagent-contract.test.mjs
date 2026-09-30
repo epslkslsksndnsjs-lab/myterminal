@@ -115,11 +115,11 @@ describe('issue-133: applySubagentDefaults 数值单点（D3）', () => {
 describe('issue-133: toTaskPackage 兜底 + assembleTask（D3）', () => {
   const LONG_OBJECTIVE = '实现账单模块：把当前流水按日聚合，输出 CSV 到 output/ 目录；验收标准是每个文件头尾有汇总行，约束是不能动既有文件。'.repeat(3);
 
-  test('C1: 四字段缺省 → 全部 objective 派生（无硬编码文案）', () => {
+  test('C1: 四字段缺省 → 全部 objective 派生（无硬编码文案）', async () => {
     clearAllSubagents();
     resetSubagentRunner();
     const { runner, callLog } = setupRunner();
-    runner.start('ses_parent_01', { objective: LONG_OBJECTIVE });
+    await runner.start('ses_parent_01', { objective: LONG_OBJECTIVE });
     const calls = callLog.filter((c) => c.registerAndClaimChild);
     assert.equal(calls.length, 1);
     const taskPkg = calls[0].registerAndClaimChild.args.task;
@@ -129,11 +129,11 @@ describe('issue-133: toTaskPackage 兜底 + assembleTask（D3）', () => {
     assert.deepEqual(taskPkg.constraints, [LONG_OBJECTIVE], 'constraints 兜底应为 objective 派生');
   });
 
-  test('C2: 内部四字段显式传入 → 原样透传（SubagentStartInput 保留可选）', () => {
+  test('C2: 内部四字段显式传入 → 原样透传（SubagentStartInput 保留可选）', async () => {
     clearAllSubagents();
     resetSubagentRunner();
     const { runner, callLog } = setupRunner();
-    runner.start('ses_parent_01', {
+    await runner.start('ses_parent_01', {
       objective: 'o',
       background: '  bg  ',
       deliverables: ['d1'],
@@ -155,7 +155,7 @@ describe('issue-133: toTaskPackage 兜底 + assembleTask（D3）', () => {
     const { runner } = setupRunner({
       runSubagentImpl: async (opts) => { capturedTask = opts.task; return { status: 'completed', result: 'ok' }; },
     });
-    runner.start('ses_parent_01', { objective: '像交接给新同事一样写完整的一段话' });
+    await runner.start('ses_parent_01', { objective: '像交接给新同事一样写完整的一段话' });
     assert.ok(capturedTask.includes('## Objective\n像交接给新同事一样写完整的一段话'), 'objective 段必须渲染');
     assert.ok(!capturedTask.includes('## Deliverables'), '无 deliverables 时不得渲染该段');
     assert.ok(!capturedTask.includes('## Acceptance Criteria'), '无 acceptanceCriteria 时不得渲染该段');
@@ -171,7 +171,7 @@ test('C4: 子 agent 覆盖接线——input.maxTurns/timeoutSec 覆盖 settings�
   const { runner } = setupRunner({
     runSubagentImpl: async (opts) => { capturedSettings = opts.settings; return { status: 'completed', result: 'ok' }; },
   });
-  runner.start('ses_parent_01', { objective: 'o', maxTurns: 42, timeoutSec: 99 });
+  await runner.start('ses_parent_01', { objective: 'o', maxTurns: 42, timeoutSec: 99 });
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(capturedSettings.maxTurns, 42, 'input.maxTurns 应覆盖 settings');
   assert.equal(capturedSettings.timeoutSec, 99, 'input.timeoutSec 应覆盖 settings');

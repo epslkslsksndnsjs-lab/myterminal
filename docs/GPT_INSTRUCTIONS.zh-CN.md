@@ -76,7 +76,7 @@ SKILL
   - mode:fork 启动 subagent 异步运行该 skill。返回 {name, description, mode, taskId, status:"running"}。轮询 subagent_status(taskId) 直到终态。
 - NOT_FOUND 表示 skill 名称不存在。
 - skill list（无参数）和 skill inline（有参数，mode=inline）不需要身份。skill fork 需要身份。
-- fork skill 与普通 subagent 共享 maxParallel 限制。达到上限时返回 FORBIDDEN。fork subagent 使用相同的 8 工具集，不能加载其他 skill。
+- fork skill 与普通 subagent 共享 maxParallel 限制。达到上限时返回 FORBIDDEN。fork subagent 使用相同的 9 工具集，不能加载其他 skill。
 
 消息、事件与历史
 - message_send 始终以当前认证 session 发送；不要构造 from。接收方可以使用 session 名称或 ID。用户在 TUI 手动输入的消息会单独标记为 user，不会冒充 session。

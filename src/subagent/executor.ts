@@ -57,6 +57,8 @@ export type RunSubagentOptions = {
   readOnly?: boolean;                 // 决策 17：只读模式
   adapter?: LlmAdapter;               // 可注入（测试/M8 用），缺省 createAdapter(settings)
   onEvent?: (event: AgUiEvent) => void; // 缺省走 emitAgUi
+  /** ADR-0052 §8：汇总体等待的绝对末端——由 runner 依等待预算注入，模型面不可传。 */
+  budgetEndsAt?: number;
 };
 
 export type SubagentRunResult =
@@ -317,6 +319,7 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
     agentId,
     readOnly: options.readOnly ?? false,
     outputDir,
+    ...(options.budgetEndsAt !== undefined ? { budgetEndsAt: options.budgetEndsAt } : {}),
   };
 
   // token 追踪（ADR-0046 D1：纯 token 累加器，不再核算成本）

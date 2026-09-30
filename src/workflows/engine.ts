@@ -1,5 +1,5 @@
 import { Clock, systemClock } from './clock.js';
-import { dispatchId, newRunId } from './ids.js';
+import { dispatchId, isRunId, newRunId } from './ids.js';
 import { Journal } from './journal.js';
 import { scanDeterminism } from './lint.js';
 import { loadScript, persistScript, SCRIPT_NAME_PATTERN } from './saved.js';
@@ -9,6 +9,8 @@ import { upsertRegistry } from './registry.js';
 import { runInSandbox, type SandboxHost } from './sandbox.js';
 import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type FailureEntry, type RunIndex, type TerminalReason, type WorkflowStatus } from './schema.js';
 import { writeSnapshot } from './snapshot.js';
+import { buildSettledNotice, markNoticeDelivered, putNotice, sha256File, type OutboxItem } from './notice.js';
+import { concludeReducer, decideReducerAdmission, resolveReducerBudget, type ReducerAdmit, type ReducerVerdict } from './reducer.js';
 import { ensureDir, createExclusive, exists, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents } from './events.js';
 import { resolveCrashPlan, type CrashPlan, type CrashPoint } from './crash.js';
@@ -73,8 +75,8 @@ export type EngineDeps = {
   gates?: Partial<WorkflowGates>;
   /** 并发窗口的直接断言缝：给了就以它为准（滚动补位的水位用例用它）。 */
   concurrencyWindow?: number;
-  /** 终态通知缝：回传管线接线前为空实现，结算纪律不受影响。 */
-  notifier?: (settled: { runId: string; status: WorkflowStatus; reason?: TerminalReason; indexPath: string }) => void;
+  /** 终态消息投递缝：outbox 项落盘之后才试投一次；返回 true 才算投到（据此标 delivered）。 */
+  deliverNotice?: (notice: { runId: string; ownerSessionId: string; body: string; sha256: string }) => Promise<boolean> | boolean;
   /** 结算阶段故障注入缝：抛出即视为本进程在此终止（见 crash.ts 的三帧）。 */
   crash?: (point: CrashPoint) => void;
   /** env 路线（真 SIGKILL）的取值来源；缺省读本进程环境。 */
@@ -303,6 +305,31 @@ export class WorkflowEngine {
     const context = this.runs.get(runId);
     if (!context) return undefined;
     return await context.completion;
+  }
+
+  /**
+   * reduce 校验缝（工具层在起 subagent 之前用）：run 在不在、归谁、三件路径在哪。
+   * 读盘上的索引而非内存 Map——汇总体与 run 可以来自上一次进程留下的目录。
+   */
+  async lookupRun(runId: string): Promise<{ ownerSessionId: string; status: WorkflowStatus; indexPath: string; terminalPath: string; digestPath: string } | undefined> {
+    if (!isRunId(runId)) return undefined;
+    const run = runPaths(this.paths, runId);
+    const index = await readIndex(run.indexFile);
+    if (!index) return undefined;
+    return { ownerSessionId: index.ownerSessionId, status: index.status, indexPath: run.indexFile, terminalPath: run.terminalFile, digestPath: run.digestFile };
+  }
+
+  /** 汇总体准入：等待位独占 + 并发配额；通过即附本次的等待约束（起时 = 本引擎时钟）。 */
+  async admitReducer(input: { runId: string; agentId: string; ownerSessionId: string }): Promise<ReducerAdmit> {
+    const admission = await decideReducerAdmission(this.paths, { ...input, at: this.clock.iso(), gates: this.gates });
+    if (!admission.ok) return admission;
+    const budget = resolveReducerBudget(this.gates, { startedAt: this.clock.now(), now: () => this.clock.now() });
+    return { ...admission, timeoutSec: budget.timeoutSec, budgetEndsAt: budget.budgetEndsAt };
+  }
+
+  /** 汇总体收场判定：只认盘面证据，并释放等待位。 */
+  async concludeReducer(info: { runId: string; agentId: string; digestPath: string }): Promise<ReducerVerdict> {
+    return await concludeReducer(this.paths, info);
   }
 
   private journalFor(run: RunPaths): Journal {
@@ -681,9 +708,56 @@ export class WorkflowEngine {
     this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status, reason, at: endedAt });
     this.events.emit({ runId: context.runId, type: 'run_settled', at: endedAt, data: { status, reason, markerWritten } });
     // 第三帧：盘面齐、通知未投递——outbox 排空趟要能补发。
-    this.crash('before-notice');
-    this.deps.notifier?.({ runId: context.runId, status, reason, indexPath: context.run.indexFile });
+    await this.publishSettledNotice(context);
     return context.index;
+  }
+
+  /**
+   * 终态三件套的第三件：≤200 码元的 settled-notice 先原子写进 outbox，再试投一次，
+   * 投成功才标 delivered——投递是至少一次，去重靠内容键 (runId, sha256)。
+   *
+   * 两段分开的理由：落盘段的任何故障只记账、不改判终态（结算已封口）；
+   * 而"已落盘、未投递"这一帧必须真能死在这里——故障注入点不在 try 里，
+   * 否则注入被当成 IO 故障吞掉，排空趟的那一帧就永远演不出来。
+   */
+  private async publishSettledNotice(context: RunContext): Promise<void> {
+    const at = this.clock.iso();
+    let item: OutboxItem | undefined;
+    try {
+      const sha256 = await sha256File(context.run.snapshotFile);
+      const notice = buildSettledNotice({
+        runId: context.runId,
+        status: context.index.status,
+        sha256,
+        indexPath: context.run.indexFile,
+        succeeded: context.index.dispatches.filter((record) => record.status === 'completed').length,
+        total: context.index.dispatches.length,
+      });
+      if (!notice.ok) {
+        this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status: context.index.status, reason: 'notice-too-long', at, detail: notice.message });
+        return;
+      }
+      item = (await putNotice(context.run, {
+        kind: 'settled-notice',
+        runId: context.runId,
+        sha256,
+        status: context.index.status,
+        index: context.run.indexFile,
+        body: notice.body,
+        at,
+      })).item;
+    } catch (error) {
+      const detail = error && typeof error === 'object' && typeof (error as Error).message === 'string' ? (error as Error).message : String(error);
+      this.deps.audit?.({ runId: context.runId, action: 'workflow_settle', actor: context.index.ownerSessionId, status: context.index.status, reason: 'notice-failed', at, detail });
+      return;
+    }
+    if (item.delivered) return;
+    // 崩溃点落在"通知已落盘、尚未投递"之间：这一帧必须有 outbox 项可补投。
+    this.crash('before-notice');
+    const deliver = this.deps.deliverNotice;
+    if (!deliver) return;
+    const sent = await Promise.resolve(deliver({ runId: context.runId, ownerSessionId: context.index.ownerSessionId, body: item.body, sha256: item.sha256 })).catch(() => false);
+    if (sent) await markNoticeDelivered(context.run, item, this.clock.iso()).catch(() => undefined);
   }
 
   /** 终态判定（供查询面使用）：终态一律正向枚举。 */

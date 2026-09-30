@@ -56,19 +56,20 @@ describe('M4 接口/工厂/注册表', () => {
     assert.strictEqual(t.isConcurrencySafe, fn);
   });
 
-  it('getToolNames({ readOnly: true }) 返回 5 个只读工具（Bug 2 回归）', () => {
+  it('getToolNames({ readOnly: true }) 返回 6 个只读工具（Bug 2 回归；ADR-0052 §8 加 wait_for_path）', () => {
     const names = getToolNames({ readOnly: true });
     assert.ok(names.includes('read_file'));
     assert.ok(names.includes('glob'));
     assert.ok(names.includes('grep'));
     assert.ok(names.includes('task_create'));
     assert.ok(names.includes('task_update'));
-    assert.strictEqual(names.length, 5);
+    assert.ok(names.includes('wait_for_path'), '汇总体按只读起也必须等得到');
+    assert.strictEqual(names.length, 6);
   });
 
-  it('getAllToolSchemas() 返回 8 个 schema，edit_file 含 replace_all（Bug 3 回归）', () => {
+  it('getAllToolSchemas() 返回 9 个 schema，edit_file 含 replace_all（Bug 3 回归）', () => {
     const schemas = getAllToolSchemas();
-    assert.strictEqual(schemas.length, 8);
+    assert.strictEqual(schemas.length, 9);
     const editSchema = schemas.find((s) => s.name === 'edit_file');
     assert.ok(editSchema);
     assert.ok(editSchema.input_schema.properties.replace_all, 'replace_all should be in edit_file schema');
