@@ -78,6 +78,13 @@ SKILL
 - skill list（无参数）和 skill inline（有参数，mode=inline）不需要身份。skill fork 需要身份。
 - fork skill 与普通 subagent 共享 maxParallel 限制。达到上限时返回 FORBIDDEN。fork subagent 使用相同的 9 工具集，不能加载其他 skill。
 
+WORKFLOWS
+- 何时用：只在用户提出时跑——他点名 workflows，或任务本身需要真正的广度（研究、审计）。绝不自行发起；只给名字、没有任务时，先问跑什么。
+- 怎么跑：先加载 workflow-authoring 技能，脚本契约只写在技能里。workflow_start({script|scriptPath, args?}) 立即返回 runId，run 在本地继续跑。随后起一个汇总体：subagent_start({objective: 按技能里的汇总体模板填好, reduce:{runId}})。没有命令入口；只经对话里的这些调用启动。
+- 限制：并发窗口 max(2, min(16, 核数-2))；每 run 1000 个 agent；30 分钟墙钟；8,000,000 output tokens。仅当用户明确要求时才调大。
+- 怎么拿结果：用 subagent_status 轮询汇总体直到终态；它交付一句话 + 路径 + 索引指引。通知与轮询是同一结果的两个视图：按 runId 与哈希去重，只行动一次。partial 必须以 partial 报、点名失败路径；绝不把没跑完的说成完成。
+- 停与续：workflow_cancel({runId}) 取消整条 run；幂等，已完成的工作照样交付。续跑用 workflow_start({scriptPath, resumeFromRunId})——未变化的调用走缓存，实跑从第一个变化或缺失的调用开始。
+
 消息、事件与历史
 - message_send 始终以当前认证 session 发送；不要构造 from。接收方可以使用 session 名称或 ID。用户在 TUI 手动输入的消息会单独标记为 user，不会冒充 session。
 - message_send 返回消息发送与工具返回时间；message_inbox、message_list、message_conversation 返回观察时间、消息年龄、发送后的审计操作和延迟/滞后提示。处理建议前必须检查这些证据。

@@ -176,7 +176,12 @@ test('05: e2e——list/inline/fork/status-idempotent 全链路', async () => {
   );
   assert.equal(listRes.ok, true);
   const skills = listRes.data.result.skills;
-  assert.equal(skills.length, 3); // 2 user skills + 1 built-in (adaptive-guard)
+  // 按名字断言而不是钉总数：#234 起内建技能有两个（adaptive-guard + workflow-authoring），
+  // 内建注册表增长不该让这条 e2e 链路变红，但名单内容本身仍是契约。
+  assert.deepEqual(
+    skills.map((entry) => entry.name).sort(),
+    ['adaptive-guard', 'e2e-fork', 'e2e-inline', 'workflow-authoring'],
+  );
 
   // Step 2: skill(inline) → content
   const inlineRes = await ext.call(
