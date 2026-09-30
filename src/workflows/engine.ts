@@ -135,6 +135,11 @@ type RunContext = {
   /** run 级终结后账就封口：之后的调用一律拒。 */
   open: boolean;
   termination?: { reason: RunTerminationReason; message: string };
+  /**
+   * 索引写串：admission 与结算都不排队等写盘（否则键链的同步段被打断），
+   * 但落盘按排队顺序进行——并发路各写全量快照，乱了序就会让旧版后落。
+   */
+  indexWrites: Promise<unknown>;
   gateHandle?: { id: unknown };
   completion?: Promise<RunIndex>;
 };
@@ -243,7 +248,8 @@ export class WorkflowEngine {
       settled: false,
       open: true,
       controller: new AbortController(),
-      window: createDispatchWindow(this.windowLimit, { signal: undefined }),
+      window: createDispatchWindow(this.windowLimit),
+      indexWrites: Promise.resolve(),
       chainPrefix: argsChainSeed(index.args),
       agentCount: sequence,
     };
@@ -415,7 +421,7 @@ export class WorkflowEngine {
       ...(gated.schema ? { schema: true } : {}),
     };
     context.index = { ...context.index, dispatches: [...context.index.dispatches, record] };
-    void writeIndex(context.run.indexFile, context.index).catch(() => undefined);
+    queueIndexWrite(context);
     void context.journal.append({ type: 'started', seq: sequence, key, label, at: startedAt }).catch(() => undefined);
 
     return await this.runPath(context, record, prompt, gated);
@@ -486,7 +492,7 @@ export class WorkflowEngine {
       context.index.failures = [...context.index.failures, entry];
     }
     await writeJsonAtomic(agentFile(context.run, record.id), { schemaVersion: SCHEMA_VERSION, ...next, ...(outcome.ok ? { result: outcome.value } : {}) });
-    await writeIndex(context.run.indexFile, context.index);
+    queueIndexWrite(context);
     void context.journal
       .appendOrdered(record.seq as number, outcome.ok
         ? { type: 'result', seq: record.seq as number, key: record.key, value: outcome.value, at: endedAt }
@@ -528,6 +534,8 @@ export class WorkflowEngine {
     const endedAt = this.clock.iso();
     context.index = { ...context.index, status, reason, endedAt, tokens: { spent: context.spent } };
     await context.journal.drain();
+    // 在飞的索引写先落干：终态那一版必须是最后一版。
+    await context.indexWrites;
     await writeIndex(context.run.indexFile, context.index);
     await writeSnapshot(context.run.snapshotFile, context.index);
     // 标记最后写：所有产物齐备后才宣告终态；已存在则静默退让（后到者不补发、不判更新版）。
@@ -549,6 +557,11 @@ export class WorkflowEngine {
   static isTerminal(status: WorkflowStatus): boolean {
     return isTerminal(status);
   }
+}
+
+/** 排一次索引写：入队顺序即落盘顺序，最后落盘的必是最新版。 */
+function queueIndexWrite(context: RunContext): void {
+  context.indexWrites = context.indexWrites.then(() => writeIndex(context.run.indexFile, context.index)).catch(() => undefined);
 }
 
 /** schema 模式下的出口：该路必须交回一个 JSON 对象，否则按缺结构化输出判败。 */
