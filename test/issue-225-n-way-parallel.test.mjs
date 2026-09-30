@@ -715,6 +715,26 @@ test('AC6 throw = run 级终结：token 预算越限即整 run 判败', async ()
   assert.ok(model.state.prompts.length < 4, '入口 + 取槽两级检查把后续批次挡在门外');
 });
 
+test('AC6 预算门排在记账之前：越限那一笔不进 dispatch、不留 started 行', async () => {
+  const temp = tempWorkspace();
+  const model = scripted(async () => ({ text: 'chunk', outputTokens: 60 }));
+  const { engine } = engineFor(temp, { adapterFactory: model.factory, concurrencyWindow: 1, gates: { tokenCap: 100 } });
+  // 顺序脚本（非 parallel）：不存在"已 admission 却因终结而从未起跑的排队路"，
+  // 所以 dispatch 记账数与模型调用数必须严格一一对应——入口级预算门一旦失守，
+  // 越限那一笔会留下一条永远 running 的幽灵记账（ADR §17：预算门在 agentCount 之前）。
+  const started = await engine.start({
+    script: `await agent('t0'); await agent('t1'); await agent('t2'); await agent('t3'); return 1;`,
+    ownerSessionId: 'sess-a',
+  });
+  const index = await started.completion;
+  assert.equal(index.status, 'failed');
+  assert.equal(index.reason, 'token-budget');
+  assert.equal(model.state.prompts.length, 2, 't0/t1 各烧 60，t2 在门口被拒');
+  assert.deepEqual(index.dispatches.map((d) => d.seq), [1, 2], '越限那一笔不占记账位');
+  assert.deepEqual(rawLines(temp, started.runId).filter((r) => r.type === 'started').map((r) => r.seq), [1, 2], '账本里没有它的 started 行');
+  assert.deepEqual(index.dispatches.map((d) => d.status), ['completed', 'completed'], '记了账的每一路都有下场');
+});
+
 // ═══════════════════════════════════════════════════════════════
 // AC7 run 级判定：只有机器三态，没有"几路算过"的阈值
 // ═══════════════════════════════════════════════════════════════
