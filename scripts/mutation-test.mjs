@@ -340,7 +340,7 @@ const mutations = [
   { name: 'WF-401: 描述里的边界数值丢了（模型看不见默认即上限）', file: 'src/core-tools.ts', tests: 'test/issue-234-*.test.mjs', find: '30-minute wall clock; 8,000,000 output tokens', replace: 'wall clock; output tokens' },
   { name: 'WF-402: 闸门参数漏进模型可见文案（loopMinutes 复活）', file: 'src/core-tools.ts', tests: 'test/issue-234-*.test.mjs', find: 'reduce:{runId}}).', replace: 'reduce:{runId, loopMinutes}}).' },
   { name: 'WF-403: 内建技能挂错正文（workflow-authoring 读到 adaptive-guard）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: '    content: WORKFLOW_AUTHORING_CONTENT,', replace: '    content: BUILTIN_ADAPTIVE_GUARD_CONTENT,' },
-  { name: 'WF-404: 技能名漂走（列表查不到，且打穿 #235 逐字引用的共享常量）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: "  ['workflow-authoring', {", replace: "  ['workflow-authoring-v2', {" },
+  { name: 'WF-404: 技能注册键与 record.name 分叉（按名加载失效，且打穿 #235 逐字引用的共享常量）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: "  ['workflow-authoring', {", replace: "  ['workflow-authoring-v2', {" },
   { name: 'WF-405: 技能 mode 从 inline 漂到 fork（读正文变成起 subagent）', file: 'src/skills.ts', tests: 'test/issue-234-*.test.mjs', find: "    mode: 'inline',\n    content: WORKFLOW_AUTHORING_CONTENT,", replace: "    mode: 'fork',\n    content: WORKFLOW_AUTHORING_CONTENT," },
   { name: 'WF-406: WORKFLOWS 段标题被改（双版锚点序与抽取锚失效）', file: 'docs/GPT_INSTRUCTIONS.md', tests: 'test/issue-234-*.test.mjs', find: 'WORKFLOWS\n- When: run only', replace: 'WORKFLOW RUNS\n- When: run only' },
   // ── src/mcp.ts (T12 #235, 7) — MCP/Apps 通道面：直连两条 / 对外独立文本 / 单源派生 / instructions 一条 / 形状与 _meta 与注解 ──
