@@ -165,6 +165,15 @@ describe('冷启动重建 run 列表（AC1 后半：无事件也从盘面重建�
     assert.equal(board.rows.length, 0);
     assert.deepEqual(board.unreadable.map((item) => item.runId), ['wf_a']);
   });
+
+  test('整个 run 目录读不动（权限一类目录级故障）说成 sourceError，不读成"一条 run 都没有"', async () => {
+    const board = await buildRunBoard({
+      ...fakeSource({ indexes: {} }),
+      listRunIds: async () => { throw Object.assign(new Error('EACCES: permission denied, scandir'), { code: 'EACCES' }); },
+    });
+    assert.equal(board.rows.length, 0);
+    assert.match(board.sourceError ?? '', /permission denied/);
+  });
 });
 
 describe('三个谓词：UI 活跃 / 被打断 / 终态（ADR-0052 §10 状态机 / §19 暂停不是终态）', () => {

@@ -114,12 +114,12 @@ describe('#31 i18n seam', () => {
     // 重锁记录（2026-10-01，#232 / ADR-0052 §21#5 Workflows 屏）：作用域多两个文件
     // （src/tui/screens/Workflows.tsx 列表与详情、src/tui/workflow-runs.ts 装配层的两语文案），
     // 另八处既有文件因新增页签、快捷键提示与 /workflows 导航命令而增字面量。
-    // 净变化 1936 → 2139（+203）。逐条核对：丢失集在每一处都是空的（零删除、零改写既有文案），
+    // 净变化 1936 → 2147（+211）。逐条核对：丢失集在每一处都是空的（零删除、零改写既有文案），
     // 新增全部是本票引入的用户向/键位字面量，无 t() 参数颠倒（en-first/zh-second 子测试继续守住）；
     // 属新功能引入的预期漂移，重新审查后重锁。
     assert.equal(Object.keys(baseline).length, 58, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 2139, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 2147, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───

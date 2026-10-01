@@ -333,7 +333,7 @@ const mutations = [
   { name: "WF-337: 面板轮询不再收死路的件（孤儿停在 active，配额与面板都看不见）", file: "src/workflows/worktree-service.ts", tests: 'test/issue-231-*.test.mjs', find: "      await this.reconcileStale();", replace: "      void 0;" },
   { name: "WF-338: 收尸的保守判据移除（在跑的那一件也被收）", file: "src/workflows/worktree-service.ts", tests: 'test/issue-231-*.test.mjs', find: "      if (!abandoned) continue;", replace: "      if (false) continue;" },
 
-  // ── src/tui/ + 引擎观测面 (T9 #232, 29) — Workflows 屏：两源合一 / 三个谓词 / 事件到投影 / 本地控制面 / 启动提示 ──
+  // ── src/tui/ + 引擎观测面 (T9 #232, 33) — Workflows 屏：两源合一 / 三个谓词 / 事件到投影 / 本地控制面 / 启动提示 ──
   // 每条对应票面一条钉死语义，全部由 test/issue-232-*.test.mjs 行为杀（非仅编译杀、非等价豁免）。
   { name: "WF-400: 列表不再分活跃与终态两桶（在跑的沉到底下去）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    const activeRank = Number(isRunUiActive(b)) - Number(isRunUiActive(a));", replace: "    const activeRank = 0;" },
   { name: "WF-401: 同刻不再有确定序（顺序交给扫描的插入序）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    return b.runId.localeCompare(a.runId);", replace: "    return 0;" },
@@ -347,7 +347,7 @@ const mutations = [
   { name: "WF-409: 控制字符不再剥（runId 能自己染色）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "  return value.replace(ANSI_CSI, '').replace(OTHER_CONTROLS, '');", replace: "  return value;" },
   { name: "WF-410: 非字符串不再归空串（undefined 直接透出到屏上）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "  if (typeof value !== 'string') return '';", replace: "  if (typeof value !== 'string') return value as unknown as string;" },
   { name: "WF-411: 在跑的那几条不并进列表（新起的 run 屏上看不见）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "        return [...new Set([...entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name), ...live])];", replace: "        return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);" },
-  { name: "WF-412: runs/ 读不开就连活账一起丢（在跑的整屏消失）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "      } catch {\n        return live;\n      }", replace: "      } catch {\n        return [];\n      }" },
+  { name: "WF-412: runs/ 还没建出来就连活账一起丢（在跑的整屏消失）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "        if (code === 'ENOENT' || code === 'ENOTDIR') return live;", replace: "        if (code === 'ENOENT' || code === 'ENOTDIR') return [];" },
   { name: "WF-413: 不合形态的目录名也去试读（拼路径的口在装配层开了）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (!isRunId(runId)) continue;", replace: "    if (false) continue;" },
   { name: "WF-414: 读不动的那一条静默丢（拒读等于没这条）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "      unreadable.push({ runId, message: messageOf(error) });", replace: "      void error;" },
   { name: "WF-415: 终态事件不把 run 从'在跑'里摘下（屏上永远挂着活标）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    ...(isTerminal(patched.status) ? { live: false } : {}),", replace: "    ...(false ? { live: false } : {})," },
@@ -358,13 +358,16 @@ const mutations = [
   { name: "WF-420: liveRunIds 不滤终态（结算完的还算在本进程跑）", file: "src/workflows/engine.ts", tests: 'test/issue-232-*.test.mjs', find: "    return [...this.runs.entries()].filter(([, context]) => !isTerminal(context.index.status)).map(([runId]) => runId);", replace: "    return [...this.runs.keys()];" },
   { name: "WF-421: 事件订阅不给退订句柄（屏关了还在被事件推着跑）", file: "src/workflows/engine.ts", tests: 'test/issue-232-*.test.mjs', find: "    return this.events.on(listener);", replace: "    this.events.on(listener);\n    return () => {};" },
   { name: "WF-422: 投影变化不进 renderRevision（快 tick 看不见热路径）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "      this.workflowRevisionValue,\n", replace: "" },
-  { name: "WF-423: 控制失败的具名拒因不上屏（按了键像没反应）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    this.currentRuntime.log(result.message, 'error');", replace: "    void result.message;" },
+  { name: "WF-423: 控制失败的具名拒因不上屏（按了键像没反应）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (!result.ok) return this.currentRuntime.log(result.message, 'error');", replace: "    if (!result.ok) return void result.message;" },
   { name: "WF-424: 取消不再要确认（答 no 也把整 run 结算掉）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (!answer || answer[0].toLowerCase() !== 'yes') return;", replace: "    if (!answer) return;" },
-  { name: "WF-425: 列表空态消失（一条 run 都没有时屏幕全白）", file: "src/tui/screens/Workflows.tsx", tests: 'test/issue-232-*.test.mjs', find: "      {rows.length === 0 && unreadable.length === 0 ? (", replace: "      {false ? (" },
+  { name: "WF-425: 列表空态消失（一条 run 都没有时屏幕全白）", file: "src/tui/screens/Workflows.tsx", tests: 'test/issue-232-*.test.mjs', find: "      {rows.length === 0 && unreadable.length === 0 && !sourceError ? (", replace: "      {false ? (" },
   { name: "WF-426: 详情页不再逐路列（只剩两档总量，路数账看不见）", file: "src/tui/screens/Workflows.tsx", tests: 'test/issue-232-*.test.mjs', find: "      {paths.map((path) => <PathRow key={path.id} path={path} theme={theme} />)}", replace: "      {null}" },
   { name: "WF-427: 列表行不再给用量（'看用量'这一条票面要求落空）", file: "src/tui/screens/Workflows.tsx", tests: 'test/issue-232-*.test.mjs', find: "${row.tokens} tok", replace: "${0} tok" },
   { name: "WF-428: 提示首行不分单复数（一条也报成 N 条）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    const head = usable.length === 1", replace: "    const head = false" },
   { name: "WF-429: 投影把每路正文也揣进来（观测面变成第二个结果面）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    dispatches: index.dispatches.map(({ result: _result, ...record }) => record),", replace: "    dispatches: [...index.dispatches]," },
+  { name: "WF-430: 目录级读不动被读成\"一条 run 都没有\"（权限故障静默）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "        if (code === 'ENOENT' || code === 'ENOTDIR') return live;\n        throw error;", replace: "        return live;" },
+  { name: "WF-431: 取消没停下任何事仍报受理成功（静默吞按键）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (op === 'cancel' && isRunUiActive({ status: result.status })) {", replace: "    if (false && isRunUiActive({ status: result.status })) {" },
+  { name: "WF-432: 认不出的状态被染成错误红（未知态冒充失败）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "  return RUN_TONES[status] ?? 'muted';", replace: "  return RUN_TONES[status] ?? 'bad';" },
 
 ];
 

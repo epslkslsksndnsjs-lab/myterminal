@@ -149,6 +149,19 @@ describe('冷启动：从盘上把 run 读回来', () => {
     assert.equal(board.rows[1].live, false);
     assert.deepEqual(board.unreadable, [], '没有目录的活 run 不算"读不动"');
   });
+
+  test('runs/ 存在但读不动（目录级权限故障）：屏得到 sourceError，不是空列表', { skip: typeof process.getuid === 'function' && process.getuid() === 0 }, async () => {
+    const paths = tempLayout('eacces');
+    fs.mkdirSync(paths.runsRoot, { recursive: true });
+    fs.chmodSync(paths.runsRoot, 0o000);
+    try {
+      const board = await buildRunBoard(diskRunBoardSource({ paths, liveIndex: () => undefined, liveRunIds: () => [] }));
+      assert.equal(board.rows.length, 0);
+      assert.match(board.sourceError ?? '', /EACCES|permission/i, '读不动必须说成读不动');
+    } finally {
+      fs.chmodSync(paths.runsRoot, 0o755);
+    }
+  });
 });
 
 describe('热路径：引擎事件有订阅者了', () => {
@@ -392,6 +405,19 @@ describe('TuiController 的 Workflows 面（接线与动作）', () => {
     assert.deepEqual(runtime.controls.map((item) => item.op), ['cancel', 'pause', 'resume']);
   });
 
+  test('取消一条不在本进程跑的 run：如实说"什么都没停"，不许报成受理成功', async () => {
+    const { runtime, controller } = controllerFor({
+      paths: tempLayout('nocancel'),
+      control: () => ({ ok: true, runId: 'wf_a', status: 'running' }),
+    });
+    await controller.cancelWorkflowRun('wf_a', async () => ['yes']);
+    const last = runtime.logs.at(-1);
+    assert.equal(last.level, 'error');
+    assert.match(last.message, /not running in this process/);
+    assert.match(last.message, /nothing was cancelled/);
+    assert.doesNotMatch(last.message, /^工作流|^Workflow wf_a → running$/, '盘面状态不许被当成"取消已受理"播报');
+  });
+
   test('控制失败的具名拒因上屏（FORBIDDEN / NOT_FOUND 都要看得见），并留一条日志', async () => {
     const { runtime, controller } = controllerFor({
       paths: tempLayout('ctl'),
@@ -482,6 +508,13 @@ describe('屏上真有字（渲染面，非快照）', () => {
     const seen = await frame(createElement(Workflows, { rows: [], unreadable: [{ runId: 'wf_bad', message: 'schema version mismatch' }], selected: 0, now: 1759312800000, theme: themeFor('dark'), onSelect: () => {} }));
     assert.match(seen, /wf_bad/);
     assert.match(seen, /schema version mismatch/);
+  });
+
+  test('目录级读不动上屏成一句"读不了 run 目录"，而不是空态那句"还没有 run"', async () => {
+    const seen = await frame(createElement(Workflows, { rows: [], unreadable: [], sourceError: 'EACCES: permission denied, scandir', selected: 0, now: 1759312800000, theme: themeFor('dark'), onSelect: () => {} }));
+    assert.match(seen, /Cannot read the run directory/);
+    assert.match(seen, /EACCES/);
+    assert.doesNotMatch(seen, /No workflow runs/);
   });
 
   test('详情页：逐路 label / 状态 / 尝试次数 / 用量 / 失败原因 / 待处置的 worktree', async () => {

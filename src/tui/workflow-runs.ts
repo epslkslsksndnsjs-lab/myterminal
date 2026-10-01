@@ -42,7 +42,12 @@ export type RunBoardRow = {
 };
 
 export type RunBoardUnreadable = { runId: string; message: string };
-export type RunBoard = { rows: RunBoardRow[]; unreadable: RunBoardUnreadable[] };
+export type RunBoard = {
+  rows: RunBoardRow[];
+  unreadable: RunBoardUnreadable[];
+  /** 整条读源失败（不是某一条 run 读不动）：目录级故障必须看得见，不能读成"一条 run 都没有"。 */
+  sourceError?: string;
+};
 
 export type RunBoardSource = {
   listRunIds(): Promise<string[]>;
@@ -61,7 +66,7 @@ function messageOf(error: unknown): string {
  * 两个桶各按各的时间倒序：活跃的置顶（含 paused——暂停不是终态），终态随后。
  * 同刻没有真值可排，就取一个确定的序（runId 字典倒序），不留给插入顺序决定。
  */
-export function sortRunBoard(rows: readonly RunBoardRow[]): RunBoardRow[] {
+function sortRunBoard(rows: readonly RunBoardRow[]): RunBoardRow[] {
   const key = (row: RunBoardRow): number => {
     const stamp = Date.parse(isRunUiActive(row) ? row.startedAt : (row.endedAt ?? row.startedAt));
     return Number.isFinite(stamp) ? stamp : 0;
@@ -78,7 +83,13 @@ export function sortRunBoard(rows: readonly RunBoardRow[]): RunBoardRow[] {
 export async function buildRunBoard(source: RunBoardSource): Promise<RunBoard> {
   const rows: RunBoardRow[] = [];
   const unreadable: RunBoardUnreadable[] = [];
-  for (const runId of await source.listRunIds()) {
+  let ids: string[];
+  try {
+    ids = await source.listRunIds();
+  } catch (error) {
+    return { rows: [], unreadable, sourceError: messageOf(error) };
+  }
+  for (const runId of ids) {
     // 目录名是唯一被拼进路径的模型可控字符串：不合形态的兄弟目录直接跳过，不试读。
     if (!isRunId(runId)) continue;
     let index: RunIndex | undefined;
@@ -414,8 +425,12 @@ export function diskRunBoardSource(input: DiskRunBoardInput): RunBoardSource {
       try {
         const entries = await readdir(input.paths.runsRoot, { withFileTypes: true });
         return [...new Set([...entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name), ...live])];
-      } catch {
-        return live;
+      } catch (error) {
+        // runs/ 还没被建出来 = 一条 run 都没有；其余故障（权限、挂载点坏了）不是"没有"，
+        // 原样抛给 buildRunBoard 记成 sourceError——读不动与空目录在屏上必须是两回事。
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return live;
+        throw error;
       }
     },
     async readRun(runId) {

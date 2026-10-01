@@ -18,7 +18,7 @@ import { commandPassiveLock, passiveLockStatus } from '../session-resources.js';
 import { runtimeSettingsSnapshot } from '../runtime-settings.js';
 import { runPaths } from '../workflows/paths.js';
 import type { WorkflowEvent } from '../workflows/events.js';
-import { EMPTY_RUN_BOARD, applyWorkflowEvent, buildRunBoard, describeInterruptedRuns, diskRunBoardSource, interruptedRuns, resumeCallText, type InterruptedNotice, type RunBoard } from './workflow-runs.js';
+import { EMPTY_RUN_BOARD, applyWorkflowEvent, buildRunBoard, describeInterruptedRuns, diskRunBoardSource, interruptedRuns, isRunUiActive, resumeCallText, type InterruptedNotice, type RunBoard } from './workflow-runs.js';
 import type { Translate } from './copy/i18n.js';
 
 export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents', 'Worktrees', 'Workflows'] as const;
@@ -404,12 +404,18 @@ export class TuiController {
 
   private async controlWorkflow(op: 'cancel' | 'pause' | 'resume', runId: string): Promise<void> {
     const result = await this.currentRuntime.controlWorkflowRun(op, runId);
-    if (result.ok) {
+    if (!result.ok) return this.currentRuntime.log(result.message, 'error');
+    // 取消只对本进程在跑的 run 有效：引擎对不在内存里的那一条只回读盘面状态、不改判（幂等语义照 §8）。
+    // 按了 c 却什么都没停就必须说出来——静默受理等于骗人，那正是协作式控制不许的形状。
+    if (op === 'cancel' && isRunUiActive({ status: result.status })) {
+      this.currentRuntime.log(this.text(
+        `Workflow ${runId} is not running in this process, so nothing was cancelled (the index still says ${result.status}). To pick it back up, resume it from ChatGPT — y copies the call.`,
+        `工作流 ${runId} 不在本进程里跑，这一按什么都没停（索引仍是 ${result.status}）。要接着干请从 ChatGPT 续跑——按 y 复制调用。`,
+      ), 'error');
+    } else {
       this.currentRuntime.log(this.text(`Workflow ${runId} → ${result.status}`, `工作流 ${runId} → ${result.status}`));
-      await this.refreshWorkflowBoard();
-      return;
     }
-    this.currentRuntime.log(result.message, 'error');
+    await this.refreshWorkflowBoard();
   }
 
   /** 把 resume 调用文本放到剪贴板；拿不到就把文本原样打到日志里，不谎报已复制。 */

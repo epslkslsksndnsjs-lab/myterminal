@@ -44,9 +44,10 @@ function screenHint(t: Translate): string {
   return `${WORKFLOW_SCREEN_ACTIONS.map((action) => t(SCREEN_KEYS[action][0], SCREEN_KEYS[action][1])).join('   ')}   ${t('q quit', 'q 退出')}`;
 }
 
-export function Workflows({ rows, unreadable, selected, now, theme, onSelect }: {
+export function Workflows({ rows, unreadable, sourceError, selected, now, theme, onSelect }: {
   rows: RunBoardRow[];
   unreadable: RunBoardUnreadable[];
+  sourceError?: string;
   selected: number;
   now: number;
   theme: Theme;
@@ -55,7 +56,12 @@ export function Workflows({ rows, unreadable, selected, now, theme, onSelect }: 
   const { t } = useI18n();
   return (
     <box flexDirection="column" width="100%" padding={1} gap={1}>
-      {rows.length === 0 && unreadable.length === 0 ? (
+      {sourceError ? (
+        <box border borderColor={theme.bad} padding={1}>
+          <text fg={theme.bad} wrapMode="word">{`${t('Cannot read the run directory', '读不了 run 目录')}: ${stripControlChars(sourceError)}`}</text>
+        </box>
+      ) : null}
+      {rows.length === 0 && unreadable.length === 0 && !sourceError ? (
         <Line color={theme.muted}>{t('No workflow runs. Ask ChatGPT to start one; a run keeps going locally after that conversation ends.', '还没有工作流 run。让 ChatGPT 起一条；run 起后会在这台机器上继续跑，对话结束也不停。')}</Line>
       ) : null}
       {rows.map((row, index) => {

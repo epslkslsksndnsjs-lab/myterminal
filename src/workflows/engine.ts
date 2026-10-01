@@ -315,10 +315,11 @@ export class WorkflowEngine {
   }
 
   /**
-   * 本地人面（Workflows 屏）的三个控制动作。§3④ 那道归属闸拦的是"模型通道碰别人的 run"，
-   * 而本地人对自己这台机器上的 run 有直接控制权（§4：控制面必须在本地；§19：两档全在人手里）——
-   * 所以这里把"按下键的人"放在候选首位、把该 run 自己的归属放在其后，走既有的那一条闸与结算路径，
-   * 闸本身与三个方法一句都不改。审计的 actor 取候选首位，因此落账的是 'tui'，
+   * 本地人面（Workflows 屏）的三个控制动作。§3④ 的归属闸是为模型通道立的（"非本 root 名下 → 拒"），
+   * 本地人不在那个身份体系里：§4 把控制面钉在本地、§19 把 cancel/pause/resume 三档全交到人手里，
+   * 所以对本地人这条路径，归属闸一律放行是设计如此，不是漏口——它继续原样拦模型通道（FORBIDDEN 语义不动）。
+   * 实现上把"按下键的人"放在候选首位、该 run 自己的归属放在其后，走既有的那一条闸与结算路径，
+   * 闸本身与 cancel/pause/resume 三个方法一句都不改；审计的 actor 取候选首位，因此落账的是 'tui'，
    * 与 discardWorktree(id, 'tui') 同一口径。
    */
   async controlAsLocal(op: WorkflowLocalControl, runId: string): Promise<{ runId: string; status: WorkflowStatus }> {
