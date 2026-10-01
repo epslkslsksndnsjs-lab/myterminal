@@ -388,6 +388,21 @@ const mutations = [
   { name: "WF-530: 目录级读不动被读成\"一条 run 都没有\"（权限故障静默）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "        if (code === 'ENOENT' || code === 'ENOTDIR') return live;\n        throw error;", replace: "        return live;" },
   { name: "WF-531: 取消没停下任何事仍报受理成功（静默吞按键）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (op === 'cancel' && isRunUiActive({ status: result.status })) {", replace: "    if (op === 'pause' && isRunUiActive({ status: result.status })) {" },
   { name: "WF-532: 认不出的状态被染成错误红（未知态冒充失败）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "  return RUN_TONES[status] ?? 'muted';", replace: "  return RUN_TONES[status] ?? 'bad';" },
+
+  // ── src/workflows/ + engine (12) — #233 T10 · 崩溃恢复与终极验收：认领/排空双趟判据、快照不覆写、outbox 至少一次、保留清扫、orphan 强制结算 ──
+  // 每条对应票面一条钉死语义（§10④/§12/§15/§22/§24），由本票 issue-233-* 测试逐条杀。
+  { name: 'WF-600: 认领趟判据失效（有标记的 run 也被重新认领）', file: 'src/workflows/recovery.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (await exists(run.terminalFile)) return undefined;', replace: 'if (false) return undefined;' },
+  { name: 'WF-601: 放大帧不再走"只补标记不覆写"那一支（已 settle 快照被打成 interrupted）', file: 'src/workflows/recovery.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (existing !== undefined && isTerminal(existing.status)) {', replace: 'if (false) {' },
+  { name: 'WF-602: 排空趟不筛未投项（已投递的通知被反复重投）', file: 'src/workflows/recovery.ts', tests: 'test/issue-233-*.test.mjs', find: '.filter((item) => !item.delivered);', replace: '.filter((item) => true);' },
+  { name: 'WF-603: 投成功不标 delivered（至少一次投递退化成永远未投）', file: 'src/workflows/recovery.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (delivered) await markNoticeDelivered(run, item, deps.clock.iso()).catch(() => undefined);', replace: 'if (false) await markNoticeDelivered(run, item, deps.clock.iso()).catch(() => undefined);' },
+  { name: 'WF-604: 认领趟不避让本进程在飞的活 run（活 run 被打成 interrupted）', file: 'src/workflows/recovery.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (deps.liveRunIds?.has(runId)) return undefined;', replace: 'if (false) return undefined;' },
+  { name: 'WF-605: temp 清扫永不删（超宽限的孤儿临时文件堆积）', file: 'src/workflows/retention.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (ageMs <= graceMs) continue;', replace: 'if (true) continue;' },
+  { name: 'WF-606: temp 宽限形同虚设（在飞写的 .tmp 也被删）', file: 'src/workflows/retention.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (ageMs <= graceMs) continue;', replace: 'if (false) continue;' },
+  { name: 'WF-607: 快照裁剪删最新留最旧（保留的是被淘汰的那批）', file: 'src/workflows/retention.ts', tests: 'test/issue-233-*.test.mjs', find: '.sort((a, b) => b.atMs - a.atMs);', replace: '.sort((a, b) => a.atMs - b.atMs);' },
+  { name: 'WF-608: 保护集不生效（active/starting 的终态件被整目录删）', file: 'src/workflows/retention.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (protect.has(run.runId)) {', replace: 'if (false) {' },
+  { name: 'WF-609: 在飞非终态 run 也被计入快照预算（活 run 目录被裁）', file: 'src/workflows/retention.ts', tests: 'test/issue-233-*.test.mjs', find: "if (!(await fileExists(path.join(dir, 'terminal')))) continue;", replace: 'if (false) continue;' },
+  { name: 'WF-610: orphan 强制结算不避让已结算/暂停/已终结的 run（改判已定终态）', file: 'src/workflows/engine.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (context.settled || context.paused || !context.open) continue;', replace: 'if (false) continue;' },
+  { name: 'WF-611: orphan 宽限判据失效（runGate 未到就强制结算）', file: 'src/workflows/engine.ts', tests: 'test/issue-233-*.test.mjs', find: 'if (nowMs <= deadline) continue;', replace: 'if (false) continue;' },
 ];
 
 let killedByTest = 0;

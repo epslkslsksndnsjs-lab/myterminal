@@ -181,6 +181,23 @@ export class MyTerminalRuntime {
     }
   }
 
+  /**
+   * 启动收尸（ADR-0052 §24）：runtime 起序列里跑一次双趟扫描 + 保留清扫 + 挂 orphan 看门狗。
+   * 引擎此刻可能还没建（端点未配即无引擎）→ 静默跳过；任何收尸异常只记日志，绝不阻断 runtime 启动。
+   */
+  private async recoverWorkflowsOnBoot(): Promise<void> {
+    const engine = getWorkflowEngine();
+    if (!engine) return;
+    try {
+      const report = await engine.recoverOnBoot();
+      if (report.claimed.length) this.log(`[workflows] boot-sweep claimed ${report.claimed.length} interrupted run(s) from a previous process.`);
+      if (report.drained.length) this.log(`[workflows] boot-sweep drained ${report.drained.length} pending settled-notice(s).`);
+      for (const failure of report.errors) this.log(`[workflows] boot-sweep ${failure.stage} failed for ${failure.runId}: ${failure.message}`, 'error');
+    } catch (error) {
+      this.log(`[workflows] boot-sweep skipped: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    }
+  }
+
   runtimeHealth(): RuntimeHealth { return { ...this.healthState, environment: { ...this.healthState.environment } }; }
   /** D-8 通道2（#95 W3-03）：L3 就绪状态快照（/health l3 字段 + TUI 状态页数据源）。 */
   l3Health(): L3HealthSnapshot | undefined { return l3HealthSnapshot(); }
@@ -480,6 +497,10 @@ export class MyTerminalRuntime {
         resolve();
       });
     });
+    // ADR-0052 §24：收尸双趟由 runtime 启动序列执行——认领中断 run、排空未投通知、保留清扫、
+    // 挂 orphan 看门狗。模块未接线（端点未配即无引擎）时静默跳过；收尸失败绝不让 runtime 起不来
+    // （尽力通知语义：盘仍是真相源）。
+    await this.recoverWorkflowsOnBoot();
     if (this.config.port === 0) {
       await this.becomeStandaloneLeader(0);
       // D18.2：standalone（无 cluster）→ L3 默认开
@@ -655,6 +676,8 @@ export class MyTerminalRuntime {
     if (this.electionTimer) clearInterval(this.electionTimer);
     if (this.resumeTimer) clearInterval(this.resumeTimer);
     this.stopControlChannelMonitor();
+    // 撤下 workflows 的进程内 orphan 看门狗：关机后不该再有定时器去强制结算未决 run。
+    getWorkflowEngine()?.stopOrphanWatchdog();
 
     // Stop accepting public traffic before removing this member from the shared
     // registry. Doing this in the opposite order leaves a live gateway with an

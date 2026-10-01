@@ -1,4 +1,4 @@
-import { Clock, systemClock } from './clock.js';
+import { Clock, systemClock, type TimerHandle } from './clock.js';
 import { dispatchId, isRunId, newRunId } from './ids.js';
 import { Journal } from './journal.js';
 import { scanDeterminism } from './lint.js';
@@ -10,6 +10,8 @@ import { runInSandbox, type SandboxHost } from './sandbox.js';
 import { isTerminal, SCHEMA_VERSION, type DispatchRecord, type FailureEntry, type RunIndex, type TerminalReason, type WorkflowStatus } from './schema.js';
 import { writeSnapshot } from './snapshot.js';
 import { buildSettledNotice, markNoticeDelivered, putNotice, sha256File, type OutboxItem } from './notice.js';
+import { bootSweep, type BootSweepReport } from './recovery.js';
+import { runRetentionSweep } from './retention.js';
 import { concludeReducer, decideReducerAdmission, resolveReducerBudget, type ReducerAdmit, type ReducerVerdict } from './reducer.js';
 import { ensureDir, createExclusive, exists, removeFile, writeJsonAtomic } from './atomic.js';
 import { WorkflowEvents, type WorkflowEventListener } from './events.js';
@@ -82,6 +84,8 @@ export type WorkflowAuditEntry = {
     | 'workflow_pause'
     | 'workflow_resume'
     | 'workflow_paused_resume'
+    // 启动扫描认领趟的收尸留痕（ADR-0052 §12 I17）：含 runId + actor + 结果。
+    | 'claimed'
     // 隔离面的三条（#231）：配额两档由 ADR §12 I17 点名，丢弃与归档是"唯一减法 = 人"的留痕。
     | 'worktree-quota-warn'
     | 'worktree-quota-blocked'
@@ -249,6 +253,9 @@ export class WorkflowEngine {
   private readonly lockProbe: LockProbe;
   private readonly runs = new Map<string, RunContext>();
   private worktreeService?: WorktreeService;
+  private orphanHandle?: TimerHandle;
+  private orphanSweeps = 0;
+  private orphanPeriodMs = 0;
 
   constructor(private readonly deps: EngineDeps) {
     this.clock = deps.clock ?? systemClock();
@@ -304,6 +311,80 @@ export class WorkflowEngine {
   /** 本进程那份活索引（比盘面新一拍）；不在本进程 = undefined，读侧回落到盘。 */
   liveRunIndex(runId: string): RunIndex | undefined {
     return this.runs.get(runId)?.index;
+  }
+
+  /** 本进程存活期 orphan 看门狗巡检的档数（观测面：证明 §10④ 的"进程内定时器"确在跑）。 */
+  get orphanSweepCount(): number {
+    return this.orphanSweeps;
+  }
+
+  /** orphan 看门狗是否已挂在本进程的时钟上。 */
+  get orphanWatchdogArmed(): boolean {
+    return this.orphanHandle !== undefined;
+  }
+
+  /**
+   * 启动序列的收尸入口（ADR-0052 §24）：认领趟补标记 / interrupted 快照并补写通知，排空趟补投未达
+   * 通知，保留清扫把快照裁进预算并清孤儿 temp，顺带经 T8 那套谓词只清干净 worktree，最后挂上进程内
+   * orphan 看门狗。"死了有账、活人也不失控"在一次启动扫描里闭合。
+   */
+  async recoverOnBoot(): Promise<BootSweepReport> {
+    const live = new Set(this.liveRunIds);
+    const report = await bootSweep({
+      paths: this.paths,
+      clock: this.clock,
+      deliverNotice: this.deps.deliverNotice,
+      audit: (entry) => this.deps.audit?.({ runId: entry.runId, action: 'claimed', actor: entry.actor, status: entry.status, reason: entry.reason, at: entry.at }),
+      liveRunIds: live,
+      worktrees: { reconcileAbandoned: async () => { await this.worktrees().refresh(); } },
+    });
+    await runRetentionSweep({ paths: this.paths, nowMs: this.clock.now(), snapshotRetain: this.gates.snapshotRetain, protect: live });
+    this.armOrphanWatchdog();
+    return report;
+  }
+
+  /**
+   * 进程内 orphan 看门狗（§10④）：定频扫描"超 runGate + 宽限仍未结算"的活 run，以同一结算函数
+   * 强制结算为 failed(settle-timeout)。缺省巡检节律取 waitChunk；重挂靠每次 tick 之后 re-arm。
+   */
+  armOrphanWatchdog(periodMs: number = this.gates.waitChunkMs): void {
+    if (this.orphanHandle) return;
+    this.orphanPeriodMs = Math.max(0, periodMs);
+    this.orphanHandle = this.clock.setTimeout(() => {
+      void this.tickOrphan();
+    }, this.orphanPeriodMs);
+  }
+
+  stopOrphanWatchdog(): void {
+    if (this.orphanHandle) this.clock.clearTimeout(this.orphanHandle);
+    this.orphanHandle = undefined;
+  }
+
+  private async tickOrphan(): Promise<void> {
+    this.orphanSweeps += 1;
+    const armed = this.orphanHandle !== undefined;
+    this.orphanHandle = undefined;
+    // 先续挂再扫描：下一档沿用同一节律、在本次 tick 的同步段就位，进程内节律不因 await 而断档。
+    if (armed) this.armOrphanWatchdog(this.orphanPeriodMs);
+    await this.sweepOrphans();
+  }
+
+  /**
+   * 强制结算超期未决的活 run：走 terminate + stop 打断执行段，让唯一的 execute 出口收敛到 settle，
+   * 不另开第二处结算——"此后任何证据不改终态"由 settle 的 settled 闸兜住。
+   * nowMs 是注入缝：默认取本进程时钟；用例可直接喂一个超期时刻确定性命中，而不必先让 gate 也越过。
+   */
+  async sweepOrphans(nowMs: number = this.clock.now()): Promise<string[]> {
+    const forceSettled: string[] = [];
+    for (const context of [...this.runs.values()]) {
+      if (context.settled || context.paused || !context.open) continue;
+      const deadline = context.gateArmedAt + context.gateRemainingMs + this.gates.reduceSlackMs;
+      if (nowMs <= deadline) continue;
+      this.terminate(context, 'settle-timeout', 'The run was force-settled past runGate + grace without terminating.');
+      if (context.completion) await context.completion.catch(() => undefined);
+      forceSettled.push(context.runId);
+    }
+    return forceSettled;
   }
 
   /**
