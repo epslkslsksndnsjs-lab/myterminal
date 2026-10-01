@@ -135,6 +135,20 @@ describe('冷启动：从盘上把 run 读回来', () => {
     assert.match(board.unreadable[0].message, /schema version mismatch/);
     assert.match(board.unreadable[0].message, /refusing to read/, '屏上要说清是拒读，不是没这条 run');
   });
+
+  test('runs/ 已存在时，本进程在跑但目录还没落的那一条也在列（不漏在跑的）', async () => {
+    const paths = tempLayout('merge');
+    await writeIndex(runPaths(paths, 'wf_cafe').indexFile, indexRecord('wf_cafe', { status: 'completed', endedAt: '2026-10-01T09:55:00.000Z' }));
+    const board = await buildRunBoard(diskRunBoardSource({
+      paths,
+      liveIndex: (runId) => (runId === 'wf_beef' ? indexRecord('wf_beef') : undefined),
+      liveRunIds: () => ['wf_beef'],
+    }));
+    assert.deepEqual(board.rows.map((row) => row.runId), ['wf_beef', 'wf_cafe']);
+    assert.equal(board.rows[0].live, true, '盘上还没有它的目录，不代表它不在跑');
+    assert.equal(board.rows[1].live, false);
+    assert.deepEqual(board.unreadable, [], '没有目录的活 run 不算"读不动"');
+  });
 });
 
 describe('热路径：引擎事件有订阅者了', () => {
