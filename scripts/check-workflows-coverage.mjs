@@ -14,15 +14,15 @@ const TEST_FILES = process.env.TEST_FILES || 'test/*.test.mjs';
 
 /** 核心 = workflows 引擎目录（调度 / 沙箱 / 账本 / 结算 / 注册表 / 路径与版本）。 */
 const CORE_PATTERN = /dist\/workflows\//;
-
 /**
- * 边缘 = TUI 屏与它的装配层（ADR-0052 §13：边缘口径 ≥80%，随票接入）。
- * 这里逐票列名，不是一片通配：漏列 = 该文件没人管，通配 = 既有文件被连坐，两头都判不准。
- * #232 交付 Workflows 屏，故列入它的两件（装配层 + 屏本体）。
+ * 边缘 = MCP / 桥接适配面（#235 起接入：本票唯一改动的 src 文件就是 dist/mcp.js），
+ * 以及 TUI 屏与它的装配层（#232 接入：Workflows 屏本体 + 两源合一的装配层）。
+ * 随后续票 additive 追加，不删条目。
  */
-const EDGE_FILES = [
-  'dist/tui/workflow-runs.js',
-  'dist/tui/screens/Workflows.js',
+const EDGE_PATTERNS = [
+  /dist\/mcp\.js$/,
+  /dist\/tui\/workflow-runs\.js$/,
+  /dist\/tui\/screens\/Workflows\.js$/,
 ];
 
 const out = execSync(`bun test --coverage --timeout 120000 ${TEST_FILES} 2>&1`, {
@@ -55,22 +55,26 @@ for (const row of core) {
 }
 const coreLines = core.reduce((sum, row) => sum + row.lines, 0) / core.length;
 
-console.log(`核心文件 ${core.length} 个，平均行覆盖 ${coreLines.toFixed(2)}%（线 = ${CORE_LINE_THRESHOLD}%）`);
-for (const row of core.sort((a, b) => a.lines - b.lines)) {
-  console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
-}
-
-// 边缘口径是与核心并行的第二口径（缺一不算完成）：列了名就必须有行、就必须到线。
+// 边缘同样是一道真门：只印一行说明而不判，等于把 ② 口径静默豁免（§13"缺一不算完成"）。
 const edge = [];
-for (const wanted of EDGE_FILES) {
-  const row = rows.find((item) => item.file === wanted || item.file.endsWith(`/${wanted}`));
-  if (!row) { failures.push(`${wanted}: 没有覆盖率行——文件没被测到或改名了，边缘门禁不能假绿`); continue; }
-  edge.push(row);
+for (const pattern of EDGE_PATTERNS) {
+  const matched = rows.filter((row) => pattern.test(row.file));
+  if (matched.length === 0) {
+    failures.push(`边缘文件 ${pattern.source} 没有覆盖率行——门禁不能假绿（测试没跑到它，或报告格式变了）`);
+    continue;
+  }
+  edge.push(...matched);
+}
+for (const row of edge) {
   if (row.lines < EDGE_LINE_THRESHOLD) failures.push(`${row.file}: 行覆盖 ${row.lines}% < 边缘线 ${EDGE_LINE_THRESHOLD}%`);
 }
-const edgeLines = edge.length ? edge.reduce((sum, row) => sum + row.lines, 0) / edge.length : 0;
-console.log(`边缘文件 ${edge.length}/${EDGE_FILES.length} 个有覆盖行，平均行覆盖 ${edgeLines.toFixed(2)}%（线 = ${EDGE_LINE_THRESHOLD}%）`);
-for (const row of edge.sort((a, b) => a.lines - b.lines)) {
+
+console.log(`核心文件 ${core.length} 个，平均行覆盖 ${coreLines.toFixed(2)}%（线 = ${CORE_LINE_THRESHOLD}%）`);
+for (const row of [...core].sort((a, b) => a.lines - b.lines)) {
+  console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
+}
+console.log(`边缘文件 ${edge.length} 个（线 = ${EDGE_LINE_THRESHOLD}%）`);
+for (const row of [...edge].sort((a, b) => a.lines - b.lines)) {
   console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
 }
 
@@ -79,4 +83,4 @@ if (failures.length) {
   for (const failure of failures) console.error(`  - ${failure}`);
   process.exit(1);
 }
-console.log('覆盖门禁通过（核心 + 边缘双口径）。');
+console.log('覆盖门禁通过。');

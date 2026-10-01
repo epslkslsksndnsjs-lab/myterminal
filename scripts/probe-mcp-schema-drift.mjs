@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { collectMcpTools } from '../test/fixtures/tool-schema-baseline-issue41.mjs';
 
-const base = JSON.parse(readFileSync('../test/fixtures/mcp-tools-issue41.json', 'utf8'));
+const base = JSON.parse(readFileSync(new URL('../test/fixtures/mcp-tools-issue41.json', import.meta.url), 'utf8'));
 const cur = await collectMcpTools();
 
 // 递归收集 (路径 -> 关键字) 差异
@@ -21,11 +22,35 @@ function walk(a, b, path, out) {
 }
 
 const CONSTRAINT = new Set(['minLength', 'maxLength', 'minimum', 'maximum', 'minItems', 'maxItems', 'enum', 'type', 'required', 'additionalProperties']);
-const buckets = { 展示层default: [], 约束收紧: [], 约束放宽: [], 其他: [] };
+const buckets = { 展示层default: [], 约束收紧: [], 约束放宽: [], 工具面增减: [], 对外文案与注解: [], 其他: [] };
 
-for (const name of Object.keys(base)) {
+// 基线只遍历自己认识的工具 → 新加的工具（如 #235 的两个 workflow 直连工具）在旧探针里
+// 完全隐身。先把名单差本身报出来，再对两侧交集逐字段走。
+const baseNames = new Set(Object.keys(base));
+const curNames = new Set(Object.keys(cur || {}));
+for (const name of [...curNames].filter((n) => !baseNames.has(n)).sort()) {
+  const t = cur[name] || {};
+  buckets.工具面增减.push(`+ ${name}  title=${JSON.stringify(t.title)}  annotations=${JSON.stringify(t.annotations)}`);
+}
+for (const name of [...baseNames].filter((n) => !curNames.has(n)).sort()) {
+  buckets.工具面增减.push(`- ${name}  （基线有、现无）`);
+}
+
+for (const name of baseNames) {
+  if (!curNames.has(name)) continue;
+  // 非 schema 的对外面：title / description / annotations / _meta 漂了也要显式看见
+  for (const field of ['title', 'description']) {
+    if (JSON.stringify(base[name][field]) !== JSON.stringify(cur[name][field])) {
+      buckets.对外文案与注解.push(`${name} :: ${field}  ` + JSON.stringify([base[name][field], cur[name][field]]));
+    }
+  }
+  for (const field of ['annotations', '_meta']) {
+    const out = [];
+    walk(base[name][field], cur[name][field], field, out);
+    for (const d of out) buckets.对外文案与注解.push(`${name} :: ${d.p}  [` + JSON.stringify(d.base) + ' -> ' + JSON.stringify(d.cur) + ']');
+  }
   const out = [];
-  walk(base[name].inputSchema, cur[name] && cur[name].inputSchema, '', out);
+  walk(base[name].inputSchema, cur[name].inputSchema, '', out);
   for (const d of out) {
     const leaf = d.p.split('.').pop();
     const entry = name + ' :: ' + d.p + '  [' + JSON.stringify(d.base) + ' -> ' + JSON.stringify(d.cur) + ']';

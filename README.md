@@ -4,7 +4,7 @@
 
 MyTerminal gives **ChatGPT's normal chat mode a controlled way to work on your local computer**. After you connect MyTerminal through a custom GPT Action or a ChatGPT App, a regular ChatGPT conversation can inspect and edit the authorized local project, run bounded tools, coordinate multiple work sessions, and report progress while you retain control in a local TUI. MyTerminal is the bridge between ChatGPT chat and your computer; it is not a replacement chat client.
 
-MyTerminal 0.1.3 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with Anthropic-protocol LLM support.
+MyTerminal 0.1.3 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent procedures, an isolated **Subagent** system with Anthropic-protocol LLM support, and a **Workflows** engine that fans one script out across dozens of isolated local agents and hands back a single aggregated summary.
 
 ![MyTerminal session hierarchy](docs/assets/tui/sessions-en.svg)
 
