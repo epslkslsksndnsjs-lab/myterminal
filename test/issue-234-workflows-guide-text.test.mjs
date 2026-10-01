@@ -142,16 +142,31 @@ test('⑤ 既有 SUBAGENT..SKILL 段抽取不受影响（issue-140 的锚点不�
 
 // ── 四段骨架：决策段最前，不可被其它内容挤走 ──
 
-test('骨架顺序：决策 → 运行 → 作者指针 → 复用（决策段必须是第一条 bullet）', () => {
-  const en = enBody();
-  const bullets = en.split('\n').filter((line) => line.startsWith('- '));
-  assert.ok(bullets.length >= 4, `bullet 只有 ${bullets.length} 条，四段骨架不成立`);
-  assert.ok(/^- When:/.test(bullets[0]), '决策段不在最前');
-  const at = (needle) => en.indexOf(needle);
-  assert.ok(at('workflow-authoring') > at('Never'), '作者指针段跑到决策段之前');
-  assert.ok(at('scriptPath') > at('workflow-authoring'), '复用段不在作者指针段之后');
-  // 作者指针段的防漂移句：契约只在技能里，描述刻意不重复。
-  assert.ok(/contract lives only there/.test(en), '缺"脚本契约只在技能里"的防漂移句');
+/**
+ * 骨架按 bullet 边界判，不用整段 indexOf——两个词落在同一条 bullet 里时，
+ * indexOf 的大小关系是巧合而不是顺序锁（评审抓到的假断言）。
+ * 作者指针句刻意嵌在运行段内（容量裁决：段只保生存必需），所以判据是
+ * "指针句在限制段之前、复用内容独占最后一条 bullet"。
+ */
+const SKELETON_MARKERS = [
+  ['en', enBody, { decision: 'only when the user asks', pointer: 'workflow-authoring', limits: 'Limits:', reuse: 'resumeFromRunId', antiDrift: 'contract lives only there' }],
+  ['zh', zhBody, { decision: '只在用户提出时', pointer: 'workflow-authoring', limits: '限制：', reuse: 'resumeFromRunId', antiDrift: '脚本契约只写在技能里' }],
+];
+
+test('骨架顺序：决策段第一条、作者指针在限制段之前、复用段是最后一条（双版）', () => {
+  for (const [label, getBody, markers] of SKELETON_MARKERS) {
+    const bullets = getBody().split('\n').filter((line) => line.startsWith('- '));
+    assert.ok(bullets.length >= 4, `${label}：bullet 只有 ${bullets.length} 条，四段骨架不成立`);
+    const at = (needle) => {
+      const index = bullets.findIndex((bullet) => bullet.includes(needle));
+      assert.ok(index >= 0, `${label}：没有 bullet 含 "${needle}"`);
+      return index;
+    };
+    assert.equal(at(markers.decision), 0, `${label}：决策段不在第一条`);
+    assert.ok(at(markers.pointer) < at(markers.limits), `${label}：作者指针句没在限制段之前`);
+    assert.equal(at(markers.reuse), bullets.length - 1, `${label}：复用段没占住最后一条 bullet`);
+    assert.ok(getBody().includes(markers.antiDrift), `${label}：缺"契约只在技能里"的防漂移句`);
+  }
 });
 
 test('opt-in 语义在描述首段（仅用户请求可启动、不自行发起）', () => {
@@ -217,14 +232,21 @@ test('⑥ workflow_cancel 描述是工具本地文本：三句照旧，且不与
 // ── 尺寸棘轮：参数级上限（防膨胀；与段/描述独立计）──
 
 const PARAM_CAPS = { script: 900, scriptPath: 950, args: 250, resumeFromRunId: 850 };
+/**
+ * 参数面**当前没有任何描述文本**，棘轮处于休眠态——休眠不是"空过"：长度锁在基线 0 上，
+ * 谁给参数加文本，这条即红，必须显式改基线并自证未越各自上限（防"悄悄膨胀"）。
+ */
+const PARAM_TEXT_BASELINE = { script: 0, scriptPath: 0, args: 0, resumeFromRunId: 0 };
 
-test('棘轮：workflow_start 四个参数的描述文本各守其位上限', () => {
+test('棘轮：参数描述长度锁在基线上（休眠态；加文本必须显式改基线）', () => {
   const properties = BUILTIN_INPUT_SCHEMAS.workflow_start.properties;
-  assert.deepEqual(Object.keys(properties).sort(), Object.keys(PARAM_CAPS).sort(), '参数集变了——棘轮上限表要同步改');
+  assert.deepEqual(Object.keys(properties).sort(), Object.keys(PARAM_CAPS).sort(), '参数集变了——上限表与基线都要同步改');
   for (const [name, cap] of Object.entries(PARAM_CAPS)) {
-    const description = typeof properties[name].description === 'string' ? properties[name].description : '';
-    const chars = [...description].length;
+    const raw = properties[name].description;
+    assert.ok(raw === undefined || typeof raw === 'string', `${name} 的 description 不是字符串，长度无从度量`);
+    const chars = [...(raw ?? '')].length;
     assert.ok(chars <= cap, `${name} 参数描述 ${chars} 码点 > 上限 ${cap}`);
+    assert.equal(chars, PARAM_TEXT_BASELINE[name], `${name} 参数描述由 ${PARAM_TEXT_BASELINE[name]} 码点变成 ${chars} 码点——加文本要显式改基线，别让它悄悄长`);
   }
 });
 

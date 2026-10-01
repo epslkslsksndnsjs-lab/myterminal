@@ -333,7 +333,10 @@ Load this skill when any MyTerminal call returns an error, when OpenAI ends a tu
 - Never invent fake results or claim success when a tool returned an error.
 `;
 
-const WORKFLOW_AUTHORING_CONTENT = `## 触发与使用 / Trigger and use
+// >>> 生成件 workflow-authoring（源 = skills/workflow-authoring/SKILL.md；改源后跑 scripts/sync-workflow-authoring-skill.mjs）
+//     正文与发布件逐字同文由 test/issue-234-workflow-authoring-skill.test.mjs 锁定。>>>
+const WORKFLOW_AUTHORING_CONTENT = 
+`## 触发与使用 / Trigger and use
 
 - **Named.** The user names workflows — load this skill, then write the script and start the run in the same conversation.
 - **Name only, no task.** The user says "workflows" and nothing else: ask what to run first. Do not start a run on a guess about what they meant.
@@ -487,7 +490,9 @@ Delivery is at most 200 code units, and the first line is identity, not formatti
 - The module never reruns, never degrades, never compensates on its own. The default action is to deliver with the warning attached. The only degradation is the user editing the script.
 - Catch-up is a decision, not a mechanism: start a new run whose script focuses on the failed subset, or use an in-script retry. A resumed run with the same runId is the other option, and it serves the finished calls from cache.
 - Issue-class products (reviews, audits, verifications) have no pass line — only per-item adjudication. Adjudicate every finding as 修 (fix it), 补 (add the missing piece), or 记账 [未确认] (book it as unconfirmed). Never leave an unadjudicated finding in a report.
-`;
+`
+;
+// <<< 生成件 workflow-authoring <<<
 
 const BUILTIN_SKILLS: Map<string, SkillRecord> = new Map([
   ['adaptive-guard', {
@@ -497,8 +502,8 @@ const BUILTIN_SKILLS: Map<string, SkillRecord> = new Map([
     mode: 'inline',
     content: BUILTIN_ADAPTIVE_GUARD_CONTENT,
   }],
-  // ADR-0052 §23③（#234）：workflow-authoring 随模块发布，零新安装面。
-  // 正文与 skills/workflow-authoring/SKILL.md 逐字同文（issue-234 锁）——改任一处必须同步另一处。
+  // >>> 生成件 workflow-authoring（源 = skills/workflow-authoring/SKILL.md；改源后跑 scripts/sync-workflow-authoring-skill.mjs） >>>
+  // ADR-0052 §23③：随模块发布，零新安装面；改源跑 scripts/sync-workflow-authoring-skill.mjs。
   ['workflow-authoring', {
     name: 'workflow-authoring',
     description: `Load before writing or starting a workflow run — the script contract, fan-out shapes, write isolation, the reducer (汇总体) objective template and the polling rules. Reference only; reading it does not itself authorize running a workflow, which starts only when the user asks for one.`,
@@ -506,6 +511,7 @@ const BUILTIN_SKILLS: Map<string, SkillRecord> = new Map([
     mode: 'inline',
     content: WORKFLOW_AUTHORING_CONTENT,
   }],
+  // <<< 生成件 workflow-authoring <<<
 ]);
 
 // --- Public API ---
