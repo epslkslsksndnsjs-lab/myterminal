@@ -196,6 +196,18 @@ test('有效余量·标记在预算内落地（34:50）→ completed 摘要交�
   // 3 个整回合（各 600s）到 30:00，末回合（索引 3）由预算末端裁剪为 300s（30:00→35:00），不是整回合 600s。
   assert.equal(budget.roundTimeoutSec(3), 300, '末回合裁剪到预算末端 = 300s（有效余量：等待止于 35:00）');
   assert.equal(budget.roundTimeoutSec(0), 600, '整回合 = waitChunk = 600s');
+
+  // 真交付：标记在预算内落地（run 已结算）→ 收场判定给 completed 摘要、经消息管线交付，绝不零交付。
+  const h = harness();
+  const started = await h.startRun();
+  const rd = runPaths(h.paths, started.runId);
+  await h.init.settled(started.runId); // 等价于标记在 34:50（< 35:00 预算）落地
+  fs.writeFileSync(rd.digestFile, '结论 2/2 成功\n', 'utf8');
+  const verdict = await concludeReducer(h.paths, { runId: started.runId, agentId: 'sa_in_budget', digestPath: rd.digestFile });
+  assert.equal(verdict.status, 'completed', '标记在预算内 → completed 摘要（非 wait-timeout）');
+  h.store.sendMessage(h.root.session.id, h.root.session.id, `${verdict.firstLine}\n2/2 · ${rd.digestFile}`);
+  const digests = bodyOf(h.store.inbox(h.root.session.id, false), 'digest', started.runId);
+  assert.equal(digests.length, 1, '摘要交付恰一次、确实落进信箱（非零交付）');
 });
 
 test('有效余量·标记晚于预算落地（39:50）→ wait-timeout 三段报告 + 补跑交付，绝无零交付', async () => {

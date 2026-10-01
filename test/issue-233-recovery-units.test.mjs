@@ -266,7 +266,6 @@ test('二次扫描：首轮认领后的 run 再扫既不认领也不误投', asy
 
 test('认领容错：索引 schema 版本超前（拒读）→ 记 errors[claim]，其余帧照常', async () => {
   const paths = freshPaths();
-  const runPathsFor = (id) => runPaths(paths, id);
   const badRun = await makeRun(paths, 'wf_6666');
   await writeJsonAtomic(badRun.indexFile, { ...baseIndex('wf_6666', 'running'), schemaVersion: 999 });
   const goodRun = await makeRun(paths, 'wf_7777');
@@ -277,7 +276,6 @@ test('认领容错：索引 schema 版本超前（拒读）→ 记 errors[claim]
   assert.equal(report.errors[0].runId, 'wf_6666');
   assert.equal(report.claimed.length, 1, '好帧照常被认领');
   assert.equal(report.claimed[0].runId, 'wf_7777');
-  void runPathsFor;
 });
 
 test('排空容错：outbox 里有坏 JSON → 记 errors[drain]', async () => {

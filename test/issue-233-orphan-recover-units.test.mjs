@@ -82,7 +82,7 @@ test('sweepOrphans：宽限未到不结算（runGate + slack 之内一律放行�
     concurrencyWindow: 1,
   });
   await engine.start({ script: ONE_PATH, ownerSessionId: 'sess-a' });
-  const notYet = clock.now() + engine.windowLimit * 0 + 1; // 远未到 runGate
+  const notYet = clock.now() + 1; // 远未到 runGate + 宽限
   const settled = await engine.sweepOrphans(notYet);
   assert.deepEqual(settled, []);
 });

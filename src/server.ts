@@ -190,7 +190,7 @@ export class MyTerminalRuntime {
     if (!engine) return;
     try {
       const report = await engine.recoverOnBoot();
-      if (report.claimed.length) this.log(`[workflows] boot-sweep claimed ${report.claimed.length} interrupted run(s) from a previous process.`);
+      if (report.claimed.length) this.log(`[workflows] boot-sweep claimed ${report.claimed.length} run(s) (interrupted or already-settled frames recovered).`);
       if (report.drained.length) this.log(`[workflows] boot-sweep drained ${report.drained.length} pending settled-notice(s).`);
       for (const failure of report.errors) this.log(`[workflows] boot-sweep ${failure.stage} failed for ${failure.runId}: ${failure.message}`, 'error');
     } catch (error) {

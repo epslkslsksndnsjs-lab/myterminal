@@ -130,7 +130,7 @@ function interruptedIndex(runId: string, previous: RunIndex | undefined, started
   return { ...base, runId, status: 'failed', reason: 'interrupted', startedAt: base.startedAt || startedAtFallback };
 }
 
-async function countsFrom(index: RunIndex): Promise<{ succeeded: number; total: number }> {
+function countsFrom(index: RunIndex): { succeeded: number; total: number } {
   return {
     succeeded: index.dispatches.filter((record) => record.status === 'completed').length,
     total: index.dispatches.length,
@@ -145,7 +145,7 @@ async function ensureClaimedNotice(run: RunPaths, index: RunIndex, at: string): 
   } catch {
     return undefined;
   }
-  const counts = await countsFrom(index);
+  const counts = countsFrom(index);
   const notice = buildSettledNotice({
     runId: index.runId,
     status: index.status,
@@ -198,12 +198,14 @@ async function claimOne(
     await writeIndexSafe(run, index);
   }
 
+  // 结算序（与 engine.settle 同一纪律）：outbox 通知先原子写、终态标记最后独占创建。
+  // 通知先于标记，是为了让"标记后的任何帧"都可被排空趟补投；反序会造出"有标记、无 outbox 项"的帧，
+  // 两趟判据都够不着，认领这一路的 settled-notice 就真丢了。
+  await ensureClaimedNotice(run, index, at);
   const markerCreated = await createExclusive(
     run.terminalFile,
     terminalMarkerContent(runId, index.status, index.reason ?? 'interrupted', index.endedAt ?? at),
   );
-  // 对任意命中帧都保证 outbox 有未投项；投递恒由排空趟完成。markerCreated=false 也补（并发对手写了标记但没写通知时不丢信）。
-  await ensureClaimedNotice(run, index, at);
 
   const entry: RegistryEntry = {
     runId,
