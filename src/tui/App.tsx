@@ -26,6 +26,7 @@ import { Settings } from './screens/Settings.js';
 import { Logs } from './screens/Logs.js';
 import { SubagentList } from './screens/Subagents.js';
 import { Worktrees } from './screens/Worktrees.js';
+import { RunDetail, Workflows } from './screens/Workflows.js';
 import { SubagentDetail } from './screens/Subagent.js';
 
 type FormState = {
@@ -63,6 +64,9 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const snapshot = controller.snapshot();
   const { runtime, state, diff, logs, update } = snapshot;
+  // Workflows 屏（#232）：投影由控制器持有（热 = 事件就地改，冷 = 扫盘填），渲染期只读不算。
+  const workflows = controller.workflowBoard();
+  const workflowRows = workflows.rows;
   const theme = themeFor(runtime.config.uiTheme);
   const i18n = i18nFor(runtime.config.uiLanguage);
   const { t } = i18n;
@@ -131,7 +135,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const groups = logicalSessionGroups(state.sessions);
   const conversations = conversationGroups(state.messages);
-  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : tab === 9 ? worktreeRows.length : 0;
+  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : tab === 9 ? worktreeRows.length : tab === 10 ? workflowRows.length : 0;
   const activeSelection = Math.max(0, Math.min(Math.max(0, itemCount - 1), selected[tab] || 0));
 
   const moveSelection = useCallback((delta: number) => {
@@ -141,19 +145,20 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
         : tab === 2 ? conversationGroups(controller.runtime.store.listMessages(1000)).length
           : tab === 5 ? controller.runtime.store.listExtensions().length
               : tab === 8 ? controller.runtime.listSubagents().length
-                : tab === 9 ? worktreeRows.length : 0;
+                : tab === 9 ? worktreeRows.length
+                  : tab === 10 ? workflowRows.length : 0;
       next[tab] = Math.max(0, Math.min(Math.max(0, count - 1), (next[tab] || 0) + delta));
       return next;
     });
-  }, [controller, tab, worktreeRows.length]);
+  }, [controller, tab, worktreeRows.length, workflowRows.length]);
 
   const selectItem = useCallback((index: number) => setSelected((values) => { const next = [...values]; next[tab] = index; return next; }), [tab]);
 
-  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : tab === 9 ? worktreeRows[activeSelection]?.id : undefined;
+  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : tab === 9 ? worktreeRows[activeSelection]?.id : tab === 10 ? workflowRows[activeSelection]?.runId : undefined;
   useEffect(() => {
     if (detail) return;
     if (!selectedTargetId) return;
-    const prefix = tab === 1 ? 'session' : tab === 2 ? 'conversation' : tab === 9 ? 'worktree' : 'extension';
+    const prefix = tab === 1 ? 'session' : tab === 2 ? 'conversation' : tab === 9 ? 'worktree' : tab === 10 ? 'workflow' : 'extension';
     scrollRef.current?.scrollChildIntoView(`${prefix}-${selectedTargetId}`);
   }, [tab, detail, activeSelection, selectedTargetId]);
 
@@ -164,7 +169,10 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
       const subagents = controller.runtime.listSubagents();
       if (subagents[activeSelection]) setDetail({ kind: 'subagent', id: subagents[activeSelection].id });
     }
-  }, [tab, groups, conversations, activeSelection, controller]);
+    if (tab === 10 && workflowRows[activeSelection]) setDetail({ kind: 'run', id: workflowRows[activeSelection].runId });
+  }, [tab, groups, conversations, activeSelection, controller, workflowRows]);
+
+  const selectedRunId = tab === 10 ? workflowRows[selected[10] || 0]?.runId : undefined;
 
   const createSessionAction = useCallback(() => runAction(() => controller.createSession(ask)), [runAction, controller, ask]);
   const sessionAction = useCallback(() => runAction(async () => {
@@ -178,6 +186,11 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const addExtensionAction = useCallback(() => runAction(() => controller.addExtension(ask)), [runAction, controller, ask]);
   const removeExtensionAction = useCallback(() => runAction(() => controller.removeExtension(controller.runtime.store.listExtensions()[selected[5] || 0]?.name, ask)), [runAction, controller, selected, ask]);
   const discardWorktreeAction = useCallback(() => runAction(() => controller.discardWorktree(worktreeRows[selected[9] || 0]?.id, ask)), [runAction, controller, selected, worktreeRows, ask]);
+  // #232 Workflows 屏的三个控制键：取消要确认，暂停 / 恢复可逆所以直接受理。
+  const cancelWorkflowAction = useCallback(() => runAction(() => controller.cancelWorkflowRun(selectedRunId, ask)), [runAction, controller, selectedRunId, ask]);
+  const pauseWorkflowAction = useCallback(() => runAction(() => controller.pauseWorkflowRun(selectedRunId)), [runAction, controller, selectedRunId]);
+  const resumeWorkflowAction = useCallback(() => runAction(() => controller.resumeWorkflowRun(selectedRunId)), [runAction, controller, selectedRunId]);
+  const copyResumeCallAction = useCallback(() => runAction(() => controller.copyWorkflowResumeCall(selectedRunId)), [runAction, controller, selectedRunId]);
   const configureAction = useCallback(() => runAction(() => controller.editSettings(ask)), [runAction, controller, ask]);
   const rotateCredentialsAction = useCallback(() => runAction(async () => { await controller.rotateCredentials(ask); }), [runAction, controller, ask]);
   const updateApplicationAction = useCallback(() => runAction(() => controller.updateApplication(ask)), [runAction, controller, ask]);
@@ -237,13 +250,17 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     addExtension: addExtensionAction,
     removeExtension: removeExtensionAction,
     discardWorktree: discardWorktreeAction,
+    cancelWorkflow: cancelWorkflowAction,
+    pauseWorkflow: pauseWorkflowAction,
+    resumeWorkflow: resumeWorkflowAction,
+    copyResumeCall: copyResumeCallAction,
     configure: configureAction,
     rotateCredentials: rotateCredentialsAction,
     updateApplication: updateApplicationAction,
     toggleAudit,
     enterInput: handleStartCommand,
     openHelp: () => setShowHelp(true),
-  }), [form, tab, detail, inputEditing, switchTab, nextTab, back, quit, moveSelection, open, createSessionAction, sessionAction, sendMessageAction, refreshDiffAction, addExtensionAction, removeExtensionAction, discardWorktreeAction, configureAction, rotateCredentialsAction, updateApplicationAction, toggleAudit, handleStartCommand]);
+  }), [form, tab, detail, inputEditing, switchTab, nextTab, back, quit, moveSelection, open, createSessionAction, sessionAction, sendMessageAction, refreshDiffAction, addExtensionAction, removeExtensionAction, discardWorktreeAction, cancelWorkflowAction, pauseWorkflowAction, resumeWorkflowAction, copyResumeCallAction, configureAction, rotateCredentialsAction, updateApplicationAction, toggleAudit, handleStartCommand]);
   useAppKeymap(pageActions);
 
   useEffect(() => {
@@ -268,6 +285,10 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     const timer = setInterval(() => void poll(), 2_000);
     return () => { alive = false; clearInterval(timer); };
   }, [tab, controller]);
+
+  // Workflows 屏（#232）：热路径靠订阅——事件一到就推一帧，不等快 tick；进页时再扫一次盘补账。
+  useEffect(() => controller.onWorkflowBoardChange(refresh), [controller, refresh]);
+  useEffect(() => { if (tab === 10) void controller.refreshWorkflowBoard(); }, [tab, controller]);
 
   useKeyboard((event) => {
     if (fatalError && (event.name === 'q' || event.name === 'escape')) { void quit(); return; }
@@ -318,10 +339,13 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   }, [renderer, showNotice]);
 
   const subagentData = controller.runtime.listSubagents();
+  // 详情按 runId 现取：投影在跑的过程中会重排，行没了（被清扫或改判）就退回列表，不撑一个空详情。
+  const detailRun = detail?.kind === 'run' ? workflowRows.find((row) => row.runId === detail.id) : undefined;
   const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} />
     : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} />
       : detail?.kind === 'subagent' ? <SubagentDetail subagentId={detail.id} theme={theme} />
-        : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} />
+        : detailRun ? <RunDetail row={detailRun} now={Date.now()} theme={theme} />
+          : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} interrupted={controller.workflowInterruptedNotice(t)} />
           : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
             : tab === 2 ? <Messages state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
               : tab === 3 ? <Timeline runtime={runtime} state={state} snapshot={snapshot} theme={theme} page={timelinePage} onPageChange={setTimelinePage} onExpandToggle={() => setTimelineExpandRev((v) => v + 1)} keyboardEnabled={!form && !detail && !inputEditing} />
@@ -330,6 +354,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
                     : tab === 6 ? <Settings runtime={runtime} theme={theme} reveal={revealCredentials} update={update} />
                       : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
                         : tab === 9 ? <Worktrees rows={worktreeRows} quota={worktreeQuota} selected={activeSelection} theme={theme} onSelect={selectItem} />
+                        : tab === 10 ? <Workflows rows={workflowRows} unreadable={workflows.unreadable} selected={activeSelection} now={Date.now()} theme={theme} onSelect={selectItem} />
                         : <Logs runtime={runtime} logs={logs} theme={theme} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
   const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;

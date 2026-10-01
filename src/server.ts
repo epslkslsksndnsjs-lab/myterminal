@@ -29,6 +29,9 @@ import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
 import { initWorkflowEngine, getWorkflowEngine } from './workflows/runtime.js';
+import { WorkflowStartError, type WorkflowLocalControl } from './workflows/engine.js';
+import type { WorkflowEventListener } from './workflows/events.js';
+import type { WorkflowStatus } from './workflows/schema.js';
 import { shutdownCommandTrees } from './workflows/command-tree.js';
 import { resolveWorkflowGates } from './workflows/gates.js';
 import { llmBackedFactory } from './workflows/adapter.js';
@@ -358,6 +361,44 @@ export class MyTerminalRuntime {
     const engine = getWorkflowEngine();
     if (!engine) return Promise.resolve({ ok: false as const, reason: 'workflow-not-wired', message: 'The workflows module is not wired, so no worktree can be disposed.' });
     return engine.discardWorktree(id, actor);
+  }
+
+  /**
+   * #232：Workflows 屏的接线面（ADR-0052 §21#5）。引擎可能还没建（端点未配即无引擎），
+   * 与上面三件一样惰性查找；未接线时全部取惰性值——屏要能开着说"没有"，而不是开不起来。
+   */
+  workflowLayout() {
+    return getWorkflowEngine()?.layout;
+  }
+
+  liveWorkflowRunIds(): string[] {
+    return getWorkflowEngine()?.liveRunIds ?? [];
+  }
+
+  liveWorkflowRun(runId: string) {
+    return getWorkflowEngine()?.liveRunIndex(runId);
+  }
+
+  /** 热路径订阅：没有引擎就没有事件源，给一条空退订而不是抛。 */
+  onWorkflowEvent(listener: WorkflowEventListener): () => void {
+    const engine = getWorkflowEngine();
+    return engine ? engine.onWorkflowEvent(listener) : () => {};
+  }
+
+  /** 本地人面的 cancel / pause / resume：归属与审计都走模块里已有的那一条路（actor 落 'tui'）。 */
+  controlWorkflowRun(op: WorkflowLocalControl, runId: string): Promise<{ ok: true; runId: string; status: WorkflowStatus } | { ok: false; reason: string; message: string }> {
+    const engine = getWorkflowEngine();
+    if (!engine) {
+      return Promise.resolve({ ok: false as const, reason: 'workflow-not-wired', message: 'The workflows module is not wired, so no run can be controlled here.' });
+    }
+    return engine.controlAsLocal(op, runId).then(
+      (result) => ({ ok: true as const, ...result }),
+      (error: unknown) => ({
+        ok: false as const,
+        reason: error instanceof WorkflowStartError ? error.reason : 'control-failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
   }
 
   runtimeLogRevision(): number { return this.runtimeLogRevisionValue; }

@@ -31,6 +31,9 @@ const COMMANDS: Record<string, CommandAction> = {
   '/设置': { kind: 'navigate', tab: 6 },
   '/logs': { kind: 'navigate', tab: 7 },
   '/日志': { kind: 'navigate', tab: 7 },
+  // #232：Workflows 屏是第十一页，数字键到不了，页内导航命令是它的主要入口。
+  '/workflows': { kind: 'navigate', tab: 10 },
+  '/工作流': { kind: 'navigate', tab: 10 },
   '/new': { kind: 'pageAction', action: 'createSession' },
   '/send': { kind: 'pageAction', action: 'sendMessage' },
   '/refresh': { kind: 'pageAction', action: 'refreshDiff' },

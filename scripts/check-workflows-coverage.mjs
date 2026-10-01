@@ -15,6 +15,16 @@ const TEST_FILES = process.env.TEST_FILES || 'test/*.test.mjs';
 /** 核心 = workflows 引擎目录（调度 / 沙箱 / 账本 / 结算 / 注册表 / 路径与版本）。 */
 const CORE_PATTERN = /dist\/workflows\//;
 
+/**
+ * 边缘 = TUI 屏与它的装配层（ADR-0052 §13：边缘口径 ≥80%，随票接入）。
+ * 这里逐票列名，不是一片通配：漏列 = 该文件没人管，通配 = 既有文件被连坐，两头都判不准。
+ * #232 交付 Workflows 屏，故列入它的两件（装配层 + 屏本体）。
+ */
+const EDGE_FILES = [
+  'dist/tui/workflow-runs.js',
+  'dist/tui/screens/Workflows.js',
+];
+
 const out = execSync(`bun test --coverage --timeout 120000 ${TEST_FILES} 2>&1`, {
   encoding: 'utf8',
   maxBuffer: 128 * 1024 * 1024,
@@ -49,11 +59,24 @@ console.log(`核心文件 ${core.length} 个，平均行覆盖 ${coreLines.toFix
 for (const row of core.sort((a, b) => a.lines - b.lines)) {
   console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
 }
-console.log(`边缘线 = ${EDGE_LINE_THRESHOLD}%（本票无边缘文件，随后续票接入）`);
+
+// 边缘口径是与核心并行的第二口径（缺一不算完成）：列了名就必须有行、就必须到线。
+const edge = [];
+for (const wanted of EDGE_FILES) {
+  const row = rows.find((item) => item.file === wanted || item.file.endsWith(`/${wanted}`));
+  if (!row) { failures.push(`${wanted}: 没有覆盖率行——文件没被测到或改名了，边缘门禁不能假绿`); continue; }
+  edge.push(row);
+  if (row.lines < EDGE_LINE_THRESHOLD) failures.push(`${row.file}: 行覆盖 ${row.lines}% < 边缘线 ${EDGE_LINE_THRESHOLD}%`);
+}
+const edgeLines = edge.length ? edge.reduce((sum, row) => sum + row.lines, 0) / edge.length : 0;
+console.log(`边缘文件 ${edge.length}/${EDGE_FILES.length} 个有覆盖行，平均行覆盖 ${edgeLines.toFixed(2)}%（线 = ${EDGE_LINE_THRESHOLD}%）`);
+for (const row of edge.sort((a, b) => a.lines - b.lines)) {
+  console.log(`  ${row.lines.toFixed(2).padStart(6)}%  ${row.file}`);
+}
 
 if (failures.length) {
   console.error('\n覆盖门禁未过：');
   for (const failure of failures) console.error(`  - ${failure}`);
   process.exit(1);
 }
-console.log('覆盖门禁通过。');
+console.log('覆盖门禁通过（核心 + 边缘双口径）。');

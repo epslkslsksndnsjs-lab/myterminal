@@ -12,7 +12,7 @@ import { writeSnapshot } from './snapshot.js';
 import { buildSettledNotice, markNoticeDelivered, putNotice, sha256File, type OutboxItem } from './notice.js';
 import { concludeReducer, decideReducerAdmission, resolveReducerBudget, type ReducerAdmit, type ReducerVerdict } from './reducer.js';
 import { ensureDir, createExclusive, exists, removeFile, writeJsonAtomic } from './atomic.js';
-import { WorkflowEvents } from './events.js';
+import { WorkflowEvents, type WorkflowEventListener } from './events.js';
 import { resolveCrashPlan, type CrashPlan, type CrashPoint } from './crash.js';
 import { createDispatchWindow, HARD_CONCURRENCY_CEILING, type DispatchWindow } from './scheduler.js';
 import { DEFAULT_GATES, HARD_AGENT_CAP_CEILING, describeClockNesting, validateClockNesting, type WorkflowGates } from './gates.js';
@@ -147,6 +147,12 @@ export type StartResult = {
   completion: Promise<RunIndex>;
 };
 
+/** 本地人面（Workflows 屏）按控制键的是谁——审计里就落这个字。 */
+export const LOCAL_CONTROL_ACTOR = 'tui';
+
+/** 本地人可做的三个控制动作（GPT 面只有启动 / 取消 / 恢复，pause 留在这块屏上，§19）。 */
+export type WorkflowLocalControl = 'cancel' | 'pause' | 'resume';
+
 export class WorkflowStartError extends Error {
   constructor(
     readonly code: 'VALIDATION' | 'NOT_FOUND' | 'FORBIDDEN',
@@ -277,6 +283,56 @@ export class WorkflowEngine {
   /** 本引擎实际生效的 agent 数上限（观测面：硬顶压回后的最终值）。 */
   get agentLimit(): number {
     return this.gates.agentCap;
+  }
+
+  /**
+   * 盘面布局（观测面）：Workflows 屏的冷启动扫 runs/ 从这里取路径，
+   * 布局归模块自己，读侧不另拼一份——拼错了就是读到一个不存在的地方。
+   */
+  get layout(): WorkflowPaths {
+    return this.paths;
+  }
+
+  /**
+   * 本进程还在跑的 run（观测面）。已结算的刻意不算：屏上"本进程在跑"这六个字
+   * 必须说真话，被打断的判定全靠它。
+   */
+  get liveRunIds(): string[] {
+    return [...this.runs.entries()].filter(([, context]) => !isTerminal(context.index.status)).map(([runId]) => runId);
+  }
+
+  /** 本进程那份活索引（比盘面新一拍）；不在本进程 = undefined，读侧回落到盘。 */
+  liveRunIndex(runId: string): RunIndex | undefined {
+    return this.runs.get(runId)?.index;
+  }
+
+  /**
+   * 进度事件订阅口（接线 #5 的热路径）。退订函数交给订阅方，
+   * 事件容器本身是观测面：订阅者出错不影响 run。
+   */
+  onWorkflowEvent(listener: WorkflowEventListener): () => void {
+    return this.events.on(listener);
+  }
+
+  /**
+   * 本地人面（Workflows 屏）的三个控制动作。§3④ 那道归属闸拦的是"模型通道碰别人的 run"，
+   * 而本地人对自己这台机器上的 run 有直接控制权（§4：控制面必须在本地；§19：两档全在人手里）——
+   * 所以这里把"按下键的人"放在候选首位、把该 run 自己的归属放在其后，走既有的那一条闸与结算路径，
+   * 闸本身与三个方法一句都不改。审计的 actor 取候选首位，因此落账的是 'tui'，
+   * 与 discardWorktree(id, 'tui') 同一口径。
+   */
+  async controlAsLocal(op: WorkflowLocalControl, runId: string): Promise<{ runId: string; status: WorkflowStatus }> {
+    const candidates = await this.localCandidates(runId);
+    if (op === 'cancel') return await this.cancel(runId, candidates);
+    if (op === 'pause') return await this.pause(runId, candidates);
+    return await this.resume(runId, candidates);
+  }
+
+  private async localCandidates(runId: string): Promise<readonly string[]> {
+    const owner = this.runs.get(runId)?.index.ownerSessionId
+      ?? (isRunId(runId) ? (await readIndex(runPaths(this.paths, runId).indexFile))?.ownerSessionId : undefined);
+    if (!owner) throw new WorkflowStartError('NOT_FOUND', 'run-not-found', `Workflow run not found: ${String(runId)}.`);
+    return [LOCAL_CONTROL_ACTOR, owner];
   }
 
   /** 启动一条 run：做完所有"烧 token 前"的校验，立即返回，余下在后台跑。 */

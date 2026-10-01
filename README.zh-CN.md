@@ -153,7 +153,7 @@ MyTerminal session 是工作上下文，不是 ChatGPT 对话 ID。
 
 ## TUI 用户控制面板
 
-九个全屏页面分别是：概览、会话、消息、时间线、Diff、扩展、设置、日志和子代理。
+十一个全屏页面分别是：概览、会话、消息、时间线、Diff、扩展、设置、日志、子代理、工作树和工作流。
 
 ![MyTerminal 概览](docs/assets/tui/overview-zh-CN.svg)
 
@@ -163,6 +163,7 @@ MyTerminal session 是工作上下文，不是 ChatGPT 对话 ID。
 - Enter 可打开完整 session 历史或双向消息对话。
 - Diff 展示 staged、unstaged 和 untracked 工作区变化。
 - Logs 使用统一生命周期展示 Apps 与 Actions 调用。调用发起后立即显示来源、工具名、脱敏后的完整参数、开始时间和 `running`；返回后在同一条逻辑记录中补充脱敏后的完整结果、耗时以及 `completed`、`failed` 或 `timeout`。
+- Workflows 页靠进程内进度事件跟着每一条 run 走；没有事件在发时（冷启动）改从 run 目录重建列表：状态、逐路进度，以及两档用量（本 run 总计与汇总体）。本地人在这里按 `c` 取消、`p` 暂停、`r` 恢复，三个动作都留审计。上次进程留下的被打断 run 会在概览页报出来，并附上可直接粘贴的 `workflow_start` 续跑调用。
 - 所有设置和凭据轮换都在 TUI 内完成。有限选项使用键盘/鼠标选择器；自由文本在首次输入时替换预填值，并支持 `Ctrl+U` 一键清空。按住 `V` 显示凭证；停止按键重复后会在 450ms 的 fail-closed 截止时间内隐藏，切换页面或打开表单会立即隐藏。
 
 输入优先级固定为：模态框 → 当前表单控件 → 当前页面 → 全局快捷键。OpenTUI 负责屏幕生命周期、可用时的鼠标解析、布局、换行、增量绘制和终端恢复；Windows 默认使用主屏兼容配置。

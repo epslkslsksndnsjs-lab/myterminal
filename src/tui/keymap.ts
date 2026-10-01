@@ -20,6 +20,10 @@ type Actions = {
   addExtension: () => void | Promise<void>;
   removeExtension: () => void | Promise<void>;
   discardWorktree: () => void | Promise<void>;
+  cancelWorkflow: () => void | Promise<void>;
+  pauseWorkflow: () => void | Promise<void>;
+  resumeWorkflow: () => void | Promise<void>;
+  copyResumeCall: () => void | Promise<void>;
   configure: () => void | Promise<void>;
   rotateCredentials: () => void | Promise<void>;
   updateApplication: () => void | Promise<void>;
@@ -61,7 +65,7 @@ export function useAppKeymap(actions: Actions): void {
     priority: 200,
     enabled: enabled && !detail && !inputEditing,
     bindings: [
-      ...([1, 2, 5, 9].includes(tab) ? [
+      ...([1, 2, 5, 9, 10].includes(tab) ? [
         { key: 'down', cmd: command(() => actions.moveSelection(1)) },
         { key: 'up', cmd: command(() => actions.moveSelection(-1)) },
         { key: 'j', cmd: command(() => actions.moveSelection(1)) },
@@ -92,8 +96,16 @@ export function useAppKeymap(actions: Actions): void {
       ...(tab === 7 ? [{ key: 'a', cmd: command(actions.toggleAudit) }] : []),
       // #231 Worktrees 面板：唯一减法 = 人 —— x 显式丢弃所选保留项
       ...(tab === 9 ? [{ key: 'x', cmd: command(actions.discardWorktree) }] : []),
+      // #232 Workflows 屏：c 取消（要确认）、p 暂停、r 恢复可逆的直接受理、y 复制 resume 调用
+      ...(tab === 10 ? [
+        { key: 'return', cmd: command(actions.open) },
+        { key: 'c', cmd: command(actions.cancelWorkflow) },
+        { key: 'p', cmd: command(actions.pauseWorkflow) },
+        { key: 'r', cmd: command(actions.resumeWorkflow) },
+        { key: 'y', cmd: command(actions.copyResumeCall) },
+      ] : []),
     ],
-  }), [enabled, detail, tab, inputEditing, actions.moveSelection, actions.open, actions.createSession, actions.sessionAction, actions.sendMessage, actions.refreshDiff, actions.addExtension, actions.removeExtension, actions.discardWorktree, actions.configure, actions.rotateCredentials, actions.updateApplication, actions.toggleAudit]);
+  }), [enabled, detail, tab, inputEditing, actions.moveSelection, actions.open, actions.createSession, actions.sessionAction, actions.sendMessage, actions.refreshDiff, actions.addExtension, actions.removeExtension, actions.discardWorktree, actions.cancelWorkflow, actions.pauseWorkflow, actions.resumeWorkflow, actions.copyResumeCall, actions.configure, actions.rotateCredentials, actions.updateApplication, actions.toggleAudit]);
 
   // layer 100: global shortcuts (disabled when inputEditing)
   useBindings(() => ({

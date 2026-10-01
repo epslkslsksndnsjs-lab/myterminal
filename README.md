@@ -153,7 +153,7 @@ A MyTerminal session is a work context, not a ChatGPT conversation ID.
 
 ## TUI owner control plane
 
-The nine full-window pages are Overview, Sessions, Messages, Timeline, Diff, Extensions, Settings, Logs, and Subagents.
+The eleven full-window pages are Overview, Sessions, Messages, Timeline, Diff, Extensions, Settings, Logs, Subagents, Worktrees, and Workflows.
 
 ![MyTerminal overview](docs/assets/tui/overview-en.svg)
 
@@ -163,6 +163,7 @@ The nine full-window pages are Overview, Sessions, Messages, Timeline, Diff, Ext
 - Enter opens complete session history or a two-way message conversation.
 - Diff shows staged, unstaged, and untracked workspace changes.
 - Logs show Apps and Actions calls through one lifecycle model. A call appears immediately with source, tool name, sanitized complete arguments, start time, and `running`; the same logical record is then completed with the sanitized complete result, duration, and `completed`, `failed`, or `timeout`.
+- The Workflows page follows every run from in-process progress events and rebuilds the list from the run directory when nothing is emitting: status, per-path progress, and the two token accounts (run total and reducer). `c` cancels, `p` pauses, and `r` resumes a run for the local operator; every action is audited. A run left behind by a previous process is announced on Overview with a copyable `workflow_start` resume call.
 - All settings and credential rotation stay inside the TUI. Finite choices use keyboard/mouse selectors; free-text fields replace prefilled content on first typing and support `Ctrl+U` to clear. Hold `V` to reveal credentials; after key repeats stop, they hide within the 450ms fail-closed deadline. Navigation or opening a form hides them immediately.
 
 Input is routed in one order: modal → focused form control → current page → global shortcuts. OpenTUI owns screen lifecycle, mouse decoding when enabled, layout, wrapping, incremental drawing, and terminal restoration; Windows uses the main-screen compatibility profile by default.
