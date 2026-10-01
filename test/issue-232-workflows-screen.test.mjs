@@ -563,4 +563,30 @@ describe('屏上真有字（渲染面，非快照）', () => {
     assert.equal(LABELS_ZH.length, TABS.length, 'zh 标签少一个就整排错位一格');
     assert.equal(LABELS_ZH[10], '工作流');
   });
+
+  test('贯通：引擎真跑出的 run，冷启动扫回来后可见地渲染成一屏（AC1+AC2 同一条链）', async () => {
+    const { workspaceDir, managedRoot } = tempWorkspace('render-cold');
+    const runner = new WorkflowEngine({ workspaceDir, managedRoot, clock: virtualClock(), adapterFactory: fakeAdapter({ tokens: 777 }).factory });
+    const started = await runner.start({ script: SCRIPT, ownerSessionId: 'ses_owner' });
+    await started.completion;
+
+    const board = await buildRunBoard(coldSource(workspaceDir, managedRoot));
+    assert.equal(board.rows.length, 1);
+    const seen = await frame(createElement(Workflows, {
+      rows: board.rows,
+      unreadable: board.unreadable,
+      sourceError: board.sourceError,
+      selected: 0,
+      now: Date.parse('2026-10-01T10:00:00.000Z'),
+      theme: themeFor('dark'),
+      onSelect: () => {},
+    }));
+    assert.match(seen, new RegExp(started.runId), '屏上那行就是盘上那条 run');
+    assert.match(seen, /2\/2/);
+    assert.match(seen, /1554/, '两路各 777 output tokens 合计上屏');
+    const detail = await frame(createElement(RunDetail, { row: board.rows[0], now: Date.parse('2026-10-01T10:00:00.000Z'), theme: themeFor('dark') }), 110, 30);
+    assert.match(detail, /first/);
+    assert.match(detail, /second/);
+    assert.match(detail, /index\.json/);
+  });
 });

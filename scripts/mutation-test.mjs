@@ -366,7 +366,7 @@ const mutations = [
   { name: "WF-428: 提示首行不分单复数（一条也报成 N 条）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    const head = usable.length === 1", replace: "    const head = false" },
   { name: "WF-429: 投影把每路正文也揣进来（观测面变成第二个结果面）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "    dispatches: index.dispatches.map(({ result: _result, ...record }) => record),", replace: "    dispatches: [...index.dispatches]," },
   { name: "WF-430: 目录级读不动被读成\"一条 run 都没有\"（权限故障静默）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "        if (code === 'ENOENT' || code === 'ENOTDIR') return live;\n        throw error;", replace: "        return live;" },
-  { name: "WF-431: 取消没停下任何事仍报受理成功（静默吞按键）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (op === 'cancel' && isRunUiActive({ status: result.status })) {", replace: "    if (false && isRunUiActive({ status: result.status })) {" },
+  { name: "WF-431: 取消没停下任何事仍报受理成功（静默吞按键）", file: "src/tui/state.ts", tests: 'test/issue-232-*.test.mjs', find: "    if (op === 'cancel' && isRunUiActive({ status: result.status })) {", replace: "    if (op === 'pause' && isRunUiActive({ status: result.status })) {" },
   { name: "WF-432: 认不出的状态被染成错误红（未知态冒充失败）", file: "src/tui/workflow-runs.ts", tests: 'test/issue-232-*.test.mjs', find: "  return RUN_TONES[status] ?? 'muted';", replace: "  return RUN_TONES[status] ?? 'bad';" },
 
 ];
