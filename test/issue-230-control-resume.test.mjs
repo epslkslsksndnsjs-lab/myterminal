@@ -597,6 +597,9 @@ test('AC8 取消不退、不重算：已花 token 保持累加', async () => {
   const { engine } = engineFor(temp, { adapterFactory: model.factory });
   const started = await engine.start({ script: SIX, ownerSessionId: OWNER });
   await until(() => ledgerRows(temp, started.runId, 'result').length >= 2, '两路结算');
+  // 账本行落在前、索引写在后：不先等索引跟上这两路，before 会读到半截账，
+  // 取消落地时的那次补写就会被当成"重算"（高负载 runner 上真假红各半）。
+  await until(async () => (await readIndex(runPaths(temp.paths, started.runId).indexFile)).dispatches.filter((d) => d.status === 'completed').length >= 2, '索引跟上两路结算');
   const before = await readIndex(runPaths(temp.paths, started.runId).indexFile);
   await engine.cancel(started.runId, [OWNER]);
   const after = await readIndex(runPaths(temp.paths, started.runId).indexFile);

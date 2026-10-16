@@ -779,7 +779,8 @@ test.skipIf(skipOnWin)('账本：过期记录按注入窗清理，还在跑的�
     assert.equal(pruneCommandRecords(Date.now() + 10_000), 0, '还在跑的记录不删');
     await collectOwnerCommands({ runId: context.runId, dispatchId: context.dispatchId }, 200);
     const quick = await run('execute_cli', { command: 'echo done', run_in_background: true }, context);
-    await until(async () => getCommand(quick.payload.backgroundId)?.endedAt !== undefined, '短命令落下退出时间');
+    // 这是真起一个短命令等它落退出时间：常态是毫秒级，5s 在挤满的 runner 上会被饿死成假红。
+    await until(async () => getCommand(quick.payload.backgroundId)?.endedAt !== undefined, '短命令落下退出时间', 20_000);
     assert.equal(fs.existsSync(quick.payload.outputPath), true, '记录窗内输出文件还在');
     assert.equal(pruneCommandRecords(Date.now() + 50), 1, '退出且过窗即清');
     assert.equal(fs.existsSync(quick.payload.outputPath), false, '销账同时删掉输出文件，不留永久堆头');
