@@ -20,6 +20,10 @@ export function hints(tab: number, detail: Detail | undefined, t: Translate, mou
   if (tab === 6) return t(`${scroll}   c configure   hold v to reveal   k rotate   u update   q quit${inputHint}`, `${scroll}   c 修改配置   按住 v 显示凭据   k 轮换凭据   u 更新   q 退出${inputHint}`);
   // tab === 7 (Logs) 走下方默认分支；#89 修复：tab === 8 (Subagents) 须提前拦截，否则误显示 Logs 提示
   if (tab === 8) return t(`${scroll}   Tab page   q quit${inputHint}`, `${scroll}   Tab 翻页   q 退出${inputHint}`);
+  // #231 Worktrees 面板：唯一减法 = 人，所以丢弃键就写在提示里
+  if (tab === 9) return t(`↑↓/j k select   x discard   Tab page   q quit${inputHint}`, `↑↓/j k 选择   x 丢弃   Tab 翻页   q 退出${inputHint}`);
+  // #232 Workflows 屏：三个控制动作都在这块屏上（GPT 面没有 pause），所以键位直接标出来
+  if (tab === 10) return t(`↑↓/j k select   Enter detail   c cancel   p pause   r resume   y copy resume${inputHint}`, `↑↓/j k 选择   Enter 详情   c 取消   p 暂停   r 恢复   y 复制 resume 调用${inputHint}`);
   // tab === 7 (Logs) 默认分支
   return t(`${scroll}   PgUp/PgDn page   a call details on/off   q quit${inputHint}`, `${scroll}   PgUp/PgDn 翻页   a 调用详情 开/关   q 退出${inputHint}`);
 }

@@ -4,7 +4,7 @@
 
 MyTerminal gives **ChatGPT's normal chat mode a controlled way to work on your local computer**. After you connect MyTerminal through a custom GPT Action or a ChatGPT App, a regular ChatGPT conversation can inspect and edit the authorized local project, run bounded tools, coordinate multiple work sessions, and report progress while you retain control in a local TUI. MyTerminal is the bridge between ChatGPT chat and your computer; it is not a replacement chat client.
 
-MyTerminal 0.1.3 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent workflows, and an isolated **Subagent** system with Anthropic-protocol LLM support.
+MyTerminal 0.1.3 provides that bridge through an auditable, inheritable work-session layer. It supports ChatGPT **Actions** and **Apps (MCP)**, multi-session collaboration, durable messages, declarative extensions, user-authored agent context via AGENT.md, Git-style live diff tracking, a full-window bilingual OpenTUI interface, a user-authored **Skill** system for reusable agent procedures, an isolated **Subagent** system with Anthropic-protocol LLM support, and a **Workflows** engine that fans one script out across dozens of isolated local agents and hands back a single aggregated summary.
 
 ![MyTerminal session hierarchy](docs/assets/tui/sessions-en.svg)
 
@@ -130,7 +130,11 @@ Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`
 
 ### Subagent system
 
-A subagent is an isolated agent loop with its own 8-tool set, context window, and token usage tracker. It runs asynchronously against an Anthropic-Messages-compatible LLM endpoint configured in `config.json` (`subagent.apiKey` / `subagent.baseUrl` / `subagent.model`, all three required). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for configuration.
+A subagent is an isolated agent loop with its own 9-tool set, context window, and token usage tracker. It runs asynchronously against an Anthropic-Messages-compatible LLM endpoint configured in `config.json` (`subagent.apiKey` / `subagent.baseUrl` / `subagent.model`, all three required). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for configuration.
+
+### Workflows
+
+A workflow fans one script out across dozens of isolated local agents and hands back a single aggregated summary. `workflow_start` takes a script (or a saved `scriptPath`) and returns a `runId` immediately while the run keeps going locally; runs start only when the user asks, and the script contract lives in the built-in `workflow-authoring` skill. Workflow agents are read-only by default — an agent that writes must declare `isolation: 'worktree'` and gets its own Git worktree. When the run settles, the **reducer** (an ordinary subagent) reads the run's index and returns one digest through the usual checkpoint and message pipeline. `workflow_cancel` stops a run; `workflow_start` with `resumeFromRunId` resumes it, replaying unchanged calls from cache. Concurrency, agent count, wall clock, and output-token limits are local settings only, and model-facing calls carry no gate parameters.
 
 ### L3 tool-result shaping
 
@@ -153,7 +157,7 @@ A MyTerminal session is a work context, not a ChatGPT conversation ID.
 
 ## TUI owner control plane
 
-The nine full-window pages are Overview, Sessions, Messages, Timeline, Diff, Extensions, Settings, Logs, and Subagents.
+The eleven full-window pages are Overview, Sessions, Messages, Timeline, Diff, Extensions, Settings, Logs, Subagents, Worktrees, and Workflows.
 
 ![MyTerminal overview](docs/assets/tui/overview-en.svg)
 
@@ -163,6 +167,7 @@ The nine full-window pages are Overview, Sessions, Messages, Timeline, Diff, Ext
 - Enter opens complete session history or a two-way message conversation.
 - Diff shows staged, unstaged, and untracked workspace changes.
 - Logs show Apps and Actions calls through one lifecycle model. A call appears immediately with source, tool name, sanitized complete arguments, start time, and `running`; the same logical record is then completed with the sanitized complete result, duration, and `completed`, `failed`, or `timeout`.
+- The Workflows page follows every run from in-process progress events and rebuilds the list from the run directory when nothing is emitting: status, per-path progress, and the two token accounts (run total and reducer). `c` cancels, `p` pauses, and `r` resumes a run for the local operator; every action is audited. A run left behind by a previous process is announced on Overview with a copyable `workflow_start` resume call.
 - All settings and credential rotation stay inside the TUI. Finite choices use keyboard/mouse selectors; free-text fields replace prefilled content on first typing and support `Ctrl+U` to clear. Hold `V` to reveal credentials; after key repeats stop, they hide within the 450ms fail-closed deadline. Navigation or opening a form hides them immediately.
 
 Input is routed in one order: modal → focused form control → current page → global shortcuts. OpenTUI owns screen lifecycle, mouse decoding when enabled, layout, wrapping, incremental drawing, and terminal restoration; Windows uses the main-screen compatibility profile by default.
@@ -203,7 +208,7 @@ bun run test
 bun run dev
 ```
 
-The test suite covers OpenAPI 3.1, Actions and Apps identity, controller takeover, fixed checkpoint timing, parent/child completion, event ACK, subscriptions, durable history, redaction, migration, deletion, continuation, OpenTUI wheel scrolling, and drag selection.
+The test suite covers OpenAPI 3.1, Actions and Apps identity, controller takeover, fixed checkpoint timing, parent/child completion, event ACK, subscriptions, durable history, redaction, migration, deletion, continuation, OpenTUI wheel scrolling, drag selection, workflow fan-out, write isolation, and crash recovery.
 
 Headless mode is available only after first-run TUI setup:
 

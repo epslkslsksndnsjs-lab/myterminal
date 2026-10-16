@@ -33,6 +33,15 @@
 //     逐条核对：均为新功能引入的用户向/状态字面量，无 zh/CJK 串被改、无 t() 参数颠倒
 //     （由其余子测试守住且全绿），属预期内漂移，重新审查后重锁。
 //
+//     重锁记录（2026-09-30，#226 / ADR-0052 §16 workflows 设置节）：controller-logic.ts 新增
+//     workflows 登记键的字段注册（18 个 question/apply 条目），双语标签与范围文案各一份
+//     （"Workflow token cap (output tokens per run)" / "工作流单 run token 上限（输出 token）" 等
+//     18×2 条 + 两条整数范围提示模板），加字段标识与单位字面量（'wf-*' / 'switch' / 'boolean' /
+//     'number' / 'off' / 'on'）；state.ts 的设置字段清单改为从同一登记表拼接，新增 ', ' 一份。
+//     净变化 1798→1869（+71）。逐条核对：全部为新增键位的用户向文案，无既有 zh/CJK 串被改动
+//     （丢失集为空，两条子测试均报"新增"），无 t() 参数颠倒（en-first/zh-second 子测试继续守住）；
+//     属新功能引入的预期漂移，重新审查后重锁。
+//
 //     重锁记录（2026-08-16，#148 / ADR-0048 A48-W1）：host-io.ts 删除死函数 bestEffortSpawn
 //     （全树零调用，仅注释悬空引用），其函数体两条字面量（stdio 'ignore' + 'error' 事件名）
 //     随删——净变化 1800→1798。逐条核对：均为被删死代码的内部字面量，非 i18n 回归
@@ -99,9 +108,18 @@ describe('#31 i18n seam', () => {
     for (const file of Object.keys(baseline)) {
       assert.ok(fs.existsSync(path.join(ROOT, file)), `基线文件被删除：${file}`);
     }
-    assert.equal(Object.keys(baseline).length, 55, '基线文件数变化，行为锁作用域被改动');
+    // #231 显式重锁：Worktrees 面板随 T8 交付 → 作用域多一个文件（src/tui/screens/Worktrees.tsx），
+    // 字面量总数 1879 → 1936。逐文件比对过差异：全部为本票新增，零删除、零改写既有文案。
+    //
+    // 重锁记录（2026-10-01，#232 / ADR-0052 §21#5 Workflows 屏）：作用域多两个文件
+    // （src/tui/screens/Workflows.tsx 列表与详情、src/tui/workflow-runs.ts 装配层的两语文案），
+    // 另八处既有文件因新增页签、快捷键提示与 /workflows 导航命令而增字面量。
+    // 净变化 1936 → 2147（+211）。逐条核对：丢失集在每一处都是空的（零删除、零改写既有文案），
+    // 新增全部是本票引入的用户向/键位字面量，无 t() 参数颠倒（en-first/zh-second 子测试继续守住）；
+    // 属新功能引入的预期漂移，重新审查后重锁。
+    assert.equal(Object.keys(baseline).length, 58, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 1798, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 2147, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───

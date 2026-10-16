@@ -6,6 +6,7 @@ import { describePortOwner, portOwner, upsertWorkspaceRecord, workspaceId, works
 import { migrateWorkspaceState } from './migration.js';
 import os from 'node:os';
 import path from 'node:path';
+import { normalizeWorkflowSettings } from './workflows/gates.js';
 import type { MyTerminalConfig, MyTerminalSettings, SubagentSettings } from './types.js';
 
 const WORKSPACE_PLACEHOLDERS = new Set(['/absolute/path/to/project']);
@@ -112,7 +113,7 @@ export function applySubagentDefaults(sub: SubagentSettings): SubagentSettings {
     ...sub,
     maxTurns: boundedInteger(sub.maxTurns != null ? String(sub.maxTurns) : undefined, 700, 1, 1600),
     timeoutSec: boundedInteger(sub.timeoutSec != null ? String(sub.timeoutSec) : undefined, 7200, 30, 86400),
-    maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 4),
+    maxParallel: boundedInteger(sub.maxParallel != null ? String(sub.maxParallel) : undefined, 2, 1, 10),
     contextWindow: boundedInteger(sub.contextWindow != null ? String(sub.contextWindow) : undefined, 120_000, 1_000, 1_000_000),
     maxOutput: boundedInteger(sub.maxOutput != null ? String(sub.maxOutput) : undefined, 32_000, 1_000, 200_000),
     compactThreshold: boundedInteger(sub.compactThreshold != null ? String(sub.compactThreshold) : undefined, 80_000, 1_000, 500_000),
@@ -164,6 +165,17 @@ export function validateSettings(settings: MyTerminalSettings): string[] {
       if (sub.fallbackModel !== undefined && (typeof sub.fallbackModel !== 'string' || !sub.fallbackModel.trim())) {
         delete sub.fallbackModel;
       }
+    }
+  }
+
+  // ADR-0052 §1 / §8-I4：workflows 是**非端点**独立设置节。默认即上限，调参只经本机设置面；
+  // 类型不符 / 未知键 / 端点字段一律拒（fail-closed，启动即红），越硬顶按运行期同口径压回。
+  if (settings.workflows) {
+    const normalized = normalizeWorkflowSettings(settings.workflows);
+    if (normalized.errors.length) {
+      errors.push(...normalized.errors);
+    } else {
+      settings.workflows = normalized.value;
     }
   }
 

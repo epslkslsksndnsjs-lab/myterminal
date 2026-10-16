@@ -16,6 +16,7 @@ import { BlinkingDot } from '../components/BlinkingDot.js';
 import { useMascotMood } from '../hooks/useMascotMood.js';
 import { useTimelineModel } from '../hooks/useTimelineModel.js';
 import type { ActivityEntry } from '../model/timeline-merge.js';
+import type { InterruptedNotice } from '../workflow-runs.js';
 import { relativeTime } from '../model/relative-time.js';
 
 function timeOf(at: string): string {
@@ -55,11 +56,12 @@ export function tokenTotalFor(record: SubagentRecord | undefined): number {
   return record.usage.inputTokens + record.usage.outputTokens;
 }
 
-export function Home({ runtime, state, snapshot, theme }: {
+export function Home({ runtime, state, snapshot, theme, interrupted }: {
   runtime: MyTerminalRuntime;
   state: StoredState;
   snapshot: TuiSnapshot;
   theme: Theme;
+  interrupted?: InterruptedNotice;
 }) {
   const { t, copy } = useI18n();
   const mood = useMascotMood(snapshot);
@@ -94,6 +96,22 @@ export function Home({ runtime, state, snapshot, theme }: {
       </box>
 
       <text> </text>
+
+      {/* 上次被打断的 run（#232 / ADR-0052 §12）：把能直接粘去续跑的调用摆在第一眼，不让人去翻日志 */}
+      {interrupted ? (
+        <box flexDirection="column" border borderColor={theme.warn} padding={1} gap={0}>
+          <text fg={theme.warn} wrapMode="word"><b>{interrupted.head}</b></text>
+          {interrupted.items.map((item) => (
+            <box key={item.runId} flexDirection="column">
+              <text fg={theme.text} wrapMode="word">{item.line}</text>
+              {item.call ? <text fg={theme.muted} wrapMode="word">{item.call}</text> : null}
+            </box>
+          ))}
+          {interrupted.more ? <text fg={theme.muted} wrapMode="word">{interrupted.more}</text> : null}
+          <text fg={theme.muted} wrapMode="word">{interrupted.hint}</text>
+        </box>
+      ) : null}
+      {interrupted ? <text> </text> : null}
 
       {/* 会话区 */}
       <box flexDirection="row" gap={2} marginBottom={1}>

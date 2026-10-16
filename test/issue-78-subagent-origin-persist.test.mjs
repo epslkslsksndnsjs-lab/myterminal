@@ -27,7 +27,7 @@ function fakeDeps() {
   };
 }
 
-test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#78 选项 A）', () => {
+test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#78 选项 A）', async () => {
   clearAllSubagents();
   resetSubagentRunner();
   const deps = fakeDeps();
@@ -35,7 +35,7 @@ test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#
   const runner = createSubagentRunner(deps);
 
   const origin = { type: 'skill', skillName: 'adaptive-guard' };
-  const result = runner.start('ses_parent_78', { objective: 'do it' }, origin);
+  const result = await runner.start('ses_parent_78', { objective: 'do it' }, origin);
 
   // ① record 必须含 origin
   const record = getSubagent(result.taskId);
@@ -50,14 +50,14 @@ test('CP1: runner.start 透传 origin，createSubagent + status 读回一致（#
   resetSubagentRunner();
 });
 
-test('CP1: 无 origin（direct start）时 record.origin 为 undefined（向后兼容）', () => {
+test('CP1: 无 origin（direct start）时 record.origin 为 undefined（向后兼容）', async () => {
   clearAllSubagents();
   resetSubagentRunner();
   const deps = fakeDeps();
   setRunnerDepsForTesting(deps);
   const runner = createSubagentRunner(deps);
 
-  const result = runner.start('ses_parent_78b', { objective: 'direct start' });
+  const result = await runner.start('ses_parent_78b', { objective: 'direct start' });
   const record = getSubagent(result.taskId);
   assert.equal(record.origin, undefined, 'direct start 时 origin 应为 undefined');
 

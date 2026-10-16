@@ -362,7 +362,7 @@ describe('issue-135 T4 事故一场景（AC3）', () => {
     };
     setRunnerDepsForTesting(fake);
     const runner = getSubagentRunner();
-    const { taskId } = runner.start('ses_parent_accident', {
+    const { taskId } = await runner.start('ses_parent_accident', {
       objective: '实现 parser 重构（需要写文件）',
       background: 'test',
       readOnly: true,

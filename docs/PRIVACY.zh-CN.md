@@ -2,7 +2,7 @@
 
 [English](PRIVACY.md) · [README](../README.zh-CN.md)
 
-最后更新：2026 年 7 月 18 日
+最后更新：2026 年 10 月 16 日
 
 ## 适用范围
 
@@ -14,6 +14,7 @@ MyTerminal 是在用户电脑上运行的开源软件。项目维护者不运营
 
 - TUI 中选定工作区内的文件和 Git 元数据；
 - 结构化 MyTerminal session、任务包、checkpoint、协作消息、事件和脱敏工具审计；
+- `.myterminal` 下的 workflow 脚本与 run 状态（索引、journal、快照、摘要、通知），以及 workflow 写路径创建的隔离 Git worktree；
 - 运行配置与连接凭据；
 - 在选定工作区内执行命令产生的输出。
 
@@ -22,6 +23,8 @@ MyTerminal 是在用户电脑上运行的开源软件。项目维护者不运营
 ## 发送给第三方的数据
 
 用户通过 Actions 或 Apps 连接 ChatGPT 后，请求的工具输入和输出会在用户的 MyTerminal 实例与 OpenAI 之间传输。用户使用隧道或反向代理公开 MyTerminal 时，流量也会经过该服务商。这些服务有各自的条款和隐私政策。
+
+当 Subagent 系统或 Workflows 运行时，任务内容会发送到用户自行配置的 Anthropic Messages 兼容 LLM 端点；这些请求受该提供方自己的条款与隐私政策约束。
 
 MyTerminal 默认隐藏 TUI 中的连接凭据，只保存 session token 的哈希，并从持久化的调用参数与返回结果中清除 identity、authorization、claim code、credential、secret、password、API key、消息正文、content 和 URL 中的敏感查询参数。除此之外，Logs 页面会保留脱敏后的完整输入与输出供本机审查。这些措施可以降低暴露风险，但不能替代谨慎选择工作区和人工审查。
 

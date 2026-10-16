@@ -8,13 +8,18 @@ describe('TUI state pure functions', () => {
   const dark = themeFor('dark');
   const light = themeFor('light');
 
-  test('TABS contains all 9 pages', () => {
-    assert.equal(TABS.length, 9);
+  // #231 显式漂移更新：Worktrees 面板随 T8 交付，页签从 9 张变 10 张（数字键绑定跟着 TABS.length 走）。
+  // #232 显式漂移更新：Workflows 屏随 T9 交付，页签 10 → 11 张；两页都是 workflows 模块的人面，
+  // 刻意排在一起，且新页追加在尾部——既有九页的 tab 索引一个都不动（少一处改数字就少一处错）。
+  test('TABS contains all 11 pages', () => {
+    assert.equal(TABS.length, 11);
     assert.ok(TABS.includes('Overview'));
     assert.ok(TABS.includes('Sessions'));
     assert.ok(TABS.includes('Settings'));
     assert.ok(TABS.includes('Logs'));
     assert.ok(TABS.includes('Subagents'));
+    assert.ok(TABS.includes('Worktrees'));
+    assert.ok(TABS.includes('Workflows'));
   });
 
   test('phaseColor: completed → good', () => {

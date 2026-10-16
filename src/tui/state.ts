@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { WorkspaceDiffTracker, type DiffSnapshot } from '../diff.js';
 import { copyToHostClipboard, notifySystem, playAttentionSound } from './host-io.js';
-import { buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
+import { describeClockNesting, resolveWorkflowGates, validateClockNesting } from '../workflows/gates.js';
+import { WORKFLOW_SETTING_FIELDS, buildChildTaskPackage, buildSettingsQuestions, parseSelectedFields, passiveLockFallback, resolveSettingsAnswers, sessionActionOptions } from './controller-logic.js';
 export { copyToHostClipboard } from './host-io.js';
 import { i18nFor, type I18n } from './copy/i18n.js';
 import { logicalSessionGroups } from '../tui-model.js';
@@ -15,8 +16,12 @@ import { checkForUpdate, installUpdate, isSourceCheckout, type UpdateStatus } fr
 import { CURRENT_VERSION } from '../version.js';
 import { commandPassiveLock, passiveLockStatus } from '../session-resources.js';
 import { runtimeSettingsSnapshot } from '../runtime-settings.js';
+import { runPaths } from '../workflows/paths.js';
+import type { WorkflowEvent } from '../workflows/events.js';
+import { EMPTY_RUN_BOARD, applyWorkflowEvent, buildRunBoard, describeInterruptedRuns, diskRunBoardSource, interruptedRuns, isRunUiActive, resumeCallText, type InterruptedNotice, type RunBoard } from './workflow-runs.js';
+import type { Translate } from './copy/i18n.js';
 
-export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents'] as const;
+export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents', 'Worktrees', 'Workflows'] as const;
 export type Tab = (typeof TABS)[number];
 export type { Ask, Detail, FormQuestion, RuntimeReconfigure, RuntimeReconfigureResult } from './contracts.js';
 import type { Ask, Detail, RuntimeReconfigure } from './contracts.js';
@@ -53,6 +58,16 @@ export class TuiController {
   private readonly remindedAt = new Map<string, { sound: number; notification: number }>();
   private stopped = false;
   private update: UpdateStatus = { currentVersion: CURRENT_VERSION, updateAvailable: false, checking: true };
+  /**
+   * Workflows 屏的投影（#232）：冷启动扫盘填，热路径事件就地改。
+   * 渲染期只读这一份，不在渲染里调 I/O；修订号进 renderRevision，快 tick 才看得见它。
+   */
+  private workflowBoardValue: RunBoard = EMPTY_RUN_BOARD;
+  private workflowRevisionValue = 0;
+  private workflowUnsub: () => void = () => {};
+  private workflowScan?: Promise<void>;
+  private workflowScanQueued = false;
+  private readonly workflowListeners = new Set<() => void>();
 
   constructor(private currentRuntime: MyTerminalRuntime, private readonly reconfigure: RuntimeReconfigure) {
     this.diff = new WorkspaceDiffTracker(currentRuntime.config);
@@ -64,7 +79,83 @@ export class TuiController {
   get zh(): boolean { return this.i18n.zh; }
   text(en: string, zh: string): string { return this.i18n.t(en, zh); }
 
-  start(): void { this.diff.start(); void this.refreshUpdateStatus(); }
+  start(): void { this.diff.start(); void this.refreshUpdateStatus(); this.subscribeWorkflow(); }
+
+  /**
+   * Workflows 事件的订阅（接线 #5 的热路径）。换 runtime（设置里重配）时要重订一次，
+   * 订阅的是新进程里那台引擎，不是被换掉的旧引用。
+   */
+  private subscribeWorkflow(): void {
+    this.workflowUnsub();
+    this.workflowUnsub = this.currentRuntime.onWorkflowEvent((event) => this.onWorkflowProgress(event));
+    this.scheduleWorkflowScan();
+  }
+
+  /** Workflows 屏读的那份投影（同步；渲染期不碰盘）。 */
+  workflowBoard(): RunBoard { return this.workflowBoardValue; }
+
+  /** 投影变了就通知一次——App 用它把刷新推到下一帧，不等 150ms 的快 tick。 */
+  onWorkflowBoardChange(listener: () => void): () => void {
+    this.workflowListeners.add(listener);
+    return () => { this.workflowListeners.delete(listener); };
+  }
+
+  /**
+   * 冷启动那一半：扫 run 目录，从持久件（index.json）重建。
+   * 扫出来的不会比投影旧——在跑的那几条一律先取本进程那份活索引（diskRunBoardSource 的读序），
+   * 所以扫完直接换上就是最新的账。
+   */
+  async refreshWorkflowBoard(): Promise<RunBoard> {
+    const paths = this.currentRuntime.workflowLayout();
+    if (!paths) return this.publishWorkflowBoard(EMPTY_RUN_BOARD);
+    return this.publishWorkflowBoard(await buildRunBoard(diskRunBoardSource({
+      paths,
+      liveIndex: (runId) => this.currentRuntime.liveWorkflowRun(runId),
+      liveRunIds: () => this.currentRuntime.liveWorkflowRunIds(),
+    })));
+  }
+
+  private publishWorkflowBoard(next: RunBoard): RunBoard {
+    if (next === this.workflowBoardValue) return next;
+    this.workflowBoardValue = next;
+    this.workflowRevisionValue += 1;
+    for (const listener of [...this.workflowListeners]) listener();
+    return next;
+  }
+
+  private onWorkflowProgress(event: WorkflowEvent): void {
+    const paths = this.currentRuntime.workflowLayout();
+    if (!paths) return;
+    this.publishWorkflowBoard(applyWorkflowEvent(this.workflowBoardValue, event, {
+      liveIndex: (runId) => this.currentRuntime.liveWorkflowRun(runId),
+      indexPath: (runId) => runPaths(paths, runId).indexFile,
+    }));
+    // 投影只能改已知的行与在跑的账：别处新起的那一条要靠扫盘才看得见。
+    this.scheduleWorkflowScan();
+  }
+
+  /** 扫盘合流：一路 run 几十条事件不该引出几十次扫描，在飞的这一次扫完再补扫一遍就够。 */
+  private scheduleWorkflowScan(): void {
+    if (this.workflowScan) { this.workflowScanQueued = true; return; }
+    this.workflowScan = (async () => {
+      do {
+        this.workflowScanQueued = false;
+        await this.refreshWorkflowBoard();
+      } while (this.workflowScanQueued && !this.stopped);
+    })().finally(() => { this.workflowScan = undefined; });
+  }
+
+  /** 启动提示："上次被打断的 run"（§12），永不让提示把启动搭进去。 */
+  workflowInterruptedNotice(t: Translate): InterruptedNotice | undefined {
+    return describeInterruptedRuns(interruptedRuns(this.workflowBoardValue), t, { now: Date.now() });
+  }
+
+  /** 可复制的 resume 调用文本；给不出就是给不出，不编一条必然被拒的。 */
+  workflowResumeCall(runId: string | undefined): string | undefined {
+    if (!runId) return undefined;
+    const row = this.workflowBoardValue.rows.find((item) => item.runId === runId);
+    return row ? resumeCallText(row, { annotate: true }) : undefined;
+  }
 
   snapshot(): TuiSnapshot {
     const revision = this.renderRevision();
@@ -82,6 +173,7 @@ export class TuiController {
       this.update.checking, this.update.latestVersion || '', this.update.error || '',
       this.currentRuntime.runtimeHealth().phase,
       this.currentRuntime.l3Health()?.status ?? 'off',
+      this.workflowRevisionValue,
     ].join(':');
   }
 
@@ -269,6 +361,75 @@ export class TuiController {
     this.currentRuntime.log(result.ok ? `Removed extension ${answers[0]}` : result.error?.message || 'Extension removal failed', result.ok ? 'info' : 'error');
   }
 
+  /**
+   * Worktrees 面板的丢弃（#231：唯一减法 = 人）。
+   * 显式二次确认——有改动的件是别人留下的工作，误删不可逆（分支没合并时 git 会拒删分支，
+   * 那条留下的分支是唯一的恢复线索，所以确认文案里把它说清楚）。
+   */
+  async discardWorktree(id: string | undefined, ask: Ask): Promise<void> {
+    if (!id) return;
+    const answers = await ask([
+      { label: this.text(`Discard ${id}? Unmerged work in it is deleted. The branch stays if it holds commits.`, `丢弃 ${id}？其中未合并的改动会被删除；若分支上有提交，分支保留。`), fallback: 'no', options: ['yes', 'no'] },
+    ]);
+    if (!answers?.[0] || answers[0].toLowerCase() !== 'yes') return;
+    const result = await this.currentRuntime.discardWorktree(id, 'tui');
+    this.currentRuntime.log(
+      result.ok ? `Discarded worktree ${id}` : ('message' in result ? result.message : `Worktree discard failed for ${id}`),
+      result.ok ? 'info' : 'error',
+    );
+  }
+
+  /**
+   * Workflows 屏的取消（#232）：整 run 的终态动作，且不可逆（在飞的路随中止停），
+   * 所以走一次显式确认——与 discardWorktree 同一档；pause / resume 可逆，直接受理。
+   */
+  async cancelWorkflowRun(runId: string | undefined, ask: Ask): Promise<void> {
+    if (!runId) return;
+    const answer = await ask([{
+      label: this.text(`Cancel ${runId}? In-flight paths stop where they are and the run settles as cancelled; results already on disk stay.`, `取消 ${runId}？在飞的路就地停，整个 run 结算为 cancelled；已经落盘的结果都留着。`),
+      fallback: 'no',
+      options: ['yes', 'no'],
+    }]);
+    if (!answer || answer[0].toLowerCase() !== 'yes') return;
+    await this.controlWorkflow('cancel', runId);
+  }
+
+  async pauseWorkflowRun(runId: string | undefined): Promise<void> {
+    if (runId) await this.controlWorkflow('pause', runId);
+  }
+
+  async resumeWorkflowRun(runId: string | undefined): Promise<void> {
+    if (runId) await this.controlWorkflow('resume', runId);
+  }
+
+  private async controlWorkflow(op: 'cancel' | 'pause' | 'resume', runId: string): Promise<void> {
+    const result = await this.currentRuntime.controlWorkflowRun(op, runId);
+    if (!result.ok) return this.currentRuntime.log(result.message, 'error');
+    // 取消只对本进程在跑的 run 有效：引擎对不在内存里的那一条只回读盘面状态、不改判（幂等语义照 §8）。
+    // 按了 c 却什么都没停就必须说出来——静默受理等于骗人，那正是协作式控制不许的形状。
+    if (op === 'cancel' && isRunUiActive({ status: result.status })) {
+      this.currentRuntime.log(this.text(
+        `Workflow ${runId} is not running in this process, so nothing was cancelled (the index still says ${result.status}). To pick it back up, resume it from ChatGPT — y copies the call.`,
+        `工作流 ${runId} 不在本进程里跑，这一按什么都没停（索引仍是 ${result.status}）。要接着干请从 ChatGPT 续跑——按 y 复制调用。`,
+      ), 'error');
+    } else {
+      this.currentRuntime.log(this.text(`Workflow ${runId} → ${result.status}`, `工作流 ${runId} → ${result.status}`));
+    }
+    await this.refreshWorkflowBoard();
+  }
+
+  /** 把 resume 调用文本放到剪贴板；拿不到就把文本原样打到日志里，不谎报已复制。 */
+  async copyWorkflowResumeCall(runId: string | undefined): Promise<void> {
+    if (!runId) return;
+    const call = this.workflowResumeCall(runId);
+    if (!call) {
+      this.currentRuntime.log(this.text('This run offers no resume call: its script reference is gone.', '这条 run 给不出 resume 调用：脚本引用已不在。'), 'error');
+      return;
+    }
+    if (await copyToHostClipboard(call)) this.currentRuntime.log(this.text('Resume call copied.', 'resume 调用已复制。'));
+    else this.currentRuntime.log(this.text(`Clipboard unavailable, copy it yourself: ${call}`, `剪贴板不可用，请自己复制：${call}`), 'error');
+  }
+
   async editSettings(ask: Ask): Promise<void> {
     const config = this.currentRuntime.config;
     const persisted = readMyTerminalSettings();
@@ -289,11 +450,11 @@ export class TuiController {
     const workspaceItems = workspaceSelector.items;
     const passiveStatus = process.platform === 'darwin' ? passiveLockStatus(config) : { state: 'unsupported' };
     const passiveFallback = passiveLockFallback(current.passiveLockEnabled, passiveStatus.state);
-    const settingFields = ['language', 'theme', 'workspace', 'host', 'port', 'public-url', 'max-output', 'timeout', 'actions-continuation', 'non-blocking-tasks', 'passive-lock'];
+    const settingFields = ['language', 'theme', 'workspace', 'host', 'port', 'public-url', 'max-output', 'timeout', 'actions-continuation', 'non-blocking-tasks', 'passive-lock', ...WORKFLOW_SETTING_FIELDS];
     const selection = await ask([{ label: this.text('Choose settings to edit', '选择要修改的设置'), options: settingFields, multiSelect: true }], [
       this.text('Edit only the settings you choose.', '只修改你选择的设置；未选择的项目保持不变。'),
       this.text('Available fields:', '可选字段：'),
-      'language, theme, workspace, host, port, public-url, max-output, timeout, actions-continuation, non-blocking-tasks, passive-lock',
+      ['language, theme, workspace, host, port, public-url, max-output, timeout, actions-continuation, non-blocking-tasks, passive-lock', ...WORKFLOW_SETTING_FIELDS].join(', '),
     ]);
     if (!selection?.[0]) return;
     const fields = parseSelectedFields(selection[0]);
@@ -342,6 +503,12 @@ export class TuiController {
         else { this.currentRuntime.log(conflict, 'error'); return; }
       } catch (error) { this.currentRuntime.log(error instanceof Error ? error.message : String(error), 'error'); return; }
     } else if (errors.length) { this.currentRuntime.log(errors.join(' '), 'error'); return; }
+    // 时钟嵌套不变量：调完就破嵌套的答案不该等到 run 启动才炸（那时只剩一条 FORBIDDEN）。
+    const nesting = validateClockNesting(resolveWorkflowGates(next.workflows, process.env).gates);
+    if (!nesting.ok) {
+      this.currentRuntime.log(this.text(`Workflow clocks must stay nested: ${describeClockNesting(nesting.violations)}`, `工作流时钟必须保持嵌套：${describeClockNesting(nesting.violations)}`), 'error');
+      return;
+    }
     await this.applySettings(next);
     if (process.platform === 'darwin' && passiveAction) {
       await commandPassiveLock(this.currentRuntime.config, passiveAction === 'off' ? 'stop' : passiveAction);
@@ -361,6 +528,8 @@ export class TuiController {
   async shutdown(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.workflowUnsub();
+    this.workflowListeners.clear();
     this.diff.stop();
     await this.currentRuntime.close();
   }
@@ -374,6 +543,8 @@ export class TuiController {
       this.diff = new WorkspaceDiffTracker(this.currentRuntime.config);
       this.snapshotCache = undefined;
       this.diff.start();
+      // 事件源跟着引擎一起换：继续握着旧 runtime 的订阅 = 新 runtime 的进度这条屏再也看不见。
+      this.subscribeWorkflow();
       this.currentRuntime.log(result.error || 'Runtime settings applied from TUI.', result.error ? 'error' : 'info');
     } catch (error) {
       previousDiff.start();

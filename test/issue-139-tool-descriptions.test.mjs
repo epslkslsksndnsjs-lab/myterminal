@@ -16,7 +16,8 @@ import { getAllToolSchemas, getToolNames } from '../dist/subagent/tools.js';
 import { getSubagentSystemPrompt } from '../dist/subagent/executor.js';
 
 const DESCRIPTIONS = () => getAllToolSchemas();
-const TOOL_NAMES = ['execute_cli', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'task_create', 'task_update'];
+// ADR-0052 §8：subagent 面 8→9——wait_for_path 随汇总体管线加入，三块化写法照同一惯例。
+const TOOL_NAMES = ['execute_cli', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'task_create', 'task_update', 'wait_for_path'];
 
 function descOf(name) {
   const tool = DESCRIPTIONS().find((t) => t.name === name);
@@ -28,10 +29,10 @@ function descOf(name) {
 // AC1：8 工具全三块化 + ≤240 行
 // ═══════════════════════════════════════════════════════════════
 
-test('T8-AC1a: 8 工具名不变、不新增（系统提示词拼接基础）', () => {
+test('T8-AC1a: 工具名集合与名单同涨同落（系统提示词拼接基础）', () => {
   const schemas = DESCRIPTIONS();
-  assert.strictEqual(schemas.length, 8, '仍为 8 工具');
-  assert.deepEqual(schemas.map((s) => s.name).sort(), [...TOOL_NAMES].sort(), '工具名集合不变');
+  assert.strictEqual(schemas.length, 9, 'ADR-0052 §8 起为 9 工具');
+  assert.deepEqual(schemas.map((s) => s.name).sort(), [...TOOL_NAMES].sort(), '工具名集合与名单一致');
 });
 
 test('T8-AC1b: 每工具描述含三块（Boundaries/Discipline/Failures）且 ≤240 行', () => {
@@ -93,9 +94,9 @@ test('T8-AC3c: task_create subject schema 带 maxLength 120', () => {
 // AC4：系统提示词工具清单拼接不受影响
 // ═══════════════════════════════════════════════════════════════
 
-test('T8-AC4: 系统提示词工具清单照旧（8 工具名列全、描述不进系统提示词）', () => {
+test('T8-AC4: 系统提示词工具清单照旧（工具名列全、描述不进系统提示词）', () => {
   const names = getToolNames();
-  assert.strictEqual(names.length, 8, 'getToolNames 仍 8 工具');
+  assert.strictEqual(names.length, 9, 'getToolNames 与工具表同源');
   const prompt = getSubagentSystemPrompt('probe task', names, '/tmp/ws');
   for (const name of TOOL_NAMES) {
     assert.ok(prompt.includes(`- ${name}`), `系统提示词含 ${name}`);

@@ -17,6 +17,7 @@
 | 安全完成 | `运行项目检查；通过后将已验证结果 checkpoint 为 completed。` |
 | 运行 skill | `列出可用 skill，然后运行最适合 <目标> 的那个。` |
 | 启动 subagent | `启动 subagent 完成 <目标>，使用 <提供商/模型>。轮询直到完成。` |
+| 运行 workflow | `为 <目标> 运行一条 workflow；先加载 workflow-authoring 技能。` |
 
 ## 不要粘贴什么
 

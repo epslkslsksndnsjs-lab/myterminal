@@ -222,6 +222,32 @@ export type SubagentSettings = {
   fallbackModel?: string; // 529 过载降级模型（可选，默认无；env MYTERMINAL_SUBAGENT_FALLBACK_MODEL 可覆盖）
 };
 
+/**
+ * ADR-0052 §1：workflows 专属的**非端点**设置节。默认值即上限，只经本机设置面
+ * （config / env / TUI Settings）调整；键名集中登记在 src/workflows/gates.ts。
+ * 端点三元组（baseUrl / apiKey / model）刻意不在这里——与 subagent 同键同校验，单源不另开。
+ */
+export type WorkflowsSettings = {
+  tokenCap?: number;
+  unlimited?: boolean;
+  runGateMinutes?: number;
+  agentCap?: number;
+  concurrencyWindow?: number;
+  dispatchWindowMinutes?: number;
+  dispatchTurns?: number;
+  stallSeconds?: number;
+  waitChunkSeconds?: number;
+  reducerBudgetMinutes?: number;
+  reducerTimeoutMinutes?: number;
+  keepQuotaCount?: number;
+  keepQuotaBytes?: number;
+  archiveAfterDays?: number;
+  autoArchive?: boolean;
+  snapshotRetain?: number;
+  terminalRunRetain?: number;
+  reducerQuota?: number;
+};
+
 export type MyTerminalSettings = {
   schemaVersion: 1;
   workspaceDir: string;
@@ -238,6 +264,7 @@ export type MyTerminalSettings = {
   actionsContinuationMode: ActionsContinuationMode;
   nonBlockingTasksEnabled: boolean;
   subagent?: SubagentSettings; // ADR-0009 决策 3：可选，向后兼容
+  workflows?: WorkflowsSettings; // ADR-0052 §1：非端点设置节，默认即上限
 };
 
 export type MyTerminalConfig = {

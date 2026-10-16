@@ -14,6 +14,8 @@ import { continuationPolicy } from './continuation.js';
 import { listSkills, loadSkill } from './skills.js';
 import { getSubagentRunner } from './subagent/runner.js';
 import { IGNORE_DIRECTORIES, walkFiles } from './utils/fs.js';
+import { getWorkflowEngine } from './workflows/runtime.js';
+import { mapStartError, validateReduce, validateStartArgs } from './workflows/start.js';
 
 // Bounded wall-clock budget for search_text. The regex-safety gate (see
 // validateSafeRegex) blocks the catastrophic-backtracking class; this is a
@@ -203,6 +205,24 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
   const actor = (context: Parameters<ToolDefinition['invoke']>[1]) => {
     if (!context.authenticatedSession) throw new MyTerminalError('IDENTITY_REQUIRED', 'Register or inherit a MyTerminal session before calling this tool.');
     return context.authenticatedSession;
+  };
+
+  // 会话延续链（含自身）：换控制者不改"run 是谁的"，但换了 sessionId 就要靠它认亲（ADR-0052 §3④）。
+  // 归属判据 = actor 的 sessionId 等于 ownerSessionId，或其 continuesSessionId 祖先链包含它。
+  // reduce 校验与 workflow resume / cancel 共用这一份，杜绝两处各写一条漂移。
+  const ownershipChain = (sessionId: string): string[] => {
+    const ids: string[] = [];
+    let current: string | undefined = sessionId;
+    while (current && ids.length < 32) {
+      if (ids.includes(current)) break;
+      ids.push(current);
+      try {
+        current = store.session(current).continuesSessionId ?? undefined;
+      } catch {
+        current = undefined;
+      }
+    }
+    return ids;
   };
 
   add({
@@ -654,7 +674,7 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       const runner = getSubagentRunner();
       try {
         // 决策 15：objective 加 skill 前缀；决策 6：forkOptions 覆盖默认配置；决策 14：origin 传入
-        const started = runner.start(session.id, {
+        const started = await runner.start(session.id, {
           objective: `执行技能 "${name}" 的指令：\n\n${record.content}`,
           background: record.description,
           ...record.forkOptions,
@@ -693,12 +713,31 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       }
       const session = actor(context);
       const runner = getSubagentRunner();
+
+      // ADR-0052 §8 I9：reduce 在工具层先校验（形状 / 归属 / 根本没有的旋钮），
+      // 拒在起 subagent 之前——归属判据是 §3④：ownerSessionId 相等或其延续链包含它。
+      async function checkReduce(args: JsonObject, sessionId: string): Promise<{ runId: string; digestPath: string } | undefined> {
+        if (args.reduce === undefined) return undefined;
+        const engine = getWorkflowEngine();
+        if (!engine) {
+          throw new MyTerminalError('NOT_FOUND', 'No workflow run can be reduced here: the workflows module is not wired (baseUrl / apiKey / model must be configured).', { reason: 'workflow-not-wired' } as JsonObject);
+        }
+        const check = await validateReduce(engine, { reduce: args.reduce, timeoutSec: args.timeoutSec }, ownershipChain(sessionId));
+        if (!check.present) return undefined;
+        if (!check.ok) {
+          throw new MyTerminalError(check.code === 'VALIDATION' ? 'EXTENSION_ERROR' : check.code, check.message, { reason: check.reason } as JsonObject);
+        }
+        return { runId: check.runId, digestPath: check.paths.digest };
+      }
+
+      const reduce = await checkReduce(input, session.id);
       // D3：外部契约只留 objective + 三覆盖；内部四字段由 skills fork 等内部路径直供（SubagentStartInput 保留可选）
-      return runner.start(session.id, {
+      return await runner.start(session.id, {
         objective: asString(input.objective, 'objective'),
         maxTurns: typeof input.maxTurns === 'number' ? input.maxTurns : undefined,
         timeoutSec: typeof input.timeoutSec === 'number' ? input.timeoutSec : undefined,
         readOnly: typeof input.readOnly === 'boolean' ? input.readOnly : undefined,
+        ...(reduce ? { reduce } : {}),
       }) as unknown as JsonObject;
     },
   });
@@ -718,6 +757,86 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
       } catch (err) {
         const code = (err as { code?: string }).code === 'NOT_FOUND' ? 'NOT_FOUND' : 'EXTENSION_ERROR';
         throw new MyTerminalError(code as 'NOT_FOUND' | 'EXTENSION_ERROR', (err as Error).message);
+      }
+    },
+  });
+
+  // ── Workflows 启动面（ADR-0052 §8）──
+  // 只有 root 能启动：subagent 通道一律 FORBIDDEN（递归防线的第一层）。
+  // 参数面只有三种互斥形态 + 可选 args，闸门参数一个都不暴露（默认档即上限）。
+  add({
+    name: 'workflow_start', title: 'Start workflow',
+    // ADR-0052 §23①（T11 #234）：与 docs/GPT_INSTRUCTIONS.md WORKFLOWS 段逐字同文
+    // （四段骨架：决策段最前/运行段/作者指针段/复用段，含限制数值与 partial 诚实）。
+    // 编辑任一处须同步另一处；≤1200 码点与同文由 issue-234 测试锁定。
+    description: `- When: run only when the user asks — they named workflows, or the task needs real breadth (research, audits). Never self-initiate; with no task, ask what to run first.
+- How to run: load the workflow-authoring skill; the script contract lives only there. workflow_start({script|scriptPath, args?}) returns a runId at once; the run keeps going locally. Then start one reducer: subagent_start({objective: the skill's reducer template, reduce:{runId}}). No command entry point: only these calls start a run.
+- Limits: concurrency max(2, min(16, cores-2)); 1000 agents; 30-minute wall clock; 8,000,000 output tokens; widen only on explicit user request.
+- Results: poll the reducer with subagent_status until terminal; it delivers one line, paths, and the index pointer. Notice and poll are two views of one result: dedupe by runId+hash, act once. Report partial as partial and name the failed paths; never call a run complete early.
+- Stop and resume: workflow_cancel({runId}) stops a whole run; idempotent, finished work still delivered. workflow_start({scriptPath, resumeFromRunId}) continues: unchanged calls replay from cache, live work resumes at the first changed or missing call.`,
+    inputSchema: BUILTIN_INPUT_SCHEMAS.workflow_start,
+    annotations: { ...localWrite, idempotentHint: false },
+    invoke: async (input, context) => {
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot start workflow runs.', { reason: 'subagent-channel' } as JsonObject);
+      }
+      const session = actor(context);
+      const check = validateStartArgs(input);
+      if (!check.ok) {
+        throw new MyTerminalError(check.code === 'VALIDATION' ? 'EXTENSION_ERROR' : check.code, check.message, { reason: check.reason } as JsonObject);
+      }
+      const engine = getWorkflowEngine();
+      if (!engine) {
+        throw new MyTerminalError('FORBIDDEN', 'Workflow runs need the model endpoint configured (baseUrl / apiKey / model).', { reason: 'endpoint-not-configured' } as JsonObject);
+      }
+      try {
+        const started = await engine.start({
+          ...(typeof input.script === 'string' ? { script: input.script } : {}),
+          ...(typeof input.scriptPath === 'string' ? { scriptPath: input.scriptPath } : {}),
+          ...(typeof input.resumeFromRunId === 'string' ? { resumeFromRunId: input.resumeFromRunId } : {}),
+          ...(input.args !== undefined ? { args: input.args } : {}),
+          ownerSessionId: session.id,
+          ownerCandidates: ownershipChain(session.id),
+        });
+        return {
+          runId: started.runId,
+          status: started.status,
+          scriptPath: started.scriptPath,
+          // 续跑显式说明：journal 被截断到最长良前缀时，丢弃了多少行（不静默丢，§17/AC9）。
+          ...(started.journalDropped ? { journalDropped: started.journalDropped } : {}),
+        } as JsonObject;
+      } catch (error) {
+        const mapped = mapStartError(error);
+        if (mapped) throw new MyTerminalError(mapped.code, mapped.message, mapped.details);
+        throw error;
+      }
+    },
+  });
+
+  // ── Workflows 取消面（ADR-0052 §8 / §19：GPT 面第二个新工具，独立成工具不并入 start）──
+  // 参数仅 runId；仅 root（subagent 通道 FORBIDDEN）；幂等（终态返回当前状态）；
+  // 归属只限本 root 名下（延续链外 FORBIDDEN）；响应 {runId, status} 小对象、快调用适配 K5。
+  add({
+    name: 'workflow_cancel', title: 'Cancel workflow',
+    description: 'Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.',
+    inputSchema: BUILTIN_INPUT_SCHEMAS.workflow_cancel,
+    annotations: SUBAGENT_ANNOTATIONS,
+    invoke: async (input, context) => {
+      if (context.transport === 'subagent') {
+        throw new MyTerminalError('FORBIDDEN', 'Subagents cannot cancel workflow runs.', { reason: 'subagent-channel' } as JsonObject);
+      }
+      const session = actor(context);
+      const engine = getWorkflowEngine();
+      if (!engine) {
+        throw new MyTerminalError('FORBIDDEN', 'Workflow runs need the model endpoint configured (baseUrl / apiKey / model).', { reason: 'endpoint-not-configured' } as JsonObject);
+      }
+      try {
+        const result = await engine.cancel(asString(input.runId, 'runId'), ownershipChain(session.id));
+        return { runId: result.runId, status: result.status } as JsonObject;
+      } catch (error) {
+        const mapped = mapStartError(error);
+        if (mapped) throw new MyTerminalError(mapped.code, mapped.message, mapped.details);
+        throw error;
       }
     },
   });

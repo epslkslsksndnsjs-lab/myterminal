@@ -1,8 +1,9 @@
 // ADR-0007 决策 3/4/13/17/23/26/30/31/33/34/35/36/40
-// Subagent 工具层——8 个工具 + 接口 + buildTool 工厂 + 注册表
+// Subagent 工具层——9 个工具 + 接口 + buildTool 工厂 + 注册表
 //
 // 决策 3：重新做一套 LLM 友好的工具，不绑 session/transport
 // 决策 4：8 个工具——execute_cli/read_file/write_file/edit_file/glob/grep/task_create/task_update
+// ADR-0052 §8：+ wait_for_path（汇总体等待原语，工具表 8→9）
 // 决策 13：注册表模式（Map + buildTool + 按名称查找）
 // 决策 31：10 字段接口（isConcurrencySafe 函数化 + validateInput + prompt + isDestructive + isEnabled）
 // 决策 40：preToolUseHooks / postToolUseHooks 接口预留
@@ -10,7 +11,7 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { constants as fsConstants } from 'node:fs';
-import { mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, stat, unlink, writeFile, lstat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
@@ -108,6 +109,11 @@ export type SubagentToolContext = {
   readOnly?: boolean;                       // 决策 17 第 1 层：readOnly 模式标志（M7 executor 注入）
   /** ADR-0048 D8：后台输出落盘目录（executor 注入 cwd/.myterminal/subagent-outputs/<agentId>；缺省由 call 派生） */
   outputDir?: string;
+  /**
+   * ADR-0052 §8：汇总体等待的绝对末端（epoch 毫秒）。由执行器在 dispatch 汇总体时注入
+   * ——模型面不可传（不在任何工具入参里），单次阻塞上限 = min(timeoutSec, 此值 − now)。
+   */
+  budgetEndsAt?: number;
   preToolUseHooks?: ToolHook[];             // 决策 40：v1 预留，空数组
   postToolUseHooks?: ToolHook[];
 };
@@ -1205,7 +1211,195 @@ const taskUpdateTool = buildTool({
   },
 });
 
-// ── 注册 8 个工具（决策 13）──
+// ════════════════════════════════════════════════════════════════
+// ADR-0052 §8：wait_for_path——阻塞等一个路径出现（汇总体等待原语，等待期零 token）
+// ════════════════════════════════════════════════════════════════
+
+/** 轮询间隔由票面钉死 2 秒：本机 fs 查一次，模型不参与，零 token。 */
+export const WAIT_FOR_PATH_POLL_MS = 2_000;
+/** timeoutSec 上界照仓库既有 subagent timeoutSec 口径（86400 秒）。 */
+const WAIT_FOR_PATH_MAX_TIMEOUT_SEC = 86_400;
+
+type WaitStats = { isFile(): boolean; isSymbolicLink(): boolean; size: number };
+
+/** 时间与 fs 原语是可测前提（§13）：生产走系统时钟与真实 lstat，测试整体替换。 */
+type WaitForPathTiming = {
+  now(): number;
+  /** 轮询间隔：生产值就是上面钉死的 2 秒，测试可缩短以驱动同一循环。 */
+  pollIntervalMs: number;
+  sleep(ms: number): Promise<void>;
+  lstat(file: string): Promise<WaitStats>;
+};
+
+const realWaitTiming: WaitForPathTiming = {
+  now: () => Date.now(),
+  pollIntervalMs: WAIT_FOR_PATH_POLL_MS,
+  sleep: (ms) => new Promise((wakeup) => {
+    const timer = setTimeout(wakeup, ms);
+    // 等待中的汇总体不该成为进程不肯退出的理由。
+    if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
+  }),
+  lstat: async (file) => {
+    const info = await lstat(file);
+    return { isFile: () => info.isFile(), isSymbolicLink: () => info.isSymbolicLink(), size: info.size };
+  },
+};
+
+let waitTiming: WaitForPathTiming = realWaitTiming;
+
+/** 仅供测试——注入时钟 / 轮询间隔 / fs 原语（先例：store.ts setCleanupDelayMs）。 */
+export function setWaitForPathTimingForTesting(timing: Partial<WaitForPathTiming>): void {
+  waitTiming = { ...realWaitTiming, ...timing };
+}
+export function resetWaitForPathTimingForTesting(): void {
+  waitTiming = realWaitTiming;
+}
+
+/**
+ * 暂停判据 = 同目录 index.json 的 status 字段（布局是公共约定，写侧属 T7）。
+ * 读不出的一律按"没有暂停证据"处理：误判成暂停会把等待无限期冻住，比多等更危险。
+ */
+async function readPauseState(indexFile: string): Promise<'paused' | 'running' | 'absent' | 'unreadable'> {
+  let raw: string;
+  try {
+    raw = await readFile(indexFile, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    return 'unreadable';
+  }
+  try {
+    const parsed = JSON.parse(raw) as { status?: unknown };
+    return parsed.status === 'paused' ? 'paused' : 'running';
+  } catch {
+    return 'unreadable';
+  }
+}
+
+function waitFailure(reason: string, message: string, extra: JsonObject = {}): JsonObject {
+  return { ok: false, state: 'error', reason, error: message, ...extra };
+}
+
+/** 等待一场睡眠，但调用方被中止时立刻醒——死掉的汇总体不许把 promise 挂到预算尽头。 */
+async function sleepOrAbort(ms: number, signal: AbortSignal): Promise<'slept' | 'aborted'> {
+  if (signal.aborted) return 'aborted';
+  const aborted = await Promise.race([
+    waitTiming.sleep(ms).then(() => 'slept' as const),
+    new Promise<'aborted'>((wakeup) => { signal.addEventListener('abort', () => wakeup('aborted'), { once: true }); }),
+  ]);
+  return aborted === 'aborted' || signal.aborted ? 'aborted' : 'slept';
+}
+
+const waitForPathTool = buildTool({
+  name: 'wait_for_path',
+  description: `Block until a path appears. The wait costs no tokens: the tool polls the local filesystem and the model is not involved while it blocks.
+
+# Boundaries
+- path: the file to wait for (required). Absolute paths and paths under the working directory both work; the lexical check and the realpath check both apply, so a symlink pointing outside is refused.
+- timeoutSec: how long this one call may block, 1..86400 (required). The filesystem is polled every 2 seconds.
+- A locally set waiting budget caps each call: the blocking cap is min(timeoutSec, budget remaining). The budget is not a parameter, so there is nothing to tune here.
+- While the owning run is paused (its sibling index.json says status "paused"), the wait freezes: paused time never counts against the budget.
+
+# Discipline
+- One call per turn. A "timeout" result means "not yet" — make the next call in the next turn; do not loop inside a turn and do not substitute read_file polling.
+- On "ready", read the index file next to the path first: it carries the whole account, per-path files only fill in what you need.
+
+# Failures
+- reason "outside-cwd": the path leaves the working directory, including a symlink that resolves outside it.
+- reason "not-a-regular-file": directories, FIFOs, sockets and device files are refused — do not retry, the path shape is the problem.
+- reason "io-error": a filesystem error surfaced as-is; it is neither swallowed nor retried.
+- reason "invalid-input": path or timeoutSec is not shaped as declared.
+- state "timeout" is not a failure: the path simply has not appeared yet.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Path to wait for (relative to cwd or absolute)', minLength: 1, maxLength: 4096 },
+      timeoutSec: { type: 'number', description: 'Max seconds this single call may block (1..86400); polls every 2s' },
+    },
+    required: ['path', 'timeoutSec'],
+    additionalProperties: false,
+  },
+  isReadOnly: true,
+  // 阻塞式等待不进并发批：一批里塞几个等待体只是把同一只钟重复挂几次。
+  isConcurrencySafe: false,
+  maxResultSizeChars: 4_000,
+
+  async call(input, ctx) {
+    const rawPath = input.path;
+    const timeoutSec = input.timeoutSec;
+    if (typeof rawPath !== 'string' || !rawPath.trim()) {
+      return waitFailure('invalid-input', 'wait_for_path: path must be a non-empty string.');
+    }
+    if (typeof timeoutSec !== 'number' || !Number.isInteger(timeoutSec) || timeoutSec < 1 || timeoutSec > WAIT_FOR_PATH_MAX_TIMEOUT_SEC) {
+      return waitFailure('invalid-input', `wait_for_path: timeoutSec must be an integer between 1 and ${WAIT_FOR_PATH_MAX_TIMEOUT_SEC}.`);
+    }
+    let target: string;
+    try {
+      target = resolvePath(rawPath, ctx.cwd);
+    } catch {
+      return waitFailure('outside-cwd', `wait_for_path: "${rawPath}" is outside the working directory (lexical escape or symlink redirect).`);
+    }
+
+    // 计划裁剪：单次阻塞上限 = min(timeoutSec, budgetEndsAt − now)——等待永不吃掉聚合余量。
+    const startedAt = waitTiming.now();
+    let capMs = timeoutSec * 1000;
+    let cappedBy: string | undefined;
+    if (typeof ctx.budgetEndsAt === 'number') {
+      const left = ctx.budgetEndsAt - startedAt;
+      if (left < capMs) {
+        capMs = Math.max(0, left);
+        cappedBy = 'budgetEndsAt';
+      }
+    }
+
+    const indexFile = join(dirname(target), 'index.json');
+    let waitedMs = 0;
+    let frozenMs = 0;
+    let paused = false;
+    let indexUnreadable = false;
+    for (;;) {
+      let stats: WaitStats | undefined;
+      try {
+        stats = await waitTiming.lstat(target);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // ENOENT / ENOTDIR = "未出现"家族；其余 IO 错误立即返回，不吞不重试。
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+          const detail = error instanceof Error ? error.message : String(error);
+          return waitFailure('io-error', `wait_for_path: the filesystem refused the probe (${detail}).`, { code: code ?? 'unknown' });
+        }
+        stats = undefined;
+      }
+      const waitedSec = Math.round(waitedMs / 1000);
+      const diagnostics: JsonObject = {
+        waitedSec,
+        paused,
+        frozenMs,
+        ...(cappedBy !== undefined ? { cappedBy } : {}),
+        ...(indexUnreadable ? { indexUnreadable: true } : {}),
+      };
+      if (stats !== undefined) {
+        // 非普通文件一律拒：符号链接（哪怕指向 cwd 内的普通文件）也不是"那个文件本身"。
+        if (stats.isSymbolicLink() || !stats.isFile()) {
+          return waitFailure('not-a-regular-file', `wait_for_path: "${rawPath}" is not a regular file; directories, FIFOs, sockets, devices and symlinks are refused.`, diagnostics);
+        }
+        return { ok: true, state: 'ready', path: target, size: stats.size, ...diagnostics };
+      }
+      const pause = await readPauseState(indexFile);
+      paused = pause === 'paused';
+      indexUnreadable = pause === 'unreadable';
+      if (waitedMs >= capMs) return { ok: true, state: 'timeout', path: target, ...diagnostics };
+      const before = waitTiming.now();
+      if (await sleepOrAbort(Math.min(waitTiming.pollIntervalMs, capMs - waitedMs), ctx.signal) === 'aborted') {
+        return waitFailure('aborted', 'wait_for_path: the waiting subagent was aborted; the wait stopped early.', diagnostics);
+      }
+      const delta = Math.max(0, waitTiming.now() - before);
+      if (paused) frozenMs += delta;
+      else waitedMs += delta;
+    }
+  },
+});
+
+// ── 注册 9 个工具（决策 13 + ADR-0052 §8：subagent 面 8→9）──
 
 toolRegistry.set('execute_cli', executeCliTool);
 toolRegistry.set('read_file', readFileTool);
@@ -1215,5 +1409,6 @@ toolRegistry.set('glob', globTool);
 toolRegistry.set('grep', grepTool);
 toolRegistry.set('task_create', taskCreateTool);
 toolRegistry.set('task_update', taskUpdateTool);
+toolRegistry.set('wait_for_path', waitForPathTool);
 
 // ADR-0032 #47：localTasks 镜像已移除，任务状态统一在 store.record.tasks（自带 1h 兜底清理，无需独立清理）

@@ -1072,6 +1072,20 @@
         },
         "readOnly": {
           "type": "boolean"
+        },
+        "reduce": {
+          "type": "object",
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 128
+            }
+          },
+          "required": [
+            "runId"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -1108,6 +1122,63 @@
       },
       "required": [
         "taskId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "workflow_start": {
+    "title": "Start workflow",
+    "description": "- When: run only when the user asks — they named workflows, or the task needs real breadth (research, audits). Never self-initiate; with no task, ask what to run first.\n- How to run: load the workflow-authoring skill; the script contract lives only there. workflow_start({script|scriptPath, args?}) returns a runId at once; the run keeps going locally. Then start one reducer: subagent_start({objective: the skill's reducer template, reduce:{runId}}). No command entry point: only these calls start a run.\n- Limits: concurrency max(2, min(16, cores-2)); 1000 agents; 30-minute wall clock; 8,000,000 output tokens; widen only on explicit user request.\n- Results: poll the reducer with subagent_status until terminal; it delivers one line, paths, and the index pointer. Notice and poll are two views of one result: dedupe by runId+hash, act once. Report partial as partial and name the failed paths; never call a run complete early.\n- Stop and resume: workflow_cancel({runId}) stops a whole run; idempotent, finished work still delivered. workflow_start({scriptPath, resumeFromRunId}) continues: unchanged calls replay from cache, live work resumes at the first changed or missing call.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200000
+        },
+        "scriptPath": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resumeFromRunId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "workflow_cancel": {
+    "title": "Cancel workflow",
+    "description": "Cancel a running workflow run started by this session. Idempotent; a terminal run returns its current status. The reducer will report partial results.",
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "idempotentHint": false
+    },
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "runId"
       ],
       "additionalProperties": false
     }

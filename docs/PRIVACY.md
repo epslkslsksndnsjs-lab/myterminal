@@ -2,7 +2,7 @@
 
 [中文](PRIVACY.zh-CN.md) · [README](../README.md)
 
-Last updated: July 18, 2026
+Last updated: October 16, 2026
 
 ## Scope
 
@@ -14,6 +14,7 @@ Depending on the tools a user invokes, MyTerminal may process:
 
 - files and Git metadata inside the workspace selected in the TUI;
 - structured MyTerminal sessions, task packages, checkpoints, collaboration messages, events, and sanitized tool audits;
+- workflow scripts and run state (index, journal, snapshots, digests, notices) under `.myterminal`, and the isolated Git worktrees that workflow write paths create;
 - runtime configuration and connection credentials;
 - command output produced inside the selected workspace.
 
@@ -22,6 +23,8 @@ Configuration is stored in the user's operating-system configuration directory. 
 ## Data sent to third parties
 
 When a user connects ChatGPT through Actions or Apps, requested tool inputs and outputs travel between the user's MyTerminal instance and OpenAI. When the user exposes MyTerminal with a tunnel or reverse proxy, that provider also carries the traffic. Those services have their own terms and privacy practices.
+
+When the Subagent system or Workflows run, task content is sent to the Anthropic-Messages-compatible LLM endpoint the user has configured; those requests are governed by that provider's own terms and privacy practices.
 
 MyTerminal masks connection credentials in the TUI by default, stores session-token hashes rather than raw session tokens, and redacts identity, authorization, claim-code, credential, secret, password, API-key, message-body, content, and sensitive URL-query fields from persisted call arguments and results. The Logs page otherwise keeps the complete sanitized input and output for local review. These controls reduce exposure but do not replace careful workspace selection or review.
 

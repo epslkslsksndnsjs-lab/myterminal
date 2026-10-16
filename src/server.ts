@@ -28,6 +28,14 @@ import { writeRuntimeLifecycle, type RuntimeLifecyclePhase } from './runtime-lif
 import { initSubagentRunner } from './subagent/runner.js';
 import { runSubagent } from './subagent/executor.js';
 import { listAllSubagents } from './subagent/store.js';
+import { initWorkflowEngine, getWorkflowEngine } from './workflows/runtime.js';
+import { WorkflowStartError, type WorkflowLocalControl } from './workflows/engine.js';
+import type { WorkflowEventListener } from './workflows/events.js';
+import type { WorkflowStatus } from './workflows/schema.js';
+import { shutdownCommandTrees } from './workflows/command-tree.js';
+import { resolveWorkflowGates } from './workflows/gates.js';
+import { llmBackedFactory } from './workflows/adapter.js';
+import { workflowAuditSink } from './workflows/start.js';
 
 export type RuntimeLog = { at: string; level: 'info' | 'error'; message: string; audit?: ToolAuditEvent };
 export type RuntimeHealth = { phase: 'active' | 'revalidating' | 'degraded' | 'shutting_down'; environment: RuntimeEnvironmentStatus; message?: string; lastCheckedAt: string };
@@ -104,7 +112,36 @@ export class MyTerminalRuntime {
         const result = this.store.inherit(session.id, { claimCode });
         return { session: result.session, identity: result.identity };
       },
+      // ADR-0052 接线 #7/#9：subagent 侧不 import workflows 模块——汇总体准入与收场经这里接过去，
+      // 引擎此刻可能还没建（端点未配即无引擎），所以两侧都是惰性查找。
+      reducer: {
+        admit: async (info) => {
+          const engine = getWorkflowEngine();
+          if (!engine) return { ok: false, noticeOnly: true, reason: 'workflow-not-wired', message: 'The workflows module is not wired (baseUrl / apiKey / model), so no reducer can wait for a run.' };
+          return await engine.admitReducer(info);
+        },
+        conclude: async (info) => {
+          const engine = getWorkflowEngine();
+          if (!engine) return { status: 'failed', reason: 'workflow-not-wired', report: 'The workflows module is not wired; the reducer cannot be concluded against a run.' };
+          const verdict = await engine.concludeReducer(info);
+          return verdict.status === 'completed'
+            ? { status: 'completed' as const, firstLine: verdict.firstLine }
+            : { status: 'failed' as const, reason: verdict.reason, report: verdict.report };
+        },
+      },
     });
+      // Workflows 与会话侧共用同一端点三元组（单一来源、不另开配置），但执行线彼此
+      // 独立：这里只注入适配器工厂与审计汇，不复用会话侧执行器、记录库或并发池。
+      // 闸门取本机设置面（config / env）解析后的值：默认即上限，越硬顶已被压回并留下告警。
+      const workflowGates = resolveWorkflowGates(settings.workflows, process.env);
+      for (const warning of workflowGates.warnings) console.warn(`[workflows] ${warning}`);
+      initWorkflowEngine({
+        workspaceDir: config.workspaceDir,
+        adapterFactory: llmBackedFactory(subagentSettings),
+        audit: workflowAuditSink(this.store, config.workspaceDir),
+        gates: workflowGates.gates,
+        deliverNotice: (notice) => this.deliverWorkflowNotice(notice),
+      });
     }
     this.mcp = new MyTerminalMcpTransport(this.extensions);
     this.app = express();
@@ -126,6 +163,39 @@ export class MyTerminalRuntime {
         controlChannel: this.controlChannel?.snapshot().phase,
       });
     } catch { /* lifecycle persistence must not mask the original runtime failure */ }
+  }
+
+  /**
+   * 终态三件套的第三件：向发起会话投一条 ≤200 码元的持久消息（ADR-0052 接线 #2）。
+   * 模块自己没有会话，所以发起会话既是收件人也是发件人——身份写在 body 首行 KV 上，
+   * sendMessage 的签名一字不动。投不出去（会话已终态 / 已不在）就把项留在 outbox，
+   * 由启动扫描的排空趟补投：投递是至少一次，这里不猜"反正没人收"。
+   */
+  private deliverWorkflowNotice(notice: { runId: string; ownerSessionId: string; body: string }): boolean {
+    try {
+      this.store.sendMessage(notice.ownerSessionId, notice.ownerSessionId, notice.body);
+      return true;
+    } catch (error) {
+      console.warn(`[workflows] settled-notice for ${notice.runId} stays in the outbox: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * 启动收尸（ADR-0052 §24）：runtime 起序列里跑一次双趟扫描 + 保留清扫 + 挂 orphan 看门狗。
+   * 引擎此刻可能还没建（端点未配即无引擎）→ 静默跳过；任何收尸异常只记日志，绝不阻断 runtime 启动。
+   */
+  private async recoverWorkflowsOnBoot(): Promise<void> {
+    const engine = getWorkflowEngine();
+    if (!engine) return;
+    try {
+      const report = await engine.recoverOnBoot();
+      if (report.claimed.length) this.log(`[workflows] boot-sweep claimed ${report.claimed.length} run(s) (interrupted or already-settled frames recovered).`);
+      if (report.drained.length) this.log(`[workflows] boot-sweep drained ${report.drained.length} pending settled-notice(s).`);
+      for (const failure of report.errors) this.log(`[workflows] boot-sweep ${failure.stage} failed for ${failure.runId}: ${failure.message}`, 'error');
+    } catch (error) {
+      this.log(`[workflows] boot-sweep skipped: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    }
   }
 
   runtimeHealth(): RuntimeHealth { return { ...this.healthState, environment: { ...this.healthState.environment } }; }
@@ -288,6 +358,66 @@ export class MyTerminalRuntime {
     return listAllSubagents();
   }
 
+  /**
+   * #231：TUI Worktrees tab 数据源——保留项清单与配额档位。
+   * 引擎此刻可能还没建（端点未配即无引擎），所以与 reducer 两侧一样惰性查找；
+   * 档位与审计事件出自同一次判定，屏上说的和账上记的是同一把尺。
+   */
+  listWorktrees() {
+    const engine = getWorkflowEngine();
+    return engine ? engine.preservedWorktrees() : Promise.resolve([]);
+  }
+
+  worktreeQuota() {
+    const engine = getWorkflowEngine();
+    return engine ? engine.worktreeQuota() : Promise.resolve(null);
+  }
+
+  /** 唯一减法 = 人：面板上的显式丢弃（审计留痕在模块侧出）。 */
+  discardWorktree(id: string, actor: string) {
+    const engine = getWorkflowEngine();
+    if (!engine) return Promise.resolve({ ok: false as const, reason: 'workflow-not-wired', message: 'The workflows module is not wired, so no worktree can be disposed.' });
+    return engine.discardWorktree(id, actor);
+  }
+
+  /**
+   * #232：Workflows 屏的接线面（ADR-0052 §21#5）。引擎可能还没建（端点未配即无引擎），
+   * 与上面三件一样惰性查找；未接线时全部取惰性值——屏要能开着说"没有"，而不是开不起来。
+   */
+  workflowLayout() {
+    return getWorkflowEngine()?.layout;
+  }
+
+  liveWorkflowRunIds(): string[] {
+    return getWorkflowEngine()?.liveRunIds ?? [];
+  }
+
+  liveWorkflowRun(runId: string) {
+    return getWorkflowEngine()?.liveRunIndex(runId);
+  }
+
+  /** 热路径订阅：没有引擎就没有事件源，给一条空退订而不是抛。 */
+  onWorkflowEvent(listener: WorkflowEventListener): () => void {
+    const engine = getWorkflowEngine();
+    return engine ? engine.onWorkflowEvent(listener) : () => {};
+  }
+
+  /** 本地人面的 cancel / pause / resume：归属与审计都走模块里已有的那一条路（actor 落 'tui'）。 */
+  controlWorkflowRun(op: WorkflowLocalControl, runId: string): Promise<{ ok: true; runId: string; status: WorkflowStatus } | { ok: false; reason: string; message: string }> {
+    const engine = getWorkflowEngine();
+    if (!engine) {
+      return Promise.resolve({ ok: false as const, reason: 'workflow-not-wired', message: 'The workflows module is not wired, so no run can be controlled here.' });
+    }
+    return engine.controlAsLocal(op, runId).then(
+      (result) => ({ ok: true as const, ...result }),
+      (error: unknown) => ({
+        ok: false as const,
+        reason: error instanceof WorkflowStartError ? error.reason : 'control-failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+
   runtimeLogRevision(): number { return this.runtimeLogRevisionValue; }
 
   private logAuditEvent(event: ToolAuditEvent): void {
@@ -367,6 +497,10 @@ export class MyTerminalRuntime {
         resolve();
       });
     });
+    // ADR-0052 §24：收尸双趟由 runtime 启动序列执行——认领中断 run、排空未投通知、保留清扫、
+    // 挂 orphan 看门狗。模块未接线（端点未配即无引擎）时静默跳过；收尸失败绝不让 runtime 起不来
+    // （尽力通知语义：盘仍是真相源）。
+    await this.recoverWorkflowsOnBoot();
     if (this.config.port === 0) {
       await this.becomeStandaloneLeader(0);
       // D18.2：standalone（无 cluster）→ L3 默认开
@@ -542,6 +676,8 @@ export class MyTerminalRuntime {
     if (this.electionTimer) clearInterval(this.electionTimer);
     if (this.resumeTimer) clearInterval(this.resumeTimer);
     this.stopControlChannelMonitor();
+    // 撤下 workflows 的进程内 orphan 看门狗：关机后不该再有定时器去强制结算未决 run。
+    getWorkflowEngine()?.stopOrphanWatchdog();
 
     // Stop accepting public traffic before removing this member from the shared
     // registry. Doing this in the opposite order leaves a live gateway with an
@@ -556,6 +692,8 @@ export class MyTerminalRuntime {
     // Otherwise a detached command can keep a close request open and continue
     // mutating the workspace after the runtime lease has been released.
     await this.extensions.shutdown();
+    // Workflows 起出去的命令同样属本进程 owned：停接单 → 按进程组收 → 有限宽限（ADR-0052 §12 / §24）。
+    await shutdownCommandTrees();
     // ADR-0050 E2/E3（#81 W1-08）：运行时关闭 → 全量清 L3 配额 + 释放 L3 适配器单例
     // （D6 护栏3「会话结束从 Map 删除」全量面；D8.2「进程退出/会话结束释放」）
     clearL3Quota();

@@ -126,6 +126,8 @@ export function buildOpenApi(config: MyTerminalConfig) {
     ...(pooledInput.maxTurns ? { maxTurns: { ...pooledInput.maxTurns, description: 'Max subagent agent-loop turns.' } } : {}),
     ...(pooledInput.readOnly ? { readOnly: { ...pooledInput.readOnly, description: 'Restrict subagent to read-only tools.' } } : {}),
     ...(pooledInput.with ? { with: { ...pooledInput.with, description: 'Other session name or ID.' } } : {}),
+    // ADR-0052 §8：reduce 的参数级描述（工具顶部描述不动——issue-140 同文锁；这里是对外面）
+    ...(pooledInput.reduce ? { reduce: { ...pooledInput.reduce, description: 'Start this subagent as the reducer for a workflow run: { runId }. The reducer waits for the run to settle and delivers the summary through its normal completion. Rejected before anything starts: NOT_FOUND (unknown runId) / FORBIDDEN (another session owns the run) / EXTENSION_ERROR (extra keys, or a timeoutSec passed alongside reduce — the waiting budget has no model-facing knobs).' } } : {}),
   }, [], true);
   const plannedToolCall = objectSchema({ tool: { type: 'string', pattern: '^[a-z][a-z0-9_]{2,63}$' }, input: { type: 'object', additionalProperties: true }, purpose: { type: 'string', minLength: 1, maxLength: 500 } }, ['tool', 'input']);
   const jsonSchemaProperty = objectSchema({

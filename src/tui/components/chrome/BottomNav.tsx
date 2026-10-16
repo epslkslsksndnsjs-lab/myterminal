@@ -1,9 +1,9 @@
 import type { Theme } from '../../state.js';
 import { useI18n } from '../../copy/context.js';
 
-/** 页面标签名：zh 用中文，en 用 TABS 原名 */
-const LABELS_ZH = ['概览', '会话', '消息', '时间线', 'Diff', '扩展', '设置', '日志', '子代理'];
-const LABELS_EN = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents'];
+/** 页面标签名：zh 用中文，en 用 TABS 原名（两条数组的长度都由测试钉住 = TABS.length） */
+export const LABELS_ZH = ['概览', '会话', '消息', '时间线', 'Diff', '扩展', '设置', '日志', '子代理', '工作树', '工作流'];
+export const LABELS_EN = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents', 'Worktrees', 'Workflows'];
 
 /**
  * BottomNav — 底部轻量 pill 式页签导航（ADR-0004 决策 2.4）。

@@ -76,7 +76,14 @@ SKILL
   - mode:fork starts a subagent to run the skill asynchronously. Returns {name, description, mode, taskId, status:"running"}. Poll subagent_status(taskId) until terminal.
 - NOT_FOUND means the skill name does not exist.
 - skill list (no args) and skill inline (with args, mode=inline) do not require identity. skill fork requires identity.
-- Fork skills share the maxParallel limit with regular subagents. FORBIDDEN when at capacity. Fork subagents use the same 8-tool set and cannot load other skills.
+- Fork skills share the maxParallel limit with regular subagents. FORBIDDEN when at capacity. Fork subagents use the same 9-tool set and cannot load other skills.
+
+WORKFLOWS
+- When: run only when the user asks — they named workflows, or the task needs real breadth (research, audits). Never self-initiate; with no task, ask what to run first.
+- How to run: load the workflow-authoring skill; the script contract lives only there. workflow_start({script|scriptPath, args?}) returns a runId at once; the run keeps going locally. Then start one reducer: subagent_start({objective: the skill's reducer template, reduce:{runId}}). No command entry point: only these calls start a run.
+- Limits: concurrency max(2, min(16, cores-2)); 1000 agents; 30-minute wall clock; 8,000,000 output tokens; widen only on explicit user request.
+- Results: poll the reducer with subagent_status until terminal; it delivers one line, paths, and the index pointer. Notice and poll are two views of one result: dedupe by runId+hash, act once. Report partial as partial and name the failed paths; never call a run complete early.
+- Stop and resume: workflow_cancel({runId}) stops a whole run; idempotent, finished work still delivered. workflow_start({scriptPath, resumeFromRunId}) continues: unchanged calls replay from cache, live work resumes at the first changed or missing call.
 
 MESSAGES, EVENTS, AND HISTORY
 - message_send sends as the authenticated session; never invent a from field. The recipient may be a session name or ID. TUI messages typed by the human are separately attributed to user.

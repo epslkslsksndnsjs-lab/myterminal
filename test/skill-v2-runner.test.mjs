@@ -93,7 +93,7 @@ test('01: completed 后 status 可多次查，result 不丢（杀 M1）', async 
   resetSubagentRunner();
   const { runner } = setupRunner();
 
-  const started = runner.start('ses_parent_t2', { objective: 'Idempotent check' });
+  const started = await runner.start('ses_parent_t2', { objective: 'Idempotent check' });
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const first = runner.status(started.taskId);
@@ -120,7 +120,7 @@ test('02: skill fork 完成——notify 带 skill 前缀 + taskId（杀 M2）', 
   resetSubagentRunner();
   const { runner, callLog } = setupRunner();
 
-  const started = runner.start('ses_parent_t2', { objective: 'Fork task' }, { type: 'skill', skillName: 'refactor-module' });
+  const started = await runner.start('ses_parent_t2', { objective: 'Fork task' }, { type: 'skill', skillName: 'refactor-module' });
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const notify = lastNotify(callLog);
@@ -134,7 +134,7 @@ test('03: 直接启动（无 origin）——notify 不带 skill 前缀但带 tas
   resetSubagentRunner();
   const { runner, callLog } = setupRunner();
 
-  const started = runner.start('ses_parent_t2', { objective: 'Direct task' });
+  const started = await runner.start('ses_parent_t2', { objective: 'Direct task' });
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const notify = lastNotify(callLog);
@@ -150,7 +150,7 @@ test('04: skill fork 失败——notify 带 skill 前缀 + failed + taskId（杀
     runSubagentImpl: async () => ({ status: 'failed', error: 'provider quota exhausted' }),
   });
 
-  const started = runner.start('ses_parent_t2', { objective: 'Failing fork' }, { type: 'skill', skillName: 'audit-code' });
+  const started = await runner.start('ses_parent_t2', { objective: 'Failing fork' }, { type: 'skill', skillName: 'audit-code' });
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const notify = lastNotify(callLog);
@@ -170,7 +170,7 @@ test('05: runSubagentImpl reject——catch 块 notify 带 taskId + skill 前缀
     runSubagentImpl: async () => { throw new Error('network unreachable'); },
   });
 
-  const started = runner.start('ses_parent_t2', { objective: 'Rejecting task' }, { type: 'skill', skillName: 'net-skill' });
+  const started = await runner.start('ses_parent_t2', { objective: 'Rejecting task' }, { type: 'skill', skillName: 'net-skill' });
   await new Promise((resolve) => setTimeout(resolve, 200));
 
   const notify = lastNotify(callLog);

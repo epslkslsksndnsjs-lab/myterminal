@@ -4,7 +4,7 @@
 
 MyTerminal 的核心目的，是让 **ChatGPT 的普通 Chat 对话模式也能以可控方式在本地电脑上工作**。通过为自定义 GPT 配置 Action，或接入 ChatGPT App，普通 ChatGPT 对话就可以查看和编辑获准的本地项目、运行受约束的工具、协调多个工作 session 并汇报进展；用户始终通过本地 TUI 保留控制权。MyTerminal 是 ChatGPT Chat 与本地电脑之间的桥梁，不是另一个聊天客户端。
 
-MyTerminal 0.1.3 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、用户自定义 Agent 上下文（AGENT.md）、Git 风格实时 diff、覆盖整个终端窗口的中英双语 OpenTUI 界面、用户自定义的 **Skill** 可复用智能体工作流系统，以及支持 Anthropic 协议 LLM 的隔离 **Subagent** 系统。
+MyTerminal 0.1.3 通过可审计、可继承的工作 session 层提供这座桥梁。它同时支持 ChatGPT **Actions** 和 **Apps（MCP）**，并提供多 session 协作、永久消息、声明式扩展、用户自定义 Agent 上下文（AGENT.md）、Git 风格实时 diff、覆盖整个终端窗口的中英双语 OpenTUI 界面、用户自定义的 **Skill** 可复用智能体规程系统、支持 Anthropic 协议 LLM 的隔离 **Subagent** 系统，以及把一条脚本扇出到几十路本地隔离子 agent、只回传一份汇总摘要的 **Workflows** 引擎。
 
 ![MyTerminal session 层级](docs/assets/tui/sessions-zh-CN.svg)
 
@@ -130,7 +130,11 @@ Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name
 
 ### Subagent 系统
 
-Subagent 是隔离的智能体循环，拥有独立的 8 工具集、上下文窗口和费用追踪器。它异步运行于 `config.json` 配置的 Anthropic Messages 兼容 LLM 端点（`subagent.apiKey` / `subagent.baseUrl` / `subagent.model` 三必填）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
+Subagent 是隔离的智能体循环，拥有独立的 9 工具集、上下文窗口和费用追踪器。它异步运行于 `config.json` 配置的 Anthropic Messages 兼容 LLM 端点（`subagent.apiKey` / `subagent.baseUrl` / `subagent.model` 三必填）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
+
+### Workflows（工作流）
+
+一条 workflow 把一份脚本扇出到几十路相互隔离的本地 agent，最后只回传一份汇总摘要。`workflow_start` 接收脚本（或已保存的 `scriptPath`），立即返回 `runId`，run 在本地继续跑；只有用户提出时才会启动，脚本契约写在随模块发布的内建 `workflow-authoring` 技能里。工作流 agent 默认只读——需要写盘的一路必须声明 `isolation: 'worktree'`，并获得自己的 Git worktree。run 结算后，**汇总体**（一个普通 subagent）读取索引，经由既有的 checkpoint 与消息管线回传一份摘要。`workflow_cancel` 取消整条 run；`workflow_start` 带 `resumeFromRunId` 续跑，未变化的调用走缓存重放。并发、agent 数、墙钟与输出 token 上限只存在于本地设置——面向模型的调用不携带任何闸门参数。
 
 ### L3 工具结果整形
 
@@ -153,7 +157,7 @@ MyTerminal session 是工作上下文，不是 ChatGPT 对话 ID。
 
 ## TUI 用户控制面板
 
-九个全屏页面分别是：概览、会话、消息、时间线、Diff、扩展、设置、日志和子代理。
+十一个全屏页面分别是：概览、会话、消息、时间线、Diff、扩展、设置、日志、子代理、工作树和工作流。
 
 ![MyTerminal 概览](docs/assets/tui/overview-zh-CN.svg)
 
@@ -163,6 +167,7 @@ MyTerminal session 是工作上下文，不是 ChatGPT 对话 ID。
 - Enter 可打开完整 session 历史或双向消息对话。
 - Diff 展示 staged、unstaged 和 untracked 工作区变化。
 - Logs 使用统一生命周期展示 Apps 与 Actions 调用。调用发起后立即显示来源、工具名、脱敏后的完整参数、开始时间和 `running`；返回后在同一条逻辑记录中补充脱敏后的完整结果、耗时以及 `completed`、`failed` 或 `timeout`。
+- Workflows 页靠进程内进度事件跟着每一条 run 走；没有事件在发时（冷启动）改从 run 目录重建列表：状态、逐路进度，以及两档用量（本 run 总计与汇总体）。本地人在这里按 `c` 取消、`p` 暂停、`r` 恢复，三个动作都留审计。上次进程留下的被打断 run 会在概览页报出来，并附上可直接粘贴的 `workflow_start` 续跑调用。
 - 所有设置和凭据轮换都在 TUI 内完成。有限选项使用键盘/鼠标选择器；自由文本在首次输入时替换预填值，并支持 `Ctrl+U` 一键清空。按住 `V` 显示凭证；停止按键重复后会在 450ms 的 fail-closed 截止时间内隐藏，切换页面或打开表单会立即隐藏。
 
 输入优先级固定为：模态框 → 当前表单控件 → 当前页面 → 全局快捷键。OpenTUI 负责屏幕生命周期、可用时的鼠标解析、布局、换行、增量绘制和终端恢复；Windows 默认使用主屏兼容配置。
@@ -203,7 +208,7 @@ bun run test
 bun run dev
 ```
 
-测试覆盖 OpenAPI 3.1、Actions/Apps 身份、控制权接管、固定 checkpoint 计时、父子完成审计、事件 ACK、订阅、永久历史、脱敏、迁移、删除、continuation、OpenTUI 滚轮和拖动框选。
+测试覆盖 OpenAPI 3.1、Actions/Apps 身份、控制权接管、固定 checkpoint 计时、父子完成审计、事件 ACK、订阅、永久历史、脱敏、迁移、删除、continuation、OpenTUI 滚轮、拖动框选，以及 workflow 扇出、写隔离与崩溃恢复。
 
 首次 TUI 配置完成后，可以无界面运行：
 

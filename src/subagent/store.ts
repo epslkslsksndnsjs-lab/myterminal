@@ -12,6 +12,9 @@ import type { SubagentOrigin } from './runner.js';
 
 export type SubagentStatus = 'running' | 'completed' | 'failed' | 'aborted';
 
+/** ADR-0052 §8：汇总体链接——入参与记录共用同一对字段（runId + digest 落点）。 */
+export type ReducerLink = { runId: string; digestPath: string };
+
 export type SubagentTask = {
   id: string;
   subject: string;
@@ -31,6 +34,9 @@ export interface SubagentRecord {
   /** ADR-0042 #78（选项 A）：subagent 来源——skill fork 时记录派生 skill，direct start 为 undefined。
    *  仅可选字段，不影响既有序列化（#62 持久化格式纪律）。 */
   origin?: SubagentOrigin;
+  /** ADR-0052 §8：汇总体记录——本次 subagent 是某条 run 的等待体。仅可选字段。
+   *  digestPath 由接线方给出（文件布局属 workflows 模块，本模块只当不透明路径用）。 */
+  reduce?: ReducerLink;
   /** ADR-0048 D5（#136）：「已验收」标记——父首次调 subagent_status 取终态 result 时置位；
    *  未验收定义 = 子进终态后父从未取到结果（完成闸门据此拦收工）。仅可选字段，不影响既有序列化。 */
   resultFetched?: boolean;
@@ -58,7 +64,7 @@ export function getCleanupDelayMs(): number {
 
 export function createSubagent(
   id: string,
-  fields: { subject: string; description?: string; origin?: SubagentOrigin },
+  fields: { subject: string; description?: string; origin?: SubagentOrigin; reduce?: ReducerLink },
   ctx: SubagentContext = defaultContext,
 ): SubagentRecord {
   const record: SubagentRecord = {
@@ -68,6 +74,7 @@ export function createSubagent(
     //（生产路径永不转移该任务 → allDone 恒 false、STATE_SNAPSHOT/status 带幻影）。
     tasks: [],
     origin: fields.origin,
+    reduce: fields.reduce,
     abortController: new AbortController(),
     usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 },
   };

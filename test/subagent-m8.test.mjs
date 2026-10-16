@@ -57,6 +57,12 @@ function mockSession(id, overrides = {}) {
   };
 }
 
+/**
+ * start() 变 async 后，await 会让后台那一步先跑一格。要断"刚受理、仍在跑"的用例
+ * 必须把后台挂起——挂起正是这些用例的事实前提。
+ */
+const hangingImpl = async () => await new Promise(() => {});
+
 /** 创建 fake deps——返回 { deps, callLog } */
 function fakeDeps(overrides = {}) {
   const callLog = [];
@@ -103,9 +109,9 @@ describe('subagent-m8', () => {
 test('M8-runner-01: start returns sessionId + taskId + running', async () => {
   clearAllSubagents();
   resetSubagentRunner();
-  const { runner, callLog } = setupRunner();
+  const { runner, callLog } = setupRunner({ runSubagentImpl: hangingImpl });
 
-  const result = runner.start('ses_parent_01', {
+  const result = await runner.start('ses_parent_01', {
     objective: 'Read README.md and summarize',
     background: 'This is a test',
   });
@@ -131,17 +137,17 @@ test('M8-runner-01: start returns sessionId + taskId + running', async () => {
   await new Promise((resolve) => setTimeout(resolve, 100));
 });
 
-test('M8-runner-02: maxParallel limit enforced', () => {
+test('M8-runner-02: maxParallel limit enforced', async () => {
   clearAllSubagents();
   resetSubagentRunner();
-  const { runner } = setupRunner({ settings: defaultSubagentSettings({ maxParallel: 2 }) });
+  const { runner } = setupRunner({ settings: defaultSubagentSettings({ maxParallel: 2 }), runSubagentImpl: hangingImpl });
 
   // 启动 2 个子 agent（挂起中）
-  runner.start('ses_parent_02', { objective: 'Task A' });
-  runner.start('ses_parent_02', { objective: 'Task B' });
+  await runner.start('ses_parent_02', { objective: 'Task A' });
+  await runner.start('ses_parent_02', { objective: 'Task B' });
 
   // 第 3 个应报错
-  assert.throws(
+  await assert.rejects(
     () => runner.start('ses_parent_02', { objective: 'Task C' }),
     /Max parallel subagents reached \(2\)/,
   );
@@ -166,7 +172,7 @@ test('M8-runner-03: completed notification chain', async () => {
     },
   });
 
-  const result = runner.start('ses_parent_03', { objective: 'Edit files' });
+  const result = await runner.start('ses_parent_03', { objective: 'Edit files' });
 
   // 等待后台完成
   await new Promise((resolve) => setTimeout(resolve, 200));
@@ -200,7 +206,7 @@ test('M8-runner-04: failed notification chain', async () => {
     },
   });
 
-  const result = runner.start('ses_parent_04', { objective: 'Fail task' });
+  const result = await runner.start('ses_parent_04', { objective: 'Fail task' });
 
   await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -213,12 +219,12 @@ test('M8-runner-04: failed notification chain', async () => {
   assert.equal(record.error, 'API key is invalid');
 });
 
-test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 决策 13)', () => {
+test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 决策 13)', async () => {
   clearAllSubagents();
   resetSubagentRunner();
-  const { runner } = setupRunner();
+  const { runner } = setupRunner({ runSubagentImpl: hangingImpl });
 
-  const result = runner.start('ses_parent_05', { objective: 'Query test' });
+  const result = await runner.start('ses_parent_05', { objective: 'Query test' });
 
   // running 状态
   const status1 = runner.status(result.taskId);
@@ -244,7 +250,7 @@ test('M8-runner-05: status structure and idempotent completed queries (ADR-0010 
   assert.equal(status3.result, 'Final summary');
 });
 
-test('M8-runner-06: abort is idempotent', () => {
+test('M8-runner-06: abort is idempotent', async () => {
   clearAllSubagents();
   resetSubagentRunner();
   const { runner } = setupRunner({
@@ -254,7 +260,7 @@ test('M8-runner-06: abort is idempotent', () => {
     },
   });
 
-  const result = runner.start('ses_parent_06', { objective: 'Long task' });
+  const result = await runner.start('ses_parent_06', { objective: 'Long task' });
   assert.equal(countRunning(), 1);
 
   // abort → aborting
@@ -276,7 +282,7 @@ test('M8-runner-06: abort is idempotent', () => {
   );
 });
 
-test('M8-runner-07: config merge — input.model no longer overrides settings.model (#04)', () => {
+test('M8-runner-07: config merge — input.model no longer overrides settings.model (#04)', async () => {
   clearAllSubagents();
   resetSubagentRunner();
 
@@ -288,7 +294,7 @@ test('M8-runner-07: config merge — input.model no longer overrides settings.mo
     },
   });
 
-  runner.start('ses_parent_07', {
+  await runner.start('ses_parent_07', {
     objective: 'Custom model test',
     model: 'gpt-4o-mini',
     maxTurns: 20,

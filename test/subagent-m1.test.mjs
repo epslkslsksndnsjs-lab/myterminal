@@ -81,7 +81,7 @@ test('validateSettings clamps out-of-range numeric values', () => {
   assert.equal(errors.length, 0, 'clamping should not produce errors');
   assert.equal(settings.subagent.maxTurns, 1, 'maxTurns 0 → 1');
   assert.equal(settings.subagent.timeoutSec, 30, 'timeoutSec 5 → 30');
-  assert.equal(settings.subagent.maxParallel, 4, 'maxParallel 99 → 4');
+  assert.equal(settings.subagent.maxParallel, 10, 'maxParallel 99 → 10（ADR-0052 §21 #10：上限 4→10 为汇总体槽位余量）');
 });
 
 // ── 用例 4b：大值被钳制到上限 ──

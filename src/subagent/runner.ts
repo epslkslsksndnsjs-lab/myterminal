@@ -11,7 +11,7 @@ import {
 } from './store.js';
 import { getBackgroundTask } from './shell-tracker.js';
 import { MyTerminalError } from '../store.js';
-import type { SubagentRecord, SubagentTask } from './store.js';
+import type { ReducerLink, SubagentRecord, SubagentTask } from './store.js';
 import { SUBAGENT_STATUS_PAGE_CHARS, SUBAGENT_STATUS_PAGE_MAX_CHARS } from '../tool-schemas.js';
 import { defaultContext, type SubagentContext } from './context.js';
 import type { UsageSummary } from './cost-tracker.js';
@@ -27,7 +27,21 @@ export type SubagentStartInput = {
   maxTurns?: number;
   timeoutSec?: number;
   readOnly?: boolean;
+  /**
+   * ADR-0052 §8：汇总体场景必填。runId 由工具层校验过（形状 / 归属 / 无旋钮），
+   * digestPath 是 workflows 模块给出的不透明路径——本模块只透传，不解释布局。
+   */
+  reduce?: ReducerLink;
 };
+
+/** ADR-0052 接线 #9：汇总体准入与收场由接线方（host）给出，subagent 侧不 import workflows 模块。 */
+export type ReducerAdmit =
+  | { ok: true; timeoutSec: number; budgetEndsAt: number }
+  | { ok: false; noticeOnly: boolean; reason: string; message: string };
+
+export type ReducerSettlement =
+  | { status: 'completed'; firstLine: string }
+  | { status: 'failed'; reason: string; report: string };
 
 /** ADR-0010 决策 14：subagent 来源——skill(fork) 启动时传入，notify 消息据此区分格式 */
 export type SubagentOrigin = { type: 'skill'; skillName: string };
@@ -45,6 +59,15 @@ export type SubagentRunnerDeps = {
   registerAndClaimChild: (parentId: string, args: { name: string; task: TaskPackage }) => {
     session: MyTerminalSession;
     identity: { sessionId: string; sessionToken: string };
+  };
+  /**
+   * ADR-0052 §8：汇总体接缝。缺省 = 本机没接 workflows 模块，带 reduce 的启动按拒绝处理。
+   *   admit —— 起 subagent 之前占等待位（同一 run 至多一个等待者）并取回推导好的预算；
+   *   conclude —— 收场判定：认盘面证据（终态标记 + digest），给出摘要消息首行，并释放位。
+   */
+  reducer?: {
+    admit(info: { agentId: string; runId: string; ownerSessionId: string }): Promise<ReducerAdmit>;
+    conclude(info: { agentId: string; reducerOutputTokens?: number } & ReducerLink): Promise<ReducerSettlement>;
   };
 };
 
@@ -69,9 +92,12 @@ export type SubagentStatusResult = {
 };
 
 export type SubagentStartResult = {
-  sessionId: string;
-  taskId: string;
-  status: 'running';
+  /** notice-only 降级时没有 child session，也没有 taskId。 */
+  sessionId: string | null;
+  taskId: string | null;
+  status: 'running' | 'notice-only';
+  /** 降级详情：汇总体没起成，结果改走终态消息 + 落盘可达（可稍后同 runId 补起）。 */
+  reduce?: { runId: string; reason: string; message: string };
 };
 
 // ── 辅助：组装任务文本 ──
@@ -113,22 +139,38 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     origin?: SubagentOrigin,
   ): Promise<void> {
     const childIdentity = childIdentities.get(agentId);
+    const reduce = getSubagent(agentId)?.reduce;
+    // 汇总体用量（ADR-0052 §19 第三档）：把本汇总体这次的输出 token 回写 run 索引，累加记账。
+    const reducerOutputTokens = getSubagent(agentId)?.usage.outputTokens;
+    // 汇总体收场：判定权在盘面证据（终态标记 + digest），不在模型的自述——
+    // 同时这一步释放等待位，死亡后同 runId 才补得起来。
+    const settlement = reduce && deps.reducer
+      ? await deps.reducer.conclude({ agentId, runId: reduce.runId, digestPath: reduce.digestPath, ...(reducerOutputTokens !== undefined ? { reducerOutputTokens } : {}) })
+        .catch((err: unknown) => ({ status: 'failed' as const, reason: 'conclude-failed', report: err instanceof Error ? err.message : String(err) }))
+      : undefined;
     // 决策 7/10：更新 subagent store 状态 + checkpoint + message_send
     // ADR-0010 决策 14：notify 带 taskId + origin——skill fork 与直接启动格式不同
-    if (result.status === 'completed') {
-      const summary = result.result.slice(0, 200) || 'Subagent completed.';
-      updateSubagentStatus(agentId, 'completed', { result: result.result });
+    // ADR-0052 §14：汇总体禁止用 completed 掩盖未结算——收场判败就是判败。
+    const failed = result.status !== 'completed' || settlement?.status === 'failed';
+    if (!failed && result.status === 'completed') {
+      const text = settlement?.status === 'completed' ? `${settlement.firstLine}\n${result.result}` : result.result;
+      updateSubagentStatus(agentId, 'completed', { result: text });
       if (childIdentity) {
-        await checkpoint(childSessionId, childIdentity, 'completed', result.result.length > 500
-          ? `${result.result.slice(0, 500)}...`
-          : result.result).catch(() => { /* best-effort：失败必须静默，否则 finalize 抛错会被外层 .catch 误把 completed 覆盖为 failed */ });
-        const body = origin?.type === 'skill'
-          ? `skill '${origin.skillName}' fork completed (taskId=${agentId}): ${summary}`
-          : `subagent completed (taskId=${agentId}): ${summary}`;
+        await checkpoint(childSessionId, childIdentity, 'completed', text.length > 500
+          ? `${text.slice(0, 500)}...`
+          : text).catch(() => { /* best-effort：失败必须静默，否则 finalize 抛错会被外层 .catch 误把 completed 覆盖为 failed */ });
+        // 汇总体：通知体就是交付物本身——首行 KV 是身份（§15），不带"谁替谁转达"的前缀。
+        const body = settlement?.status === 'completed'
+          ? text.slice(0, 200) || 'Reducer completed.'
+          : origin?.type === 'skill'
+            ? `skill '${origin.skillName}' fork completed (taskId=${agentId}): ${text.slice(0, 200) || 'Subagent completed.'}`
+            : `subagent completed (taskId=${agentId}): ${text.slice(0, 200) || 'Subagent completed.'}`;
         await notify(childSessionId, childIdentity, parentSessionId, body).catch(() => { /* best-effort */ });
       }
     } else {
-      const reason = result.error || 'unknown error';
+      const reason = settlement?.status === 'failed'
+        ? settlement.report
+        : (result.status === 'failed' || result.status === 'aborted' ? result.error : undefined) || 'unknown error';
       updateSubagentStatus(agentId, 'failed', { error: reason });
       if (childIdentity) {
         await checkpoint(childSessionId, childIdentity, 'cancelled', reason).catch(() => { /* best-effort */ });
@@ -142,13 +184,42 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
     childIdentities.delete(agentId);
   }
 
+  async function admitReducerStart(agentId: string, runId: string, ownerSessionId: string): Promise<ReducerAdmit> {
+    if (!deps.reducer) {
+      return { ok: false, noticeOnly: true, reason: 'reducer-not-wired', message: 'No workflows module is wired into this runtime, so nothing can wait for a run; the account stays on disk.' };
+    }
+    return await deps.reducer.admit({ agentId, runId, ownerSessionId });
+  }
+
   const runner = {
-    /** 启动 subagent——异步立即返回（决策 2） */
-    start(parentSessionId: string, input: SubagentStartInput, origin?: SubagentOrigin): SubagentStartResult {
-      // 决策 11：并发限制
+    /** 启动 subagent——受理后立即返回（决策 2）；汇总体场景准入先于起 session。 */
+    async start(parentSessionId: string, input: SubagentStartInput, origin?: SubagentOrigin): Promise<SubagentStartResult> {
+      // 决策 11：并发限制——池闸先于等待位（池满时不该留下一半占着的位）
       const running = countRunning();
       if (running >= settings.maxParallel) {
         throw new MyTerminalError('FORBIDDEN', `Max parallel subagents reached (${settings.maxParallel}). Wait for existing subagents to complete or abort one.`);
+      }
+
+      // M2 store 记录（ADR-0042 #78 选项 A：透传 origin，使其落 SubagentRecord）
+      const subagentId = `sa_${randomUUID().slice(0, 8)}`;
+
+      // ADR-0052 §8：汇总体准入——等待位（同一 run 至多一个等待者）与并发配额，
+      // 拒在起 subagent 之前；配额满是 notice-only 降级，不是失败。
+      let waiting: { timeoutSec: number; budgetEndsAt: number } | undefined;
+      if (input.reduce) {
+        const admitted = await admitReducerStart(subagentId, input.reduce.runId, parentSessionId);
+        if (!admitted.ok) {
+          if (!admitted.noticeOnly) {
+            throw new MyTerminalError('FORBIDDEN', admitted.message, { reason: admitted.reason } as unknown as import('../types.js').JsonObject);
+          }
+          return {
+            sessionId: null,
+            taskId: null,
+            status: 'notice-only',
+            reduce: { runId: input.reduce.runId, reason: admitted.reason, message: admitted.message },
+          };
+        }
+        waiting = { timeoutSec: admitted.timeoutSec, budgetEndsAt: admitted.budgetEndsAt };
       }
 
       // 组装任务
@@ -162,12 +233,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         task: taskPkg,
       });
 
-      // M2 store 记录（ADR-0042 #78 选项 A：透传 origin，使其落 SubagentRecord）
-      const subagentId = `sa_${randomUUID().slice(0, 8)}`;
       createSubagent(subagentId, {
         subject: input.objective.slice(0, 200),
         description: input.background?.slice(0, 500),
         origin,
+        ...(input.reduce ? { reduce: { runId: input.reduce.runId, digestPath: input.reduce.digestPath } } : {}),
       });
 
       // 存储 child identity 供 notify/checkpoint 使用
@@ -178,10 +248,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
       if (record) record.sessionId = child.id;
 
       // 合并运行时配置（ADR-0045 #04：provider/model 已移除——模型只来自全局配置 settings）
+      // ADR-0052 §8 I11：汇总体 timeoutSec 由等待预算推导，模型传不进来（带了即被工具层拒）。
       const mergedSettings: SubagentSettings = {
         ...settings,
         maxTurns: input.maxTurns ?? settings.maxTurns,
-        timeoutSec: input.timeoutSec ?? settings.timeoutSec,
+        timeoutSec: waiting ? waiting.timeoutSec : (input.timeoutSec ?? settings.timeoutSec),
       };
 
       // 决策 2：后台启动
@@ -191,6 +262,7 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
         cwd: workspaceDir,
         settings: mergedSettings,
         readOnly: input.readOnly,
+        ...(waiting ? { budgetEndsAt: waiting.budgetEndsAt } : {}),
       }).then((result) => finalize(subagentId, child.id, parentSessionId, result, origin))
         .catch((err: unknown) => {
           const error = err instanceof Error ? err.message : String(err);
@@ -198,6 +270,11 @@ export function createSubagentRunner(deps: SubagentRunnerDeps) {
           // 状态 → SubagentRecord 永久 status=running（僵尸），父代理被永久阻塞，checkpoint 永不落盘。
           // 现补：无条件置 failed（无论是否有 childIdentity，先杀僵尸），再 best-effort checkpoint + notify。
           updateSubagentStatus(subagentId, 'failed', { error });
+          // 汇总体死在路上：等待位必须随之释放（否则同 runId 永远补不起来），判定结果在这里用不上。
+          if (input.reduce && deps.reducer) {
+            const deadReducerTokens = getSubagent(subagentId)?.usage.outputTokens;
+            void deps.reducer.conclude({ agentId: subagentId, runId: input.reduce.runId, digestPath: input.reduce.digestPath, ...(deadReducerTokens !== undefined ? { reducerOutputTokens: deadReducerTokens } : {}) }).catch(() => {});
+          }
           const storedIdentity = childIdentities.get(subagentId);
           if (storedIdentity) {
             const body = origin?.type === 'skill'

@@ -147,6 +147,7 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
       'message_list covers both sent and received messages; message_conversation returns a two-way thread. Message results include send/observation timestamps, age, audited operations since send, and possible delay notices.',
       'Automatic continuation context is intentionally bounded. Use paginated session_history for permanent structured summaries, messages, state events, and sanitized tool calls.',
       'Use skill() to list available skills, skill(name) to run one.',
+      'Workflows: start a run only when the user asks — load the workflow-authoring skill, call workflow_start, then start a reducer with subagent_start(reduce) and poll it for the final summary; workflow_cancel stops a whole run (idempotent). Runs continue locally after this conversation ends.',
     ].join('\n'),
   });
   server.registerTool('extension_discover', {
@@ -245,6 +246,11 @@ export function createMcpServer(service: ExtensionFacade): McpServer {
       return '运行中';
     });
   registerDirect('subagent_abort', 'Abort Subagent', 'Abort a running subagent. Idempotent — terminal subagents return their current status.', safeLocalMutation);
+
+  // ── Workflows 启动面（ADR-0052 §23②：对外文案面向 Apps/MCP 审核独立撰写）──
+  registerDirect('workflow_start', 'Start Workflow', 'Start a multi-agent workflow run from a script. Asynchronous: returns a runId immediately and runs locally in the background. Start a reducer subagent right after; poll the reducer for the final summary — long runs do not depend on this conversation staying open.', safeLocalMutation);
+  // 注解集镜像 subagent_abort（safeLocalMutation）；幂等语义在描述里声明，对外版刻意不抄 core 三句。
+  registerDirect('workflow_cancel', 'Cancel Workflow', 'Cancel a whole workflow run and stop its local agents. Idempotent — a terminal run returns its current status. The reducer still reports what finished.', safeLocalMutation);
 
   // ── Skill 工具（ADR-0037 #82：指令 mcp.ts:150 已承诺 skill() 直呼，须补齐 direct 注册）──
   // 1:1 镜像 core-tools.ts builtin `skill` 行为：无参列清单 / 有参运行（fork 走 subagent）。

@@ -96,9 +96,15 @@ export const BUILTIN_INPUT_SCHEMAS = {
 
   // ── Skill / Subagent ──
   skill: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, additionalProperties: false },
-  subagent_start: { type: 'object', properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 }, maxTurns: { type: 'integer', minimum: 1, maximum: 1600 }, timeoutSec: { type: 'integer', minimum: 30, maximum: 86400 }, readOnly: { type: 'boolean' } }, required: ['objective'], additionalProperties: false },
+  subagent_start: { type: 'object', properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 }, maxTurns: { type: 'integer', minimum: 1, maximum: 1600 }, timeoutSec: { type: 'integer', minimum: 30, maximum: 86400 }, readOnly: { type: 'boolean' }, reduce: { type: 'object', properties: { runId: { type: 'string', minLength: 4, maxLength: 128 } }, required: ['runId'], additionalProperties: false } }, required: ['objective'], additionalProperties: false },
   subagent_status: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: SUBAGENT_STATUS_PAGE_MAX_CHARS } }, required: ['taskId'], additionalProperties: false },
   subagent_abort: { type: 'object', properties: { taskId: { type: 'string', minLength: 1 } }, required: ['taskId'], additionalProperties: false },
+
+  // ── Workflows（ADR-0052 §8：启动面三种互斥形态，参数面不含任何闸门）──
+  // 恰选一与 resume 组合规则是运行期语义，刻意不在 schema 表达（形状只管形状）。
+  workflow_start: { type: 'object', properties: { script: { type: 'string', minLength: 1, maxLength: 200_000 }, scriptPath: { type: 'string', minLength: 1 }, resumeFromRunId: { type: 'string', minLength: 1 }, args: { type: 'object', additionalProperties: true } }, additionalProperties: false },
+  // workflow_cancel：参数仅 runId，粒度整 run、幂等（ADR-0052 §8）。形状照 subagent_abort 同格。
+  workflow_cancel: { type: 'object', properties: { runId: { type: 'string', minLength: 4, maxLength: 128 } }, required: ['runId'], additionalProperties: false },
 
   /**
    * task_poll 不是 builtin——它由 `ExtensionService.call` 直接拦截处理，不进 builtins map。

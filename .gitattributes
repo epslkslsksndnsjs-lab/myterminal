@@ -1,0 +1,4 @@
+# 仓库文本一律以 LF 落工作区。
+# Windows runner 检出时 core.autocrlf 会把文本转成 CRLF，于是按字节比较的锁
+# （内建技能正文 vs 发布件 SKILL.md、frontmatter 正则 /^---\n/）与 shell 换行断言假红。
+* text=auto eol=lf
