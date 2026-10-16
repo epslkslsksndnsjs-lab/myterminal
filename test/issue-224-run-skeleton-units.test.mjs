@@ -526,13 +526,16 @@ test('adapter：llmBackedFactory 组装请求、拼接文本、透传 output tok
 });
 
 test('paths：managed 根与 run 布局按约定，非法槽位不进路径', () => {
-  assert.equal(managedRootFor('/ws'), '/ws/.myterminal');
-  const paths = workflowPaths('/ws/.myterminal');
-  assert.equal(paths.savedRoot, '/ws/.myterminal/workflows/saved');
-  assert.equal(paths.registryFile, '/ws/.myterminal/workflows/registry.json');
+  const ws = path.join(path.sep, 'ws');
+  const managed = path.join(ws, '.myterminal');
+  const wf = path.join(managed, 'workflows');
+  assert.equal(managedRootFor(ws), managed);
+  const paths = workflowPaths(managed);
+  assert.equal(paths.savedRoot, path.join(wf, 'saved'));
+  assert.equal(paths.registryFile, path.join(wf, 'registry.json'));
   const run = runPaths(paths, 'wf_1');
-  assert.equal(run.terminalFile, '/ws/.myterminal/workflows/runs/wf_1/terminal');
-  assert.equal(run.agentsDir, '/ws/.myterminal/workflows/runs/wf_1/agents');
-  assert.equal(run.outboxDir, '/ws/.myterminal/workflows/runs/wf_1/outbox');
+  assert.equal(run.terminalFile, path.join(wf, 'runs', 'wf_1', 'terminal'));
+  assert.equal(run.agentsDir, path.join(wf, 'runs', 'wf_1', 'agents'));
+  assert.equal(run.outboxDir, path.join(wf, 'runs', 'wf_1', 'outbox'));
   assert.throws(() => runPaths(paths, 'wf_..'), /runId must match/);
 });

@@ -60,7 +60,7 @@ test('temp 清扫只按它自己那一格宽限计时，绝不用快照预算或
 
   const report = await runRetentionSweep({ paths, nowMs });
   assert.deepEqual(report.snapshotsRemoved, [], '没有终态标记就不裁快照');
-  assert.deepEqual(report.tempRemoved.sort(), ['runs/wf_aaaa/index.json.ffffffff.tmp']);
+  assert.deepEqual(report.tempRemoved.sort(), [path.join('runs', 'wf_aaaa', 'index.json.ffffffff.tmp')]);
   assert.equal(fs.existsSync(old), false, '超宽限的孤儿 temp 被清');
   assert.equal(fs.existsSync(young), true, '宽限内的 temp 不动（可能正被在飞写）');
 });
@@ -79,7 +79,7 @@ test('temp 清扫递归到顶层与 outbox，目录读不动不炸', async () =>
   fs.utimesSync(outboxTmp, past, past);
 
   const report = await runRetentionSweep({ paths, nowMs });
-  assert.deepEqual(report.tempRemoved.sort(), ['registry.json.abcdef12.tmp', 'runs/wf_bbbb/outbox/x.json.12345678.tmp']);
+  assert.deepEqual(report.tempRemoved.sort(), ['registry.json.abcdef12.tmp', path.join('runs', 'wf_bbbb', 'outbox', 'x.json.12345678.tmp')]);
 });
 
 // ── 快照裁到预算：只动终态、按 settle 时刻升序删最旧、保护集跳过 ──

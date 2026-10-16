@@ -524,7 +524,7 @@ test('AC3 交付口径两条腿都锁住：经出口的提交与纯文本兜底�
   assert.equal(shipped.includes('is not read as the result'), false, '但提示词不谎称引擎拒收文本');
 });
 
-test('AC7 关机接线的归属锁：SIGHUP → runtime close → 收 Workflows 的在飞命令树', () => {
+test.skipIf(skipOnWin)('AC7 关机接线的归属锁：SIGHUP → runtime close → 收 Workflows 的在飞命令树', () => {
   const cli = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'cli.ts'), 'utf8');
   const server = fs.readFileSync(path.join(import.meta.dirname, '..', 'src', 'server.ts'), 'utf8');
   assert.match(cli, /process\.once\('SIGHUP', \(\) => gracefulSignalShutdown\('SIGHUP'\)\)/, '关终端走优雅关机（既有链路）');

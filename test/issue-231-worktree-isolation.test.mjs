@@ -186,7 +186,7 @@ async function until(condition, what, timeoutMs = 8_000) {
 // AC1 写 dispatch 在独立 worktree 内完成；主 checkout 与主 .git 不可达
 // ═══════════════════════════════════════════════════════════════
 
-test('AC1 隔离路真建 worktree，写的字节落在那件里、不落在工作区', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC1 隔离路真建 worktree，写的字节落在那件里、不落在工作区', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel((request, n) => (n === 1 ? toolUse('w1', 'write_file', { path: 'planted.txt', content: 'from an isolated path\n' }) : done('wrote it', 4)));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -207,7 +207,7 @@ test('AC1 隔离路真建 worktree，写的字节落在那件里、不落在工�
   assert.equal(fs.statSync(path.join(record.worktree.path, '.git')).isFile(), true, '那件的 .git 是指向共同对象库的 FILE');
 });
 
-test('AC1 越界读写都摸不到主 checkout 与主 .git', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC1 越界读写都摸不到主 checkout 与主 .git', async () => {
   const temp = gitWorkspace();
   const probes = [
     { path: '../../../.git/config' },
@@ -227,7 +227,7 @@ test('AC1 越界读写都摸不到主 checkout 与主 .git', { skip: skipOnWin }
   assert.equal(reasons[3], 'not-found', '界内路径过了边界闸、真去读了盘（读不到是另一回事）');
 });
 
-test('AC1 经界内 symlink 逃逸写盘被拒，一个字节都不落在界外', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC1 经界内 symlink 逃逸写盘被拒，一个字节都不落在界外', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel((request, n) => (n === 1
     ? toolUse('l1', 'execute_cli', { command: 'ln -s ../../.. escape' })
@@ -246,7 +246,7 @@ test('AC1 经界内 symlink 逃逸写盘被拒，一个字节都不落在界外'
   assert.equal(fs.existsSync(path.join(temp.workspaceDir, 'escaped.txt')), false, '主 checkout 没被写进去');
 });
 
-test('AC1 未标隔离的写请求：该路判败记入索引、run 继续、零 token 消耗', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC1 未标隔离的写请求：该路判败记入索引、run 继续、零 token 消耗', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('read-only is enough', 7));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -272,7 +272,7 @@ return [bad, good];`,
   assert.equal('result' in perPath, false, '判败那一路不产出结果值');
 });
 
-test('AC1 展示名与拼写名互认：请求 "Write file" 同样算请求写', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC1 展示名与拼写名互认：请求 "Write file" 同样算请求写', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('ok', 1));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -285,7 +285,7 @@ test('AC1 展示名与拼写名互认：请求 "Write file" 同样算请求写',
 // AC2 工具面随模式变；写工具只在隔离面出现
 // ═══════════════════════════════════════════════════════════════
 
-test('AC2 工具面随模式变化：隔离面递出写工具，只读面递不出', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC2 工具面随模式变化：隔离面递出写工具，只读面递不出', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('done', 1));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -307,7 +307,7 @@ test('AC2 工具面随模式变化：隔离面递出写工具，只读面递不�
 // AC3 clean 自动删、有改动保留并回报
 // ═══════════════════════════════════════════════════════════════
 
-test('AC3 什么都没改的一路：worktree 自动删，登记进 removed', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC3 什么都没改的一路：worktree 自动删，登记进 removed', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('nothing to change', 2));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -321,7 +321,7 @@ test('AC3 什么都没改的一路：worktree 自动删，登记进 removed', { 
   assert.equal(git(['worktree', 'list'], temp.workspaceDir).trim().split('\n').length, 1, 'git 侧注册位也被 prune 收回');
 });
 
-test('AC3 有改动：保留并回报 path + branch，文本尾巴让人看得见', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC3 有改动：保留并回报 path + branch，文本尾巴让人看得见', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel((request, n) => (n === 1 ? toolUse('w', 'write_file', { path: 'note.md', content: 'kept\n' }) : done('finished the edit', 2)));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -336,7 +336,7 @@ test('AC3 有改动：保留并回报 path + branch，文本尾巴让人看得�
   assert.equal(git(['rev-parse', '--abbrev-ref', 'HEAD'], temp.workspaceDir).trim(), 'main', '主 checkout 的分支没被切走');
 });
 
-test('AC3 schema 路不被尾巴污染：机器件记边界，结构化结果一个字节都不动', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC3 schema 路不被尾巴污染：机器件记边界，结构化结果一个字节都不动', async () => {
   const temp = gitWorkspace();
   const schema = { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] };
   const model = scriptedModel((request, n) => (n === 1
@@ -358,7 +358,7 @@ test('AC3 schema 路不被尾巴污染：机器件记边界，结构化结果一
 // AC4 位置与可见性 + 宽限期残活写入仍在边界内
 // ═══════════════════════════════════════════════════════════════
 
-test('AC4 位置：worktrees/ 在库内 managed 根下、不进 git 视野、root 读得到保留项', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC4 位置：worktrees/ 在库内 managed 根下、不进 git 视野、root 读得到保留项', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel((request, n) => (n === 1 ? toolUse('w', 'write_file', { path: 'kept.txt', content: 'mine\n' }) : done('done', 1)));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES });
@@ -370,7 +370,7 @@ test('AC4 位置：worktrees/ 在库内 managed 根下、不进 git 视野、roo
   assert.equal(fs.existsSync(path.join(kept, 'kept.txt')), true);
 });
 
-test('AC4 宽限期残活进程的写入仍被边界锁在 worktree 内', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC4 宽限期残活进程的写入仍被边界锁在 worktree 内', async () => {
   const temp = gitWorkspace();
   // 一条命令先在 worktree 里落笔，再挂住不返；这期间取消整 run —— 收尸有宽限，
   // 残活的那一支能写的地方只有它自己的 cwd（那块 worktree），主 checkout 摸不到。
@@ -409,7 +409,7 @@ test('AC4 宽限期残活进程的写入仍被边界锁在 worktree 内', { skip
 // AC5 per-dispatch 生命周期
 // ═══════════════════════════════════════════════════════════════
 
-test('AC5 重试共享同一 worktree：一次调用只建一件、只收一件', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC5 重试共享同一 worktree：一次调用只建一件、只收一件', async () => {
   const temp = gitWorkspace();
   const probe = fakeWorktrees();
   const clock = virtualClock();
@@ -432,7 +432,7 @@ test('AC5 重试共享同一 worktree：一次调用只建一件、只收一件'
   assert.equal(probe.releaseCount(), 1, '也只收一次');
 });
 
-test('AC5 被打断后重跑不自动续用旧件：新 run 出新件', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC5 被打断后重跑不自动续用旧件：新 run 出新件', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('ok', 1));
   const first = await (await engineFor(temp, { adapterFactory: model.factory, gates: GATES }).engine.start({
@@ -451,7 +451,7 @@ test('AC5 被打断后重跑不自动续用旧件：新 run 出新件', { skip: 
 // AC9 审计：quota-warn / quota-blocked 落到既有审计汇（runId + actor + 结果）
 // ═══════════════════════════════════════════════════════════════
 
-test('AC9 配额软阈值与硬上限两条都落进审计汇，带 runId + actor + 具名理由', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC9 配额软阈值与硬上限两条都落进审计汇，带 runId + actor + 具名理由', async () => {
   const temp = gitWorkspace();
   const entries = [];
   const model = scriptedModel(() => toolUse('w', 'write_file', { path: 'keep.txt', content: 'kept\n' }));
@@ -491,7 +491,7 @@ return 1;`,
 // AC6 / AC7 并发独立、gc 关闭、配额 fail-closed、全败即 run 级 failed
 // ═══════════════════════════════════════════════════════════════
 
-test('AC6 N 路并发各自一块：路径互不相同、彼此看不见', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC6 N 路并发各自一块：路径互不相同、彼此看不见', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel((request, n) => (n === 1 ? toolUse('w', 'write_file', { path: 'mine.txt', content: 'only mine\n' }) : done('done', 1)));
   const { engine } = engineFor(temp, { adapterFactory: model.factory, gates: GATES, concurrencyWindow: 3 });
@@ -509,7 +509,7 @@ test('AC6 N 路并发各自一块：路径互不相同、彼此看不见', { ski
   }
 });
 
-test('AC6 每条 git 命令都关着对象库自动 gc（真 git 记录器逐条核 argv 前缀）', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC6 每条 git 命令都关着对象库自动 gc（真 git 记录器逐条核 argv 前缀）', async () => {
   const temp = gitWorkspace();
   const seen = [];
   const recording = async (argv, cwd) => {
@@ -538,7 +538,7 @@ test('AC6 每条 git 命令都关着对象库自动 gc（真 git 记录器逐条
   assert.equal(released.kept, false);
 });
 
-test('AC7 配额到硬上限：涉事路 fail-closed 具名判败，run 继续', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC7 配额到硬上限：涉事路 fail-closed 具名判败，run 继续', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('fine', 3));
   const blocked = { ok: false, reason: 'worktree-quota', message: 'No new worktree may be created (keep-quota-count): 50 kept of 50.' };
@@ -555,7 +555,7 @@ return [iso, plain];`,
   assert.equal(model.count(), 1, '被配额挡住的那一路一次模型都没打');
 });
 
-test('AC7 全部路都因配额失败 → run 级 failed（不许假完整交付）', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC7 全部路都因配额失败 → run 级 failed（不许假完整交付）', async () => {
   const temp = gitWorkspace();
   const model = scriptedModel(() => done('never reached', 1));
   const probe = fakeWorktrees({ provision: () => ({ ok: false, reason: 'worktree-quota', message: 'blocked by keep-quota-bytes' }) });
@@ -569,7 +569,7 @@ test('AC7 全部路都因配额失败 → run 级 failed（不许假完整交付
   assert.equal(model.count(), 0);
 });
 
-test('AC7 脏树与非仓库两条拒绝各有各的具名，都不烧 token、都不落地目录', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('AC7 脏树与非仓库两条拒绝各有各的具名，都不烧 token、都不落地目录', async () => {
   const dirty = gitWorkspace();
   fs.writeFileSync(path.join(dirty.workspaceDir, 'uncommitted.txt'), 'dirty\n');
   const model = scriptedModel(() => done('x', 1));
@@ -595,7 +595,7 @@ test('AC7 脏树与非仓库两条拒绝各有各的具名，都不烧 token、�
 // 可选自动归档（默认关）的接线位
 // ═══════════════════════════════════════════════════════════════
 
-test('自动归档默认关：结算不碰它；本机设置面打开后才在结算后触发', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('自动归档默认关：结算不碰它；本机设置面打开后才在结算后触发', async () => {
   const temp = gitWorkspace();
   const probe = fakeWorktrees();
   const off = scriptedModel(() => done('x', 1));
@@ -617,7 +617,7 @@ test('自动归档默认关：结算不碰它；本机设置面打开后才在�
 // workingDir pin（选项闸把这条交给了本票）
 // ═══════════════════════════════════════════════════════════════
 
-test('workingDir 只认 git 注册表：注册过的才 rebind，未注册一律拒', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('workingDir 只认 git 注册表：注册过的才 rebind，未注册一律拒', async () => {
   const temp = gitWorkspace();
   const registered = path.join(temp.workspaceDir, 'someone-elses-worktree');
   git(['worktree', 'add', '-b', 'worktree-someone', registered, 'HEAD'], temp.workspaceDir);
@@ -642,7 +642,7 @@ test('workingDir 只认 git 注册表：注册过的才 rebind，未注册一律
   assert.equal(fake.count(), 0, 'pin 不上就不跑，token 一个不烧');
 });
 
-test('pin 到未注册目录不会被"看起来像 worktree"蒙住：伪造的 .git 文件照样拒', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('pin 到未注册目录不会被"看起来像 worktree"蒙住：伪造的 .git 文件照样拒', async () => {
   const temp = gitWorkspace();
   const impostor = path.join(temp.workspaceDir, 'impostor');
   fs.mkdirSync(impostor, { recursive: true });
@@ -657,7 +657,7 @@ test('pin 到未注册目录不会被"看起来像 worktree"蒙住：伪造的 .
   assert.equal(model.count(), 0);
 });
 
-test('pin 只挪读边界，不放开写权限：写面只随模块自己建出来的那件出现（ADR-0052 §11）', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('pin 只挪读边界，不放开写权限：写面只随模块自己建出来的那件出现（ADR-0052 §11）', async () => {
   const temp = gitWorkspace();
   const registered = path.join(temp.workspaceDir, 'borrowed-tree');
   git(['worktree', 'add', '-b', 'worktree-borrowed', registered, 'HEAD'], temp.workspaceDir);
@@ -673,7 +673,7 @@ test('pin 只挪读边界，不放开写权限：写面只随模块自己建出�
   assert.equal(index.dispatches[0].worktree, undefined, '不建件、不登记、不计配额');
 });
 
-test('pin 路上点名要写 = 同样判败 isolation-required（写必隔离不因借树而开口子）', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('pin 路上点名要写 = 同样判败 isolation-required（写必隔离不因借树而开口子）', async () => {
   const temp = gitWorkspace();
   const registered = path.join(temp.workspaceDir, 'borrowed-for-write');
   git(['worktree', 'add', '-b', 'worktree-borrow2', registered, 'HEAD'], temp.workspaceDir);
@@ -687,7 +687,7 @@ test('pin 路上点名要写 = 同样判败 isolation-required（写必隔离不
   assert.equal(model.count(), 0, '零 token');
 });
 
-test('仓库没把托管目录写进 .gitignore 也照样能建件：模块自己的账本不算用户未提交的工作', { skip: skipOnWin }, async () => {
+test.skipIf(skipOnWin)('仓库没把托管目录写进 .gitignore 也照样能建件：模块自己的账本不算用户未提交的工作', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-231-')));
   TMP.push(root);
   const workspaceDir = path.join(root, 'workspace');

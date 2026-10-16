@@ -233,7 +233,7 @@ describe('write_file / apply_patch 的硬执行面', () => {
     assert.equal(onReadOnly.payload.reason, 'isolation-required');
   });
 
-  test('盘上故障各回具名拒因：权限、目标是目录、祖先不是目录都不静默', { skip: typeof process.getuid === 'function' && process.getuid() === 0 }, async () => {
+  test.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))('盘上故障各回具名拒因：权限、目标是目录、祖先不是目录都不静默', async () => {
     fs.writeFileSync(path.join(base, 'afile.txt'), 'hello');
     const locked = path.join(base, 'locked');
     fs.mkdirSync(locked, { recursive: true });

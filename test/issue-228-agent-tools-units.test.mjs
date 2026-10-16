@@ -135,7 +135,7 @@ test('边界：越界一律拒——上跳、绝对越界、同名前缀兄弟�
   } finally { dispose(); }
 });
 
-test('边界：symlink 指向界外即拒（词法在界内、realpath 在界外）', { skip: process.platform === 'win32' }, () => {
+test.skipIf(process.platform === 'win32')('边界：symlink 指向界外即拒（词法在界内、realpath 在界外）', () => {
   const root = workspace();
   try {
     const outside = workspace();
@@ -616,7 +616,8 @@ test('执行面：只读面放行白名单读命令，回结构化 JSON 与实�
     assert.equal(result.payload.exitCode, 0);
     assert.equal(result.payload.timeoutSec, DEFAULT_EXECUTE_TIMEOUT_SEC);
     assert.equal(result.payload.truncated, false);
-    assert.equal(result.payload.stdoutChars, 3);
+    // 字符数与本机 stdout 对齐即可：cmd.exe 的 echo 带 \r\n，POSIX shell 带 \n。
+    assert.equal(result.payload.stdoutChars, result.payload.stdout.length);
     assert.equal((await call('execute_cli', { command: 'echo hi', timeoutSec: 99_999 }, root)).payload.timeoutSec, MAX_EXECUTE_TIMEOUT_SEC, '上限夹回');
     assert.equal((await call('execute_cli', { command: 'echo hi', timeoutSec: 0 }, root)).payload.timeoutSec, 1, '下限夹到 1 秒');
   } finally { dispose(); }
@@ -866,7 +867,7 @@ test('只读工具：glob 转正则的三种形状与遍历上限（跨目录 / 
   } finally { dispose(); }
 });
 
-test('只读工具：目录读不动时 list_dir 具名失败，遍历遇不可读子目录即跳过', async () => {
+test.skipIf(skipOnWin)('只读工具：目录读不动时 list_dir 具名失败，遍历遇不可读子目录即跳过', async () => {
   const root = workspace();
   try {
     if (typeof process.getuid === 'function' && process.getuid() === 0) return;

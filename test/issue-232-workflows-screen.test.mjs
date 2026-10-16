@@ -150,7 +150,7 @@ describe('冷启动：从盘上把 run 读回来', () => {
     assert.deepEqual(board.unreadable, [], '没有目录的活 run 不算"读不动"');
   });
 
-  test('runs/ 存在但读不动（目录级权限故障）：屏得到 sourceError，不是空列表', { skip: typeof process.getuid === 'function' && process.getuid() === 0 }, async () => {
+  test.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))('runs/ 存在但读不动（目录级权限故障）：屏得到 sourceError，不是空列表', async () => {
     const paths = tempLayout('eacces');
     fs.mkdirSync(paths.runsRoot, { recursive: true });
     fs.chmodSync(paths.runsRoot, 0o000);
