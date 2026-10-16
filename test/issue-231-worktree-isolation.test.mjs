@@ -43,7 +43,7 @@ function gitWorkspace() {
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, '.gitignore'), '.myterminal/\n');
   fs.writeFileSync(path.join(workspaceDir, 'keep.txt'), 'original\n');
-  git(['init', '-q', '.'], workspaceDir);
+  git(['init', '-q', '-b', 'main', '.'], workspaceDir);
   git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], workspaceDir);
   git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'baseline'], workspaceDir);
   const managedRoot = path.join(workspaceDir, '.myterminal');
@@ -693,7 +693,7 @@ test('仓库没把托管目录写进 .gitignore 也照样能建件：模块自�
   const workspaceDir = path.join(root, 'workspace');
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.writeFileSync(path.join(workspaceDir, 'keep.txt'), 'original\n');
-  git(['init', '-q', '.'], workspaceDir);
+  git(['init', '-q', '-b', 'main', '.'], workspaceDir);
   git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'add', '.'], workspaceDir);
   git(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'baseline'], workspaceDir);
   const temp = { workspaceDir, managedRoot: path.join(workspaceDir, '.myterminal'), paths: workflowPaths(path.join(workspaceDir, '.myterminal')) };

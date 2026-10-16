@@ -235,7 +235,13 @@ export async function runInSandbox(options: {
     running = Promise.resolve(script.runInContext(sandbox, { timeout: options.timeoutMs ?? 30_000 }) as Promise<unknown>);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    const kind = code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' || code === 'ERR_SCRIPT_EXECUTION_INTERRUPTED' ? 'timeout' : 'runtime';
+    // 惰性解析的引擎（bun 1.3.x 的 vm）把语法错推迟到 runInContext 才同步抛出——
+    // SyntaxError 一律按编译面归类，不随引擎的解析时机漂移。
+    const kind = code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' || code === 'ERR_SCRIPT_EXECUTION_INTERRUPTED'
+      ? 'timeout'
+      : (error as Error)?.name === 'SyntaxError'
+        ? 'compile'
+        : 'runtime';
     return { ok: false, kind, message: (error as Error).message, logs, phases };
   }
 
