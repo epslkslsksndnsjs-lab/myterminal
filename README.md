@@ -132,6 +132,10 @@ Skills are user-authored `SKILL.md` files placed in `.myterminal/skills/<name>/`
 
 A subagent is an isolated agent loop with its own 9-tool set, context window, and token usage tracker. It runs asynchronously against an Anthropic-Messages-compatible LLM endpoint configured in `config.json` (`subagent.apiKey` / `subagent.baseUrl` / `subagent.model`, all three required). `subagent_start` / `subagent_status` / `subagent_abort` manage the lifecycle. A configurable maxParallel limit caps concurrent subagents; recursion guard prevents subagents from starting other subagents. Completed subagents notify the parent session via message_send. See [Subagent setup](docs/SUBAGENT_SETUP.md) for configuration.
 
+### Workflows
+
+A workflow fans one script out across dozens of isolated local agents and hands back a single aggregated summary. `workflow_start` takes a script (or a saved `scriptPath`) and returns a `runId` immediately while the run keeps going locally; runs start only when the user asks, and the script contract lives in the built-in `workflow-authoring` skill. Workflow agents are read-only by default — an agent that writes must declare `isolation: 'worktree'` and gets its own Git worktree. When the run settles, the **reducer** (an ordinary subagent) reads the run's index and returns one digest through the usual checkpoint and message pipeline. `workflow_cancel` stops a run; `workflow_start` with `resumeFromRunId` resumes it, replaying unchanged calls from cache. Concurrency, agent count, wall clock, and output-token limits are local settings only, and model-facing calls carry no gate parameters.
+
 ### L3 tool-result shaping
 
 Tool results pass through a layered shaping pipeline (`TOOL_SHAPES`): deterministic L1 reduce, L2 routing, and an optional L3 local-model layer (a bundled Qwen GGUF) that extracts free-text results for a few tools. L3 is fail-open — the model is not part of the release archive; run `myterminal l3-model fetch` (SHA-256-pinned, idempotent) to download it and enable L3. Until then, results fall back to deterministic L1/L2 with no functional loss. L3 is on by default for standalone processes and off for shared-port cluster participants (`MYTERMINAL_L3_ENABLED` overrides).
@@ -204,7 +208,7 @@ bun run test
 bun run dev
 ```
 
-The test suite covers OpenAPI 3.1, Actions and Apps identity, controller takeover, fixed checkpoint timing, parent/child completion, event ACK, subscriptions, durable history, redaction, migration, deletion, continuation, OpenTUI wheel scrolling, and drag selection.
+The test suite covers OpenAPI 3.1, Actions and Apps identity, controller takeover, fixed checkpoint timing, parent/child completion, event ACK, subscriptions, durable history, redaction, migration, deletion, continuation, OpenTUI wheel scrolling, drag selection, workflow fan-out, write isolation, and crash recovery.
 
 Headless mode is available only after first-run TUI setup:
 

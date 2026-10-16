@@ -6,6 +6,8 @@ MyTerminal 的 subagent 系统把一个有边界的任务委派给一个隔离�
 
 > subagent 系统是 opt-in 的。如果 `subagent.enabled` 为 `false` 或三个必填字段缺任一，`subagent_start` 会返回明确的错误，不会发起任何远端调用。
 
+**Workflows** 引擎共用这份端点配置：工作流 agent 与汇总体调用你在本页配置的同一个 Anthropic Messages 兼容端点。
+
 ## 完整路径
 
 ```mermaid

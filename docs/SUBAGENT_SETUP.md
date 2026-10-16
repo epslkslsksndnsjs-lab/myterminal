@@ -6,6 +6,8 @@ MyTerminal's subagent system delegates a bounded task to an isolated agent loop 
 
 > The subagent system is opt-in. If `subagent.enabled` is `false` or any of the three required fields is missing, `subagent_start` returns a clear error and no remote call is attempted.
 
+The **Workflows** engine shares this endpoint configuration: workflow agents and the run's reducer call the same Anthropic-Messages-compatible endpoint you set up here.
+
 ## The complete path
 
 ```mermaid

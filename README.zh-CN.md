@@ -132,6 +132,10 @@ Skill 是用户编写的 `SKILL.md` 文件，放置在 `.myterminal/skills/<name
 
 Subagent 是隔离的智能体循环，拥有独立的 9 工具集、上下文窗口和费用追踪器。它异步运行于 `config.json` 配置的 Anthropic Messages 兼容 LLM 端点（`subagent.apiKey` / `subagent.baseUrl` / `subagent.model` 三必填）。`subagent_start` / `subagent_status` / `subagent_abort` 管理生命周期。可配置 maxParallel 限制并发数量；递归防护禁止 subagent 启动其他 subagent。已完成的 subagent 通过 message_send 通知父 session。配置见 [Subagent 配置指南](docs/SUBAGENT_SETUP.zh-CN.md)。
 
+### Workflows（工作流）
+
+一条 workflow 把一份脚本扇出到几十路相互隔离的本地 agent，最后只回传一份汇总摘要。`workflow_start` 接收脚本（或已保存的 `scriptPath`），立即返回 `runId`，run 在本地继续跑；只有用户提出时才会启动，脚本契约写在随模块发布的内建 `workflow-authoring` 技能里。工作流 agent 默认只读——需要写盘的一路必须声明 `isolation: 'worktree'`，并获得自己的 Git worktree。run 结算后，**汇总体**（一个普通 subagent）读取索引，经由既有的 checkpoint 与消息管线回传一份摘要。`workflow_cancel` 取消整条 run；`workflow_start` 带 `resumeFromRunId` 续跑，未变化的调用走缓存重放。并发、agent 数、墙钟与输出 token 上限只存在于本地设置——面向模型的调用不携带任何闸门参数。
+
 ### L3 工具结果整形
 
 工具结果经过分层整形管线（`TOOL_SHAPES`）：确定性 L1 reduce、L2 路由，以及可选的 L3 本地模型层（随框架分发的 Qwen GGUF），为少数工具做自由文本结果抽取。L3 fail-open——模型不在发布包内；运行 `myterminal l3-model fetch`（sha256 钉死、幂等）下载后启用 L3。在此之前结果回落确定性 L1/L2，无功能损失。L3 对 standalone 进程默认开、共享端口 cluster 参与者默认关（`MYTERMINAL_L3_ENABLED` 可覆盖）。
@@ -204,7 +208,7 @@ bun run test
 bun run dev
 ```
 
-测试覆盖 OpenAPI 3.1、Actions/Apps 身份、控制权接管、固定 checkpoint 计时、父子完成审计、事件 ACK、订阅、永久历史、脱敏、迁移、删除、continuation、OpenTUI 滚轮和拖动框选。
+测试覆盖 OpenAPI 3.1、Actions/Apps 身份、控制权接管、固定 checkpoint 计时、父子完成审计、事件 ACK、订阅、永久历史、脱敏、迁移、删除、continuation、OpenTUI 滚轮、拖动框选，以及 workflow 扇出、写隔离与崩溃恢复。
 
 首次 TUI 配置完成后，可以无界面运行：
 

@@ -17,6 +17,7 @@ Replace only the text in angle brackets. Keep the prompt short; the GPT instruct
 | Finish safely | `Run the project checks. If they pass, checkpoint the verified result as completed.` |
 | Run a skill | `List available skills, then run the skill best suited for <goal>.` |
 | Start a subagent | `Start a subagent to <objective> using <provider/model>. Poll until it finishes.` |
+| Run a workflow | `Run a workflow for <goal>; load the workflow-authoring skill first.` |
 
 ## What not to paste
 

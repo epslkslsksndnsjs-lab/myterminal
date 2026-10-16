@@ -59,6 +59,10 @@ The passive-lock service is installation-global. It is not owned by one workspac
 
 One-shot helpers are workspace- and session-scoped. Terminal session completion, cancellation, controller cleanup, or runtime shutdown may terminate only helpers whose PID files and executable identity match that session.
 
+### Workflow runs
+
+A workflow run is owned by the root session that started it; later sessions, credentials, or process restarts never reassign it. The workflow system owns its own agent loop, concurrency pool, run ledger, and Git worktrees — deliberately independent from the subagent system, sharing only the LLM endpoint configuration. A run settles exactly once: the terminal marker is created exclusively and written last, as its single linearization point. On boot, the runtime claims runs interrupted by a previous process, drains pending settled-notices, and sweeps retention in one bounded sequence; a runtime-lifetime watchdog force-settles workflow agents that outlive their gates.
+
 ### Continuation and background tasks
 
 Actions continuation plans are optional durable session state. `off` preserves the core harness, `adaptive` stores 1-3 calls, `next-call` stores one, and `lookahead-3` stores three. Only a confirmed successful call advances a queue. Contract revisions are persisted; a mode/revision change emits `requirements_changed`, which discovery acknowledges after returning the new contract. Non-blocking scheduling is a separate default-off setting. When enabled, `ExtensionService` releases an operation after a 200ms response budget with a task ID, retains the live audit record, and completes or fails that same record when the operation settles. Completed responses expire after 30 minutes and are evicted oldest-first when either 100 retained tasks or 24 MiB of serialized responses is reached; a maintenance timer also enforces expiry while idle. Runtime shutdown stops accepting calls, aborts owned command trees, waits a bounded grace period, and closes remaining audits before releasing the workspace lease.
@@ -89,6 +93,7 @@ Credentials are hidden by default and may be visible only while eligible `v` pre
 | Extension facade | `extensions.ts`, `core-tools.ts`, `mcp.ts`, `openapi.ts` | authenticated tool discovery, registration and calls |
 | Skill system | `skills.ts` | SKILL.md scanning, frontmatter parsing, manifest loading, fork/inline routing, built-in skill fallback (adaptive-guard) |
 | Subagent system | `subagent/*.ts` | isolated agent loop, 9-tool set, Anthropic-protocol LLM adapter (baseUrl-configurable), token usage tracking, permissions, file/shell state, result budget, TUI bridge |
+| Workflow system | `workflows/*.ts` | sandboxed script fan-out engine, workflow-agent loop with its own tool face, pool and ledger, self-limit gates, stall retry, reducer hand-back via a durable outbox, control and resume, worktree isolation, retention, boot-time crash recovery, TUI bridge |
 | Resource adapters | `session-resources.ts`, `diff.ts`, `security.ts`, `update.ts`, `update-transaction.ts` | OS helpers, Git sampling, path/credential safety, transactional updates |
 | TUI contracts/presentation | `tui/contracts.ts`, `tui/workspace-selector.ts`, `tui/renderer-profile.ts`, `runtime-settings.ts`, `tui/credential-visibility.ts` | shared view models, terminal profiles, and interaction contracts |
 | TUI orchestration/rendering | `tui/state.ts`, `tui/App.tsx`, screens/components | use cases and rendering |
@@ -107,6 +112,9 @@ Credentials are hidden by default and may be visible only while eligible `v` pre
 10. Narrow Apps tools marked non-destructive do not overwrite existing workspace files; the separately exposed generic facade retains explicit overwrite and arbitrary-command capabilities.
 11. Subagents have an isolated context window and tool set; they cannot start other subagents (recursion guard) and share a global maxParallel limit with fork skills.
 12. Skill frontmatter is the single source of truth for routing (inline vs fork); the skill tool never silently downgrades a fork to inline.
+13. Workflow agents are read-only by default and write-isolated when they write; an agent can never fan out another agent, message a human, or touch its own run.
+14. A workflow run settles exactly once through its terminal marker; recovery, retention, and the orphan watchdog never rewrite an existing terminal state.
+15. Model-facing workflow calls carry no gate parameters; limits are local settings, widened only on explicit user request.
 
 ## Change guidance
 
