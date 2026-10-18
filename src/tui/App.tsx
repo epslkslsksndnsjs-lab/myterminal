@@ -28,6 +28,7 @@ import { SubagentList } from './screens/Subagents.js';
 import { Worktrees } from './screens/Worktrees.js';
 import { RunDetail, Workflows } from './screens/Workflows.js';
 import { SubagentDetail } from './screens/Subagent.js';
+import { SubagentActivityList, SubagentActivityScreen } from './screens/Activity.js';
 
 type FormState = {
   id: number;
@@ -49,6 +50,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const [logAnchorAt, setLogAnchorAt] = useState<string>();
   const [timelinePage, setTimelinePage] = useState(0);
   const [timelineExpandRev, setTimelineExpandRev] = useState(0);
+  const [activityExpandRev, setActivityExpandRev] = useState(0);
   const [form, setForm] = useState<FormState>();
   const [notice, setNotice] = useState<string>();
   // #231 Worktrees 面板：读的是模块的登记簿（异步、冷启动也成立），所以按秒轮询而不是搭进程内事件。
@@ -135,7 +137,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const groups = logicalSessionGroups(state.sessions);
   const conversations = conversationGroups(state.messages);
-  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : tab === 9 ? worktreeRows.length : tab === 10 ? workflowRows.length : 0;
+  const itemCount = tab === 1 ? groups.length : tab === 2 ? conversations.length : tab === 5 ? state.extensions.length : tab === 8 ? controller.runtime.listSubagents().length : tab === 9 ? worktreeRows.length : tab === 10 ? workflowRows.length : tab === 11 ? controller.runtime.listSubagents().length : 0;
   const activeSelection = Math.max(0, Math.min(Math.max(0, itemCount - 1), selected[tab] || 0));
 
   const moveSelection = useCallback((delta: number) => {
@@ -146,7 +148,8 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
           : tab === 5 ? controller.runtime.store.listExtensions().length
               : tab === 8 ? controller.runtime.listSubagents().length
                 : tab === 9 ? worktreeRows.length
-                  : tab === 10 ? workflowRows.length : 0;
+                  : tab === 10 ? workflowRows.length
+                    : tab === 11 ? controller.runtime.listSubagents().length : 0;
       next[tab] = Math.max(0, Math.min(Math.max(0, count - 1), (next[tab] || 0) + delta));
       return next;
     });
@@ -154,13 +157,27 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
 
   const selectItem = useCallback((index: number) => setSelected((values) => { const next = [...values]; next[tab] = index; return next; }), [tab]);
 
-  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : tab === 9 ? worktreeRows[activeSelection]?.id : tab === 10 ? workflowRows[activeSelection]?.runId : undefined;
+  const selectedTargetId = tab === 1 ? groups[activeSelection]?.id : tab === 2 ? conversations[activeSelection]?.id : tab === 5 ? state.extensions[activeSelection]?.name : tab === 8 ? controller.runtime.listSubagents()[activeSelection]?.id : tab === 9 ? worktreeRows[activeSelection]?.id : tab === 10 ? workflowRows[activeSelection]?.runId : tab === 11 ? controller.runtime.listSubagents()[activeSelection]?.id : undefined;
   useEffect(() => {
     if (detail) return;
     if (!selectedTargetId) return;
-    const prefix = tab === 1 ? 'session' : tab === 2 ? 'conversation' : tab === 9 ? 'worktree' : tab === 10 ? 'workflow' : 'extension';
+    const prefix = tab === 1 ? 'session' : tab === 2 ? 'conversation' : tab === 9 ? 'worktree' : tab === 10 ? 'workflow' : tab === 11 ? 'activity' : 'extension';
     scrollRef.current?.scrollChildIntoView(`${prefix}-${selectedTargetId}`);
   }, [tab, detail, activeSelection, selectedTargetId]);
+
+  /** Activity 列表的一次点击即打开所选对话子页（与 ↑↓ + Enter 等价）。 */
+  const openActivityAt = useCallback((index: number) => {
+    const subagents = controller.runtime.listSubagents();
+    const target = subagents[index];
+    if (!target) return;
+    setSelected((values) => {
+      const copy = [...values];
+      copy[11] = index;
+      return copy;
+    });
+    setActivityExpandRev(0);
+    setDetail({ kind: 'activity', id: target.id });
+  }, [controller]);
 
   const open = useCallback(() => {
     if (tab === 1 && groups[activeSelection]) setDetail({ kind: 'session', id: groups[activeSelection].id });
@@ -170,9 +187,27 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
       if (subagents[activeSelection]) setDetail({ kind: 'subagent', id: subagents[activeSelection].id });
     }
     if (tab === 10 && workflowRows[activeSelection]) setDetail({ kind: 'run', id: workflowRows[activeSelection].runId });
-  }, [tab, groups, conversations, activeSelection, controller, workflowRows]);
+    if (tab === 11) openActivityAt(activeSelection);
+  }, [tab, groups, conversations, activeSelection, controller, workflowRows, openActivityAt]);
 
   const selectedRunId = tab === 10 ? workflowRows[selected[10] || 0]?.runId : undefined;
+
+  /** Activity detail subpage: ↑↓ walks concurrent conversations without leaving the subpage. */
+  const moveActivityConversation = useCallback((delta: number) => {
+    if (detail?.kind !== 'activity') return;
+    const subagents = controller.runtime.listSubagents();
+    if (subagents.length === 0) return;
+    const current = subagents.findIndex((record) => record.id === detail.id);
+    if (current < 0) return;
+    const next = Math.max(0, Math.min(subagents.length - 1, current + delta));
+    setSelected((values) => {
+      const copy = [...values];
+      copy[11] = next;
+      return copy;
+    });
+    setActivityExpandRev(0);
+    setDetail({ kind: 'activity', id: subagents[next].id });
+  }, [detail, controller]);
 
   const createSessionAction = useCallback(() => runAction(() => controller.createSession(ask)), [runAction, controller, ask]);
   const sessionAction = useCallback(() => runAction(async () => {
@@ -195,6 +230,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   const rotateCredentialsAction = useCallback(() => runAction(async () => { await controller.rotateCredentials(ask); }), [runAction, controller, ask]);
   const updateApplicationAction = useCallback(() => runAction(() => controller.updateApplication(ask)), [runAction, controller, ask]);
   const toggleAudit = useCallback(() => setShowAudit((value) => !value), []);
+  const toggleActivityTools = useCallback(() => setActivityExpandRev((value) => value + 1), []);
 
   // ─── InputBar 命令路由 ───
   const handleInputSubmit = useCallback((text: string) => {
@@ -258,9 +294,11 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
     rotateCredentials: rotateCredentialsAction,
     updateApplication: updateApplicationAction,
     toggleAudit,
+    toggleActivityTools,
+    moveActivityConversation,
     enterInput: handleStartCommand,
     openHelp: () => setShowHelp(true),
-  }), [form, tab, detail, inputEditing, switchTab, nextTab, back, quit, moveSelection, open, createSessionAction, sessionAction, sendMessageAction, refreshDiffAction, addExtensionAction, removeExtensionAction, discardWorktreeAction, cancelWorkflowAction, pauseWorkflowAction, resumeWorkflowAction, copyResumeCallAction, configureAction, rotateCredentialsAction, updateApplicationAction, toggleAudit, handleStartCommand]);
+  }), [form, tab, detail, inputEditing, switchTab, nextTab, back, quit, moveSelection, open, createSessionAction, sessionAction, sendMessageAction, refreshDiffAction, addExtensionAction, removeExtensionAction, discardWorktreeAction, cancelWorkflowAction, pauseWorkflowAction, resumeWorkflowAction, copyResumeCallAction, configureAction, rotateCredentialsAction, updateApplicationAction, toggleAudit, toggleActivityTools, moveActivityConversation, handleStartCommand]);
   useAppKeymap(pageActions);
 
   useEffect(() => {
@@ -339,11 +377,16 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
   }, [renderer, showNotice]);
 
   const subagentData = controller.runtime.listSubagents();
+  // Activity 子页按 id 现取；并发里行序会变，index 每次渲染重算。
+  const activitySelection = detail?.kind === 'activity'
+    ? subagentData.findIndex((record) => record.id === detail.id)
+    : 0;
   // 详情按 runId 现取：投影在跑的过程中会重排，行没了（被清扫或改判）就退回列表，不撑一个空详情。
   const detailRun = detail?.kind === 'run' ? workflowRows.find((row) => row.runId === detail.id) : undefined;
   const content = detail?.kind === 'session' ? <SessionDetail runtime={runtime} groupId={detail.id} theme={theme} />
     : detail?.kind === 'conversation' ? <ConversationDetail state={state} id={detail.id} theme={theme} />
       : detail?.kind === 'subagent' ? <SubagentDetail subagentId={detail.id} theme={theme} />
+        : detail?.kind === 'activity' ? <SubagentActivityScreen subagents={subagentData} selected={activitySelection} width={width} theme={theme} expandRev={activityExpandRev} />
         : detailRun ? <RunDetail row={detailRun} now={Date.now()} theme={theme} />
           : tab === 0 ? <Home runtime={runtime} state={state} snapshot={snapshot} theme={theme} interrupted={controller.workflowInterruptedNotice(t)} />
           : tab === 1 ? <Sessions state={state} selected={activeSelection} theme={theme} onSelect={selectItem} />
@@ -355,6 +398,7 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
                       : tab === 8 ? <SubagentList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} />
                         : tab === 9 ? <Worktrees rows={worktreeRows} quota={worktreeQuota} selected={activeSelection} theme={theme} onSelect={selectItem} />
                         : tab === 10 ? <Workflows rows={workflowRows} unreadable={workflows.unreadable} sourceError={workflows.sourceError} selected={activeSelection} now={Date.now()} theme={theme} onSelect={selectItem} />
+                        : tab === 11 ? <SubagentActivityList subagents={subagentData} selected={activeSelection} theme={theme} onSelect={selectItem} onOpen={openActivityAt} />
                         : <Logs runtime={runtime} logs={logs} theme={theme} showAudit={showAudit} page={logPage} anchorAt={logAnchorAt} />;
 
   const scrollKey = `${tab}-${detail?.kind || 'page'}-${detail?.id || ''}-tle${timelineExpandRev}-r${Number(revealCredentials)}`;
@@ -371,9 +415,10 @@ export function App({ controller, onExit }: { controller: TuiController; onExit:
         flexGrow={1}
         minHeight={0}
         focused={!form && !inputEditing}
+        backgroundColor={theme.background}
         viewportCulling
-        stickyScroll={detail?.kind === 'conversation'}
-        stickyStart={detail?.kind === 'conversation' ? 'bottom' : undefined}
+        stickyScroll={detail?.kind === 'conversation' || detail?.kind === 'activity'}
+        stickyStart={detail?.kind === 'conversation' || detail?.kind === 'activity' ? 'bottom' : undefined}
         verticalScrollbarOptions={{ visible: true }}
       >
         {content}

@@ -6,7 +6,7 @@ import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import type { MyTerminalConfig } from './types.js';
 import { MyTerminalError, publicSession, type MyTerminalStore } from './store.js';
-import { resolveWorkspacePath, validateSafeRegex } from './security.js';
+import { IsolatedRegexMatcher, REGEX_MATCH_TIMEOUT_MS, resolveWorkspacePath, validateSafeRegex } from './security.js';
 import type { JsonObject, TaskPackage, ToolDefinition } from './types.js';
 import { BUILTIN_INPUT_SCHEMAS } from './tool-schemas.js';
 import { sessionResourceManager } from './session-resource-manager.js';
@@ -272,26 +272,52 @@ export function createBuiltinTools(config: MyTerminalConfig, store: MyTerminalSt
     aliases: { pattern: 'query' },
     invoke: async (input) => {
       const query = asString(input.query, 'query');
-      if (input.regex) validateSafeRegex(query);
-      const matcher = input.regex ? new RegExp(query, 'i') : undefined;
-      const searchDeadline = Date.now() + SEARCH_TEXT_BUDGET_MS;
-      const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
-      const files = await walkFiles(resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.'), { limit: 2_000 });
-      const matches: Array<{ path: string; line: number; text: string }> = [];
-      for (const file of files) {
-        if (Date.now() > searchDeadline) break;
-        const fileStat = await stat(file);
-        if (fileStat.size > 1_000_000) continue;
-        let text: string;
-        try { text = await readFile(file, 'utf8'); } catch { continue; }
-        for (const [index, line] of text.split(/\r?\n/).entries()) {
-          if (matcher ? matcher.test(line) : line.toLowerCase().includes(query.toLowerCase())) matches.push({ path: relative(config, file), line: index + 1, text: line.slice(0, 500) });
+      // SEC-01: a user-supplied regex is never executed on the event loop.
+      // validateSafeRegex is only a fast pre-filter; IsolatedRegexMatcher compiles
+      // and runs the pattern in a separate process and kills it once the match
+      // budget is spent, so a pathological pattern cannot stall the process.
+      let matcher: IsolatedRegexMatcher | undefined;
+      if (input.regex) {
+        validateSafeRegex(query);
+        try {
+          matcher = await IsolatedRegexMatcher.create(query, { flags: 'i', timeoutMs: Math.min(REGEX_MATCH_TIMEOUT_MS, SEARCH_TEXT_BUDGET_MS) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // Invalid syntax stays an input error; a runtime that cannot start the
+          // isolated matcher fails closed instead of degrading to a sync regex.
+          throw new MyTerminalError(error instanceof Error && error.name === 'SyntaxError' ? 'INVALID_INPUT' : 'UNSUPPORTED_PLATFORM', `Regex search unavailable: ${message}`);
+        }
+      }
+      try {
+        const searchDeadline = Date.now() + SEARCH_TEXT_BUDGET_MS;
+        const limit = typeof input.limit === 'number' ? Math.max(1, Math.min(500, input.limit)) : 100;
+        const files = await walkFiles(resolveWorkspacePath(config.workspaceDir, config.stateDir, asOptionalString(input.path) || '.'), { limit: 2_000 });
+        const matches: Array<{ path: string; line: number; text: string }> = [];
+        let timedOut = false;
+        for (const file of files) {
+          if (Date.now() > searchDeadline) { timedOut = true; break; }
+          const fileStat = await stat(file);
+          if (fileStat.size > 1_000_000) continue;
+          let text: string;
+          try { text = await readFile(file, 'utf8'); } catch { continue; }
+          const lines = text.split(/\r?\n/);
+          if (!matcher) {
+            for (const [index, line] of lines.entries()) {
+              if (line.toLowerCase().includes(query.toLowerCase())) matches.push({ path: relative(config, file), line: index + 1, text: line.slice(0, 500) });
+              if (matches.length >= limit) break;
+            }
+          } else {
+            const outcome = await matcher.testLines(lines, { stopAfter: limit - matches.length, deadline: searchDeadline });
+            if (outcome.status === 'timeout') { timedOut = true; break; }
+            for (const index of outcome.matched) matches.push({ path: relative(config, file), line: index + 1, text: lines[index].slice(0, 500) });
+          }
           if (matches.length >= limit) break;
         }
-        if (matches.length >= limit) break;
+        if (Date.now() > searchDeadline) timedOut = true;
+        return { matches, truncated: matches.length >= limit || timedOut };
+      } finally {
+        await matcher?.dispose();
       }
-      const timedOut = Date.now() > searchDeadline;
-      return { matches, truncated: matches.length >= limit || timedOut };
     },
   });
   add({

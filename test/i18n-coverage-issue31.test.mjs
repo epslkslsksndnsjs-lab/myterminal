@@ -117,9 +117,17 @@ describe('#31 i18n seam', () => {
     // 净变化 1936 → 2147（+211）。逐条核对：丢失集在每一处都是空的（零删除、零改写既有文案），
     // 新增全部是本票引入的用户向/键位字面量，无 t() 参数颠倒（en-first/zh-second 子测试继续守住）；
     // 属新功能引入的预期漂移，重新审查后重锁。
-    assert.equal(Object.keys(baseline).length, 58, '基线文件数变化，行为锁作用域被改动');
+    // 重锁记录（2026-10-17，Subagent Activity 页）：作用域新增 9 个文件
+    // （src/tui/activity/{ansi,component,markdown,recordings,terminal-utils,theme,transcript}.ts、
+    // src/tui/components/AnsiText.tsx、src/tui/screens/Activity.tsx），另 App/BottomNav/StatusLine/
+    // keymap/state/command-router 因新页签、切换键、/activity 直达命令与只读提示而增字面量；
+    // Activity 的两级页面（并发对话列表 + 子页）再加一批提示文案。
+    // 净变化 2147 → 2679（+532）；本轮新增的是 ANSI 行固定高度盒的布局字面量。
+    // 逐条核对：丢失集为空（零删除、零改写既有文案），新增全部是本页引入的用户向/键位/渲染器字面量，
+    // 无 t() 参数颠倒（en-first/zh-second 子测试继续守住）；属新功能引入的预期漂移，重新审查后重锁。
+    assert.equal(Object.keys(baseline).length, 67, '基线文件数变化，行为锁作用域被改动');
     const total = Object.values(baseline).reduce((sum, list) => sum + list.length, 0);
-    assert.equal(total, 2147, '基线字面量总数变化，需重新审查后重锁');
+    assert.equal(total, 2679, '基线字面量总数变化，需重新审查后重锁');
   });
 
   // ─── (b) 覆盖率断言：红 → 绿 ───

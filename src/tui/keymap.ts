@@ -28,6 +28,8 @@ type Actions = {
   rotateCredentials: () => void | Promise<void>;
   updateApplication: () => void | Promise<void>;
   toggleAudit: () => void;
+  toggleActivityTools: () => void;
+  moveActivityConversation: (delta: number) => void;
   enterInput: () => void;
   openHelp: () => void;
 };
@@ -53,19 +55,28 @@ export function buildNumberTabBindings(switchTab: (index: number) => void) {
 export function useAppKeymap(actions: Actions): void {
   const { enabled, tab, detail, inputEditing } = actions;
 
-  // layer 300: detail esc
+  // layer 300: detail esc（Activity 子页额外支持并发对话切换与工具折叠）
   useBindings(() => ({
     priority: 300,
     enabled: enabled && Boolean(detail),
-    bindings: [{ key: 'escape', cmd: command(actions.back) }],
-  }), [enabled, detail, actions.back]);
+    bindings: [
+      { key: 'escape', cmd: command(actions.back) },
+      ...(detail?.kind === 'activity' ? [
+        { key: 'down', cmd: command(() => actions.moveActivityConversation(1)) },
+        { key: 'up', cmd: command(() => actions.moveActivityConversation(-1)) },
+        { key: 'j', cmd: command(() => actions.moveActivityConversation(1)) },
+        { key: 'k', cmd: command(() => actions.moveActivityConversation(-1)) },
+        { key: 'ctrl+o', cmd: command(actions.toggleActivityTools) },
+      ] : []),
+    ],
+  }), [enabled, detail, actions.back, actions.moveActivityConversation, actions.toggleActivityTools]);
 
   // layer 200: page actions (disabled when inputEditing)
   useBindings(() => ({
     priority: 200,
     enabled: enabled && !detail && !inputEditing,
     bindings: [
-      ...([1, 2, 5, 9, 10].includes(tab) ? [
+      ...([1, 2, 5, 9, 10, 11].includes(tab) ? [
         { key: 'down', cmd: command(() => actions.moveSelection(1)) },
         { key: 'up', cmd: command(() => actions.moveSelection(-1)) },
         { key: 'j', cmd: command(() => actions.moveSelection(1)) },
@@ -104,6 +115,7 @@ export function useAppKeymap(actions: Actions): void {
         { key: 'r', cmd: command(actions.resumeWorkflow) },
         { key: 'y', cmd: command(actions.copyResumeCall) },
       ] : []),
+      ...(tab === 11 ? [{ key: 'return', cmd: command(actions.open) }] : []),
     ],
   }), [enabled, detail, tab, inputEditing, actions.moveSelection, actions.open, actions.createSession, actions.sessionAction, actions.sendMessage, actions.refreshDiff, actions.addExtension, actions.removeExtension, actions.discardWorktree, actions.cancelWorkflow, actions.pauseWorkflow, actions.resumeWorkflow, actions.copyResumeCall, actions.configure, actions.rotateCredentials, actions.updateApplication, actions.toggleAudit]);
 

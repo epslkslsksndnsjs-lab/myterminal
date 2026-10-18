@@ -457,6 +457,11 @@ export async function runSubagent(options: RunSubagentOptions): Promise<Subagent
             if (chunk.type === 'text_delta') {
               emit({ subagentId: agentId, type: 'TEXT_MESSAGE_CONTENT', data: { delta: chunk.text }, timestamp: Date.now() });
             }
+            if (chunk.type === 'thinking_delta') {
+              // Reasoning/self-talk is display-only; it is not part of the
+              // assistant message sent back to the model.
+              emit({ subagentId: agentId, type: 'TEXT_MESSAGE_CONTENT', data: { delta: chunk.text, thinking: true }, timestamp: Date.now() });
+            }
             if (chunk.type === 'tool_call_start') {
               emit({ subagentId: agentId, type: 'TOOL_CALL_START', data: { name: chunk.name }, timestamp: Date.now() });
             }

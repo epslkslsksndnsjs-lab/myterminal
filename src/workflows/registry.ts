@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import { readJson, writeJsonAtomic } from './atomic.js';
 import {
   isTerminal,
@@ -55,10 +57,40 @@ export async function writeRegistry(file: string, registry: RunRegistry, renames
   return next;
 }
 
+/**
+ * 每文件的单写者队列（PER-02）：upsert 的读-改-写整段串行。
+ *
+ * 原子写只保证"单次写入不撕裂"，管不到"读到旧值"：两个并发 upsert 各自读到同一份旧注册表，
+ * 后写者把先写者刚追加的条目整片盖掉。队列补的就是这一段——同一文件的读-改-写按登记顺序排队。
+ *
+ * 键取 resolve 后的路径：同一文件的不同写法（相对/绝对、带 `.` 段）落进同一条队列。
+ * 队列游标只记"轮到没轮到"，不记成败——前一手失败不毒化后来者，也不会留下未处理的拒绝。
+ */
+const registryWriteChain = new Map<string, Promise<void>>();
+
+function enqueueRegistryWrite<T>(file: string, task: () => Promise<T>): Promise<T> {
+  const key = path.resolve(file);
+  const previous = registryWriteChain.get(key) ?? Promise.resolve();
+  // then(task, task)：前一手无论成败都轮到本手，拒绝不沿队列传播。
+  const run = previous.then(task, task);
+  const settled = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  registryWriteChain.set(key, settled);
+  void settled.then(() => {
+    // 只有自己仍是队尾时才摘表：排队期间新来者登记的游标不能被前人删掉。
+    if (registryWriteChain.get(key) === settled) registryWriteChain.delete(key);
+  });
+  return run;
+}
+
 /** 按 runId 更新一条（不存在则追加），返回写入后的全量。 */
 export async function upsertRegistry(file: string, entry: RegistryEntry): Promise<RunRegistry> {
-  const current = await readRegistry(file);
-  const index = current.runs.findIndex((item) => item.runId === entry.runId);
-  const runs = index >= 0 ? current.runs.map((item, i) => (i === index ? entry : item)) : [...current.runs, entry];
-  return await writeRegistry(file, { schemaVersion: SCHEMA_VERSION, runs });
+  return await enqueueRegistryWrite(file, async () => {
+    const current = await readRegistry(file);
+    const index = current.runs.findIndex((item) => item.runId === entry.runId);
+    const runs = index >= 0 ? current.runs.map((item, i) => (i === index ? entry : item)) : [...current.runs, entry];
+    return await writeRegistry(file, { schemaVersion: SCHEMA_VERSION, runs });
+  });
 }

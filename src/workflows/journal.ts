@@ -28,13 +28,37 @@ export type TruncationReport = {
   dropped: number;
 };
 
+/** 一次写盘失败的记账：seq 是归位序号，launched 这类无序号行没有。 */
+export type JournalWriteFailure = { readonly seq?: number; readonly cause: unknown };
+
+/**
+ * 账本写盘失败：调用方必须看见它，而不是拿到一个假的"已落盘"。
+ *
+ * 失败是粘的——除非走恢复出口 truncateToGoodPrefix()（重建账本），
+ * 否则 drain() 每次调用都抛：一次没写进盘的行，绝不能在结算时被当成写过。
+ */
+export class JournalWriteError extends Error {
+  readonly failures: readonly JournalWriteFailure[];
+
+  constructor(message: string, failures: readonly JournalWriteFailure[] = []) {
+    super(message);
+    this.name = 'JournalWriteError';
+    this.failures = [...failures];
+  }
+}
+
+/** 缓冲里等前一路的一行：落盘成败分别兑现到调用方手里。 */
+type HeldLine = { line: string; resolve: () => void; reject: (error: unknown) => void };
+
 export class Journal {
   /** 单写者锁：append 串行化，避免并发路交错写坏行边界。 */
   private tail: Promise<unknown> = Promise.resolve();
   /** 归位游标：下一条应落盘的 admission 序号。 */
   private expected = 1;
   /** 乱序归位缓冲：先完成的路等着前一路，账才按调用序连续。 */
-  private readonly holding = new Map<number, { line: string; settle: () => void }>();
+  private readonly holding = new Map<number, HeldLine>();
+  /** 已发生的写盘失败（粘性）：drain() 据此拒绝，绝不假报成功。 */
+  private readonly failures: JournalWriteFailure[] = [];
 
   constructor(private readonly file: string) {}
 
@@ -51,9 +75,14 @@ export class Journal {
     return JSON.stringify({ version: SCHEMA_VERSION, ...(seq === undefined ? {} : { seq }), ...record });
   }
 
-  private enqueue(line: string): Promise<void> {
+  private enqueue(line: string, seq?: number): Promise<void> {
     const next = this.tail.then(() => appendLine(this.file, line));
-    // 锁链自身永不因单点失败而断：后续行仍要写，失败由调用方从 drain() 观察。
+    // 失败当场记账，一次都不吞：这一行的调用方从返回的 promise 上看到原始 IO 错误，
+    // 结算侧从 drain() 看到汇总。锁链自身仍不因单点失败而断（后续行照写），
+    // 但"少了一行"这件事留在 failures 里，直到恢复出口重建账本。
+    next.catch((error: unknown) => {
+      this.failures.push({ ...(seq === undefined ? {} : { seq }), cause: error });
+    });
     this.tail = next.catch(() => undefined);
     return next;
   }
@@ -64,6 +93,7 @@ export class Journal {
    * 前面还有没结算的路时，这一行先在缓冲里等着——完成顺序绝不改写账本顺序。
    * 返回的 promise 在该行真正落盘时兑现；调用方按 fire-and-forget 处理，
    * 结算前 flushPending() 把等不到口的行升序补齐（不静默丢）。
+   * 写盘失败时这一行以原始 IO 错误拒绝，并记进 drain() 的汇总（见 JournalWriteError）。
    */
   appendOrdered(seq: number, record: JournalInput): Promise<void> {
     if (!Number.isInteger(seq) || seq < 1) {
@@ -71,23 +101,28 @@ export class Journal {
     }
     if (seq < this.expected) {
       // 重放的旧序号（同一路的第二张账）不再进链，直接落盘。
-      return this.enqueue(this.lineFor(record, seq));
+      return this.enqueue(this.lineFor(record, seq), seq);
     }
     const line = this.lineFor(record, seq);
-    return new Promise<void>((resolve) => {
-      this.holding.set(seq, { line, settle: resolve });
+    const persisted = new Promise<void>((resolve, reject) => {
+      this.holding.set(seq, { line, resolve, reject });
       this.pumpOrdered();
     });
+    // 只挂内部空分支把"已处理"标上，fire-and-forget 场景不至于因未处理拒绝打断进程；
+    // 调用方拿到的仍是同一个会拒绝的 promise，失败一次都不会被吞掉。
+    void persisted.catch(() => undefined);
+    return persisted;
   }
 
   /** 把能连续的行依次落盘（缺口留在缓冲里等）。 */
   private pumpOrdered(): void {
     while (this.holding.has(this.expected)) {
       const seq = this.expected;
-      const held = this.holding.get(seq) as { line: string; settle: () => void };
+      const held = this.holding.get(seq) as HeldLine;
       this.holding.delete(seq);
       this.expected = seq + 1;
-      void this.enqueue(held.line).then(held.settle, held.settle);
+      // 成败各自归位：写盘失败以原始 IO 错误拒给这一行的调用方，绝不 resolve 掉了事。
+      void this.enqueue(held.line, seq).then(() => held.resolve(), (error: unknown) => held.reject(error));
     }
   }
 
@@ -103,12 +138,31 @@ export class Journal {
   async flushPending(): Promise<void> {
     const seqs = [...this.holding.keys()].sort((a, b) => a - b);
     for (const seq of seqs) {
-      const held = this.holding.get(seq) as { line: string; settle: () => void };
+      const held = this.holding.get(seq) as HeldLine;
       this.holding.delete(seq);
       this.expected = Math.max(this.expected, seq + 1);
-      void this.enqueue(held.line).then(held.settle, held.settle);
+      void this.enqueue(held.line, seq).then(() => held.resolve(), (error: unknown) => held.reject(error));
     }
+    // 先把排队中的写入全部落到底（含失败），再汇总：不许在还有写在飞时就报结果。
     await this.tail;
+    this.throwIfWriteFailed();
+  }
+
+  /** 已发生的写盘失败（观测面，drain() 抛的就是这些）。 */
+  writeFailures(): readonly JournalWriteFailure[] {
+    return [...this.failures];
+  }
+
+  /** 写盘失败汇总：有失败就抛，粘到恢复出口重建账本为止。 */
+  private throwIfWriteFailed(): void {
+    if (this.failures.length === 0) return;
+    const first = this.failures[0] as JournalWriteFailure;
+    const where = first.seq === undefined ? 'unordered record' : `seq ${first.seq}`;
+    const cause = first.cause instanceof Error ? first.cause.message : String(first.cause);
+    throw new JournalWriteError(
+      `journal write failed: ${this.failures.length} line(s) not persisted (first: ${where}: ${cause}); the account is incomplete — truncate to good prefix before resuming`,
+      this.failures,
+    );
   }
 
   /** 续跑入参：已有几路记账，游标就从几 + 1 起。 */
@@ -116,7 +170,7 @@ export class Journal {
     this.expected = Number.isInteger(nextSeq) && nextSeq > 0 ? nextSeq : 1;
   }
 
-  /** 等所有排队中的写入落盘（结算前必调）。 */
+  /** 等所有排队中的写入落盘（结算前必调）。有写盘失败则抛 JournalWriteError。 */
   async drain(): Promise<void> {
     await this.flushPending();
   }
@@ -140,19 +194,42 @@ export class Journal {
   async truncateToGoodPrefix(): Promise<TruncationReport> {
     const lines = await readLines(this.file);
     const kept: string[] = [];
-    for (const line of lines) {
-      try {
-        JSON.parse(line);
-        kept.push(line);
-      } catch {
-        break;
+    // A syntactically valid JSONL suffix is not necessarily a valid journal:
+    // if seq N failed to persist but seq N+1 did, accepting N+1 would silently
+    // erase the evidence of the missing admission. Preserve only the prefix
+    // before the earliest failed ordered sequence. An unordered write failure
+    // (most importantly the initial launched record) has no safe sequence
+    // boundary, so conservatively discard the whole file.
+    const hasUnorderedFailure = this.failures.some((failure) => failure.seq === undefined);
+    const failedSeqs = this.failures
+      .map((failure) => failure.seq)
+      .filter((seq): seq is number => seq !== undefined);
+    const earliestFailedSeq = failedSeqs.length > 0 ? Math.min(...failedSeqs) : undefined;
+    if (!hasUnorderedFailure) {
+      for (const line of lines) {
+        try {
+          const record = JSON.parse(line) as { seq?: unknown };
+          if (earliestFailedSeq !== undefined && typeof record.seq === 'number' && record.seq >= earliestFailedSeq) {
+            break;
+          }
+          kept.push(line);
+        } catch {
+          break;
+        }
       }
     }
     const dropped = lines.length - kept.length;
     if (dropped > 0) await replaceLinesAtomic(this.file, kept);
     // 文件换了，缓冲与游标必须跟着重算：留旧游标会把该落盘的行永远压在缓冲里。
+    const pending = [...this.holding.values()];
     this.holding.clear();
     this.expected = 1;
+    // 账本已重建（最长良前缀可查），此前的写盘失败不再适用于新账。
+    this.failures.length = 0;
+    // 缓冲里没落盘的行随截断一起判死：调用方必须拿到拒绝，不许无限等一个不会来的落盘。
+    for (const held of pending) {
+      held.reject(new JournalWriteError('journal truncated to good prefix before this line was persisted; the line was discarded'));
+    }
     return { kept: kept.length, dropped };
   }
 }

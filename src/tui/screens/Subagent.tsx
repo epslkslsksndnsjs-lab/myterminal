@@ -83,6 +83,9 @@ export function SubagentDetail({ subagentId, theme }: {
       for (const event of batch) {
         switch (event.type) {
           case 'TEXT_MESSAGE_CONTENT':
+            // 思考流（thinking: true）是展示专用的自述，不是助手消息的一部分：
+            // 它只进 Activity 页的自述面板，本屏"输出"保持助手消息口径，不混入。
+            if (event.data?.thinking === true) break;
             next.text += (event.data?.delta as string) ?? '';
             break;
           case 'TOOL_CALL_START': {

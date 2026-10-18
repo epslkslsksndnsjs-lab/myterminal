@@ -10,6 +10,7 @@ export function hints(tab: number, detail: Detail | undefined, t: Translate, mou
   const scroll = mouseEnabled ? (t('wheel/↑↓ scroll', '滚轮/↑↓ 滚动')) : (t('↑↓ scroll', '↑↓ 滚动'));
   const inputHint = inputEditing ? '' : (t(' i input', ' i 输入'));
 
+  if (detail?.kind === 'activity') return t('↑↓/j k switch conversation   ctrl+o expand/collapse tools   wheel/PgUp/PgDn scroll   Esc back   q quit', '↑↓/j k 切换对话   ctrl+o 展开/折叠工具   滚轮/PgUp/PgDn 滚动   Esc 返回   q 退出');
   if (detail) return t(`${scroll}   PgUp/PgDn page   Esc back   q quit${inputHint}`, `${scroll}   PgUp/PgDn 翻页   Esc 返回   q 退出${inputHint}`);
   if (tab === 0) return t(`Tab page   ${scroll}   c configure   hold v for credentials   q quit${inputHint}`, `Tab 页面   ${scroll}   c 配置   按住 v 显示凭据   q 退出${inputHint}`);
   if (tab === 1) return t(`↑↓/j k select   PgUp/PgDn jump   Enter open   n new/delegate   u actions   q quit${inputHint}`, `↑↓/j k 选择   PgUp/PgDn 跳转   Enter 打开   n 新建/委派   u 操作   q 退出${inputHint}`);
@@ -24,6 +25,8 @@ export function hints(tab: number, detail: Detail | undefined, t: Translate, mou
   if (tab === 9) return t(`↑↓/j k select   x discard   Tab page   q quit${inputHint}`, `↑↓/j k 选择   x 丢弃   Tab 翻页   q 退出${inputHint}`);
   // #232 Workflows 屏：三个控制动作都在这块屏上（GPT 面没有 pause），所以键位直接标出来
   if (tab === 10) return t(`↑↓/j k select   Enter detail   c cancel   p pause   r resume   y copy resume${inputHint}`, `↑↓/j k 选择   Enter 详情   c 取消   p 暂停   r 恢复   y 复制 resume 调用${inputHint}`);
+  // Activity：并发对话列表 → 只读子页；列表没有回话入口
+  if (tab === 11) return t(`↑↓/j k select   Enter open conversation   q quit`, `↑↓/j k 选择   Enter 打开对话   q 退出`);
   // tab === 7 (Logs) 默认分支
   return t(`${scroll}   PgUp/PgDn page   a call details on/off   q quit${inputHint}`, `${scroll}   PgUp/PgDn 翻页   a 调用详情 开/关   q 退出${inputHint}`);
 }

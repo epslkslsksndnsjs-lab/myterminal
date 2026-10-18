@@ -11,8 +11,9 @@ describe('TUI state pure functions', () => {
   // #231 显式漂移更新：Worktrees 面板随 T8 交付，页签从 9 张变 10 张（数字键绑定跟着 TABS.length 走）。
   // #232 显式漂移更新：Workflows 屏随 T9 交付，页签 10 → 11 张；两页都是 workflows 模块的人面，
   // 刻意排在一起，且新页追加在尾部——既有九页的 tab 索引一个都不动（少一处改数字就少一处错）。
-  test('TABS contains all 11 pages', () => {
-    assert.equal(TABS.length, 11);
+  // Subagent Activity 显式漂移更新：只读活动页追加为第 12 页，既有 11 页索引一律不动。
+  test('TABS contains all 12 pages', () => {
+    assert.equal(TABS.length, 12);
     assert.ok(TABS.includes('Overview'));
     assert.ok(TABS.includes('Sessions'));
     assert.ok(TABS.includes('Settings'));
@@ -20,6 +21,7 @@ describe('TUI state pure functions', () => {
     assert.ok(TABS.includes('Subagents'));
     assert.ok(TABS.includes('Worktrees'));
     assert.ok(TABS.includes('Workflows'));
+    assert.ok(TABS.includes('Activity'));
   });
 
   test('phaseColor: completed → good', () => {
