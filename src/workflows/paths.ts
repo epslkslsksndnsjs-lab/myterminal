@@ -1,3 +1,4 @@
+import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { assertRunId } from './ids.js';
 import { isWithinBoundary } from './tool-boundary.js';
@@ -131,4 +132,90 @@ export function isInsideSavedRoot(paths: WorkflowPaths, candidate: string): bool
   const root = path.resolve(paths.savedRoot);
   const resolved = path.resolve(candidate);
   return resolved === root || resolved.startsWith(root + path.sep);
+}
+
+/** 尾段上那个 ENOENT 的环节是不是悬空链接：lstat 得到、realpath 解不出，写新文件会顺着它落盘。 */
+async function danglingLink(target: string): Promise<boolean> {
+  try {
+    return (await lstat(target)).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 求一次真身：最深的那个已存在环节 realpath 解链，尚不存在的尾部件按字面接回去。
+ *
+ * 词法段挡得住 `../`，挡不住「界内的 symlink 指向界外」——saved/x.js -> /etc/passwd
+ * 词法看干干净净，真身已经在根外。所以比对必须两端都求真身：根求真身、候选也求真身，
+ * 只对其中一端求会得到 /var 与 /private/var 这类不可比的两种形态。
+ * 尾段里的悬空链接同样不算「尚未存在」：写新文件会顺着链接落到链接目标那边去。
+ * 解不出真身（链接成环、中间不是目录、尾段有悬空链接、到根都解不出）时返回 undefined：判不了就不放行。
+ */
+async function canonicalForm(target: string): Promise<string | undefined> {
+  const absolute = path.resolve(target);
+  let probe = absolute;
+  const tail: string[] = [];
+  const stuck: string[] = [];
+  for (;;) {
+    try {
+      const real = await realpath(probe);
+      for (const missing of stuck) {
+        if (await danglingLink(missing)) return undefined;
+      }
+      return path.join(real, ...tail);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+      const parent = path.dirname(probe);
+      if (parent === probe) return undefined;
+      stuck.unshift(probe);
+      tail.unshift(path.basename(probe));
+      probe = parent;
+    }
+  }
+}
+
+/**
+ * saved 根的真身，同时验证它仍位于真实 workflowsRoot / managedRoot 边界内。
+ * managedRoot 本身若是 symlink 则拒绝，避免把「受管理目录」整体指向外部；
+ * 父 workspace 以 symlink 表示仍可用，因为 lstat 检查的是 managedRoot 本身。
+ * savedRoot 自身的真身必须严格落在 workflowsRoot 真身之下：指向界外的链接（整根换成
+ * symlink）与指向 workflowsRoot 自身的链接都不算 saved 根，一律 fail-closed。
+ */
+export async function canonicalSavedRoot(paths: WorkflowPaths): Promise<string | undefined> {
+  try {
+    if ((await lstat(paths.managedRoot)).isSymbolicLink()) return undefined;
+  } catch (error) {
+    // managedRoot 尚不存在时可以按字面尾段推导；其余错误按 fail-closed 处理。
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+  }
+
+  const managed = await canonicalForm(paths.managedRoot);
+  const workflows = await canonicalForm(paths.workflowsRoot);
+  const saved = await canonicalForm(paths.savedRoot);
+  if (managed === undefined || workflows === undefined || saved === undefined) return undefined;
+  if (!isWithinBoundary(workflows, managed)) return undefined;
+  // saved 根必须严格深于 workflowsRoot 真身：`isWithinBoundary` 含根自身，
+  // 若 savedRoot 自身被换成指向 workflowsRoot 的链接，两端真身相等仍判「界内」，
+  // saved 域就塌成整个 workflows 域（registry.json / runs/** 都能当脚本读，脚本也能写进 workflows 根）。
+  if (saved === workflows) return undefined;
+  if (!isWithinBoundary(saved, workflows)) return undefined;
+  return saved;
+}
+
+/**
+ * 把候选路径归一到真身并判定是否仍在真根之内：界内返回真身绝对路径，界外返回 undefined。
+ *
+ * 读脚本用它取代「只判词法」：链接指向根外的 saved 脚本不算根内脚本。
+ * 写脚本用它定真正落盘的对象：界内 symlink 目录 / 界外真身 / 新文件这条逃逸路由此堵上。
+ */
+export async function resolveInsideSavedRoot(
+  paths: WorkflowPaths,
+  candidate: string,
+): Promise<string | undefined> {
+  const root = await canonicalSavedRoot(paths);
+  if (root === undefined) return undefined;
+  const resolved = await canonicalForm(candidate);
+  if (resolved === undefined) return undefined;
+  return isWithinBoundary(resolved, root) ? resolved : undefined;
 }
