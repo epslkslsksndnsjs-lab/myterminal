@@ -99,6 +99,14 @@ export function publicSession(session: MyTerminalSession): JsonObject {
 type HistoryIndex = { size: number; mtimeMs: number; total: number; offsets: number[] };
 const HISTORY_INDEX_STRIDE = 256;
 const HISTORY_TAIL_LIMIT = 5_000;
+/**
+ * Upper bound on bytes parsed for a session's recent history. Normal sessions
+ * stay well below this and keep the full tail window. A pathological session
+ * (e.g. one 300 MB JSONL with a few thousand huge tool results) must not turn
+ * startup into a multi-minute full-file JSON.parse; the timeline/log views only
+ * need the newest entries, so read a bounded tail instead.
+ */
+const HISTORY_TAIL_MAX_BYTES = 8 * 1024 * 1024;
 
 export class MyTerminalStore {
   private state: StoredState;
@@ -913,8 +921,38 @@ export class MyTerminalStore {
   }
 
   private readHistoryTail(sessionId: string, limit: number): SessionHistoryEntry[] {
+    const file = this.historyPath(sessionId);
+    const stat = statSync(file);
+    if (stat.size > HISTORY_TAIL_MAX_BYTES) {
+      return this.readHistoryByteTail(sessionId, limit, HISTORY_TAIL_MAX_BYTES);
+    }
     const total = this.historyCount(sessionId);
     return this.readHistoryRange(sessionId, Math.max(0, total - limit), limit);
+  }
+
+  /** Parse only the newest bytes of an oversized history file (line-aligned tail). */
+  private readHistoryByteTail(sessionId: string, limit: number, maxBytes: number): SessionHistoryEntry[] {
+    const file = this.historyPath(sessionId);
+    const stat = statSync(file);
+    const start = Math.max(0, stat.size - maxBytes);
+    const length = stat.size - start;
+    if (length <= 0 || limit <= 0) return [];
+    const fd = openSync(file, 'r');
+    const buffer = Buffer.allocUnsafe(length);
+    let bytesRead = 0;
+    try {
+      bytesRead = readSync(fd, buffer, 0, length, start);
+    } finally { closeSync(fd); }
+    const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
+    // A byte window can start mid-line; that partial entry is older than the
+    // window and cannot be parsed reliably, so drop it.
+    if (start > 0) lines.shift();
+    const entries: SessionHistoryEntry[] = [];
+    for (const line of lines) {
+      if (!line) continue;
+      try { entries.push(JSON.parse(line) as SessionHistoryEntry); } catch { /* tolerate a corrupt line */ }
+    }
+    return entries.slice(-limit);
   }
 
   private historyIndex(sessionId: string): HistoryIndex {
