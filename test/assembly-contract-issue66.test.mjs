@@ -206,6 +206,39 @@ describe('issue66 assembly contract — collectStream normal path', () => {
     assert.equal(result.usage.output_tokens, 5);
   });
 
+  test('thinking 流 → thinking_delta 供展示，但不进入回传助手的文本', async () => {
+    const sse = [
+      'data: {"type":"message_start","message":{"usage":{"input_tokens":10}}}',
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}',
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me inspect the workspace."}}',
+      'data: {"type":"content_block_stop","index":0}',
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text"}}',
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done."}}',
+      'data: {"type":"content_block_stop","index":1}',
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}',
+      'data: {"type":"message_stop"}',
+    ].join('\n') + '\n';
+
+    const adapter = new AnthropicAdapter('sk-ant-test', async () => sseFakeResponse(sse));
+    const chunks = [];
+    const result = await collectStream({
+      adapter,
+      chatParams: makeChatParams(),
+      signal: NEVER_ABORT,
+      onChunk: (chunk) => chunks.push(chunk),
+    });
+
+    assert.deepEqual(
+      chunks.filter((chunk) => chunk.type === 'thinking_delta' || chunk.type === 'text_delta'),
+      [
+        { type: 'thinking_delta', text: 'Let me inspect the workspace.' },
+        { type: 'text_delta', text: 'Done.' },
+      ],
+      '没有 text_delta 时，thinking_delta 是模型唯一的“自言自语”来源',
+    );
+    assert.deepEqual(result.message.content, [{ type: 'text', text: 'Done.' }], 'thinking 只用于展示，不回传给模型');
+  });
+
   test('工具调用流 → message shape + hadToolCalls=true', async () => {
     const sse = [
       'data: {"type":"message_start","message":{"usage":{"input_tokens":20}}}',

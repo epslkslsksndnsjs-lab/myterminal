@@ -9,6 +9,9 @@ import type { ContentBlock, NormalizedMessage, TokenUsage } from './token-counte
 
 export type StreamChunk =
   | { type: 'text_delta'; text: string }
+  // Provider reasoning/self-talk (Anthropic `thinking_delta`). It is display
+  // only: collectStream keeps it out of the assistant message sent back.
+  | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string }
   | { type: 'tool_call_delta'; index: number; jsonFragment: string }
   | { type: 'tool_call_end'; index: number; id: string }
@@ -475,6 +478,8 @@ export class AnthropicAdapter implements LlmAdapter {
               const name = contentBlock.name as string;
               toolInputBuffers.set(index, { id, name, json: '' });
               yield { type: 'tool_call_start', index, id, name };
+            } else if (contentBlock?.type === 'thinking' && typeof contentBlock.thinking === 'string' && contentBlock.thinking.length > 0) {
+              yield { type: 'thinking_delta', text: contentBlock.thinking };
             }
             break;
           }
@@ -486,6 +491,11 @@ export class AnthropicAdapter implements LlmAdapter {
 
             if (delta.type === 'text_delta' && typeof delta.text === 'string') {
               yield { type: 'text_delta', text: delta.text };
+            } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking.length > 0) {
+              yield { type: 'thinking_delta', text: delta.thinking };
+            } else if (delta.type === 'reasoning_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
+              // OpenAI-compatible gateways may name the same channel reasoning_delta.
+              yield { type: 'thinking_delta', text: delta.text };
             } else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
               const buf = toolInputBuffers.get(index);
               if (buf) {
