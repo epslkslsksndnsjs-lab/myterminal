@@ -34,6 +34,9 @@ const COMMANDS: Record<string, CommandAction> = {
   // #232：Workflows 屏是第十一页，数字键到不了，页内导航命令是它的主要入口。
   '/workflows': { kind: 'navigate', tab: 10 },
   '/工作流': { kind: 'navigate', tab: 10 },
+  // 子代理活动页是第十二页，同样用命令直达。
+  '/activity': { kind: 'navigate', tab: 11 },
+  '/活动': { kind: 'navigate', tab: 11 },
   '/new': { kind: 'pageAction', action: 'createSession' },
   '/send': { kind: 'pageAction', action: 'sendMessage' },
   '/refresh': { kind: 'pageAction', action: 'refreshDiff' },

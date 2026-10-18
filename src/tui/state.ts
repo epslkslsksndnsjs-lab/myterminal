@@ -21,7 +21,7 @@ import type { WorkflowEvent } from '../workflows/events.js';
 import { EMPTY_RUN_BOARD, applyWorkflowEvent, buildRunBoard, describeInterruptedRuns, diskRunBoardSource, interruptedRuns, isRunUiActive, resumeCallText, type InterruptedNotice, type RunBoard } from './workflow-runs.js';
 import type { Translate } from './copy/i18n.js';
 
-export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents', 'Worktrees', 'Workflows'] as const;
+export const TABS = ['Overview', 'Sessions', 'Messages', 'Timeline', 'Diff', 'Extensions', 'Settings', 'Logs', 'Subagents', 'Worktrees', 'Workflows', 'Activity'] as const;
 export type Tab = (typeof TABS)[number];
 export type { Ask, Detail, FormQuestion, RuntimeReconfigure, RuntimeReconfigureResult } from './contracts.js';
 import type { Ask, Detail, RuntimeReconfigure } from './contracts.js';
