@@ -36,6 +36,17 @@ const revisionOf = (content) => createHash('sha256').update(content, 'utf8').dig
 const SHARED_NAME = 'shared-pass';
 const sharedSource = (tag) => `export const meta = { name: '${SHARED_NAME}' };\nconst tag = '${tag}';\nreturn tag;`;
 
+/** 权限位断言：0600 是 POSIX 概念——Windows 没有模式位（Node 恒报 0o666，
+ *  open 的 mode 参数被忽略），那里只断言文件可读；POSIX 上才钉 0600。 */
+function assertScriptMode(file) {
+  const mode = fs.statSync(file).mode & 0o777;
+  if (process.platform === 'win32') {
+    assert.ok((mode & 0o444) !== 0, `新建脚本必须可读: ${file}`);
+  } else {
+    assert.equal(mode, 0o600, `新建脚本必须是 0600: ${file}`);
+  }
+}
+
 /** saved 根下真正落了盘的文件（只这一层，脚本名不带子目录）。 */
 function savedFiles(paths) {
   if (!fs.existsSync(paths.savedRoot)) return [];
@@ -79,9 +90,10 @@ test('PER-03 并发同名不同内容：每份来源都留在自己的路径上�
   assert.equal(saved.filter((result) => result.name === SHARED_NAME).length, 1);
   assert.equal(new Set(saved.map((result) => result.name)).size, sources.length, '名字也必须唯一');
 
-  // 落盘权限位仍是 0600，且每条脚本都能按引用读回自己的内容。
+  // 落盘权限位（POSIX 0600 / Windows 无可断言位，见 assertScriptMode），
+  // 且每条脚本都能按引用读回自己的内容。
   saved.forEach((result) => {
-    assert.equal(fs.statSync(result.path).mode & 0o777, 0o600, '新建脚本必须是 0600');
+    assertScriptMode(result.path);
   });
   for (let i = 0; i < saved.length; i += 1) {
     const loaded = await loadScript(paths, saved[i].path);
@@ -126,7 +138,7 @@ test('PER-03 并发同内容从空根起跑：每条返回路径内容都对，�
   saved.forEach((result) => {
     assert.equal(fs.readFileSync(result.path, 'utf8'), source, `路径 ${result.path} 必须是完整内容`);
     assert.equal(result.sourceRef.revision, revisionOf(source));
-    assert.equal(fs.statSync(result.path).mode & 0o777, 0o600);
+    assertScriptMode(result.path);
   });
   const files = savedFiles(paths);
   assert.ok(files.length >= 1 && files.length <= saved.length, '文件数不会超过并发份数');

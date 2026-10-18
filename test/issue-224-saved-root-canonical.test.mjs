@@ -47,10 +47,13 @@ test('saved 根内普通路径照常读写：真身判定不误伤正常脚本',
 
   // 根自身也按真身算在界内（resolveInsideSavedRoot 与 isInsideSavedRoot 同口径）
   assert.equal(isInsideSavedRoot(paths, saved.path), true);
-  assert.equal(await resolveInsideSavedRoot(paths, saved.path), fs.realpathSync(saved.path));
+  // 期望值必须走与 canonicalForm 相同的 realpath API（fs.promises.realpath）：
+  // Windows 上 realpathSync 不展开 8.3 短名（RUNNER~1 原样返回），而
+  // fs.promises.realpath 会展开成 runneradmin——混用两种 API 会让期望值算错。
+  assert.equal(await resolveInsideSavedRoot(paths, saved.path), await fs.promises.realpath(saved.path));
   // 不存在的普通新文件名：根内 → 给出可写的真身
   const fresh = path.join(paths.savedRoot, 'not-yet.js');
-  assert.equal(await resolveInsideSavedRoot(paths, fresh), path.join(fs.realpathSync(paths.savedRoot), 'not-yet.js'));
+  assert.equal(await resolveInsideSavedRoot(paths, fresh), path.join(await fs.promises.realpath(paths.savedRoot), 'not-yet.js'));
 });
 
 test('saved 根目录自身指向根外时拒绝读写', async () => {
@@ -161,7 +164,9 @@ test('saved 根内链接指向根内：仍可读（链接不是原罪，越界�
   assert.equal(loaded.ok, true);
   assert.equal(loaded.content, source);
   assert.equal(loaded.sourceRef.id, 'alias.js', 'id 仍按调用者给的词法路径算');
-  assert.equal(await resolveInsideSavedRoot(paths, alias), fs.realpathSync(saved.path));
+  // 同 line 50 的口径注释：期望值与 canonicalForm 同走 fs.promises.realpath，
+  // Windows 上 realpathSync 不展开 8.3 短名，混用会让期望值算错。
+  assert.equal(await resolveInsideSavedRoot(paths, alias), await fs.promises.realpath(saved.path));
 });
 
 test('saved 写目标被链接到根外：persistScript 拒写，根外文件一动不动', async () => {
