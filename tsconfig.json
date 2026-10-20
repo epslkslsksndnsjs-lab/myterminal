@@ -16,5 +16,5 @@
     "noEmitOnError": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/nativetui/**/*.test.ts"]
+  "exclude": ["src/nativetui/**/*.test.ts", "src/agent/**/*.test.ts"]
 }

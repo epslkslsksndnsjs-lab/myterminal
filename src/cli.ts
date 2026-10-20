@@ -21,6 +21,7 @@ function help(): void {
 
 Usage:
   bun run dev                 Start the TUI (includes first-run setup)
+  bun run dist/cli.js run     Native agent TUI (no server, no ChatGPT)
   bun run start               Start the built TUI
   bun run dist/cli.js --headless Start after TUI setup, without terminal controls
   bun run dist/cli.js l3-model fetch Download the L3 local model (sha256-pinned) to the install root
@@ -147,6 +148,25 @@ async function main(): Promise<void> {
   if (process.argv.includes('--help') || process.argv.includes('-h')) {
     help();
     return;
+  }
+  // M2：`myterminal run` —— 原生 agent TUI（不启动 server，不与 ChatGPT 交互）
+  if (process.argv[2] === 'run') {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.error('`myterminal run` requires an interactive terminal.');
+      process.exit(1);
+    }
+    const stored = readMyTerminalSettings(process.env);
+    if (!stored) {
+      console.error('MyTerminal is not configured. Run `bun run dev` once to complete setup.');
+      process.exit(1);
+    }
+    if (!stored.subagent) {
+      console.error('Native agent requires subagent settings (model / baseUrl / apiKey). Configure them in the MyTerminal settings file.');
+      process.exit(1);
+    }
+    const { runNativeTui } = await import('./agent/cli-host.js');
+    await runNativeTui({ settings: stored.subagent, cwd: process.cwd() });
+    process.exit(0);
   }
   // ADR-0051 D-7（#94 W3-02）：`myterminal l3-model fetch` 子命令（stateless，先于 settings/runtime）
   if (process.argv[2] === 'l3-model') {
