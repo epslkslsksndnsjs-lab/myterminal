@@ -6,11 +6,11 @@ import type { SubagentSettings } from '../types.js';
 import type { LlmAdapter } from '../subagent/llm-adapter.js';
 import { createAdapter } from '../subagent/llm-adapter.js';
 import { defaultContext } from '../subagent/context.js';
-import { getAgentOutputDir } from '../subagent/output-dir.js';
+import { cleanupAgentOutputDir, getAgentOutputDir } from '../subagent/output-dir.js';
 import { createBootScreen, type BootScreen } from '../nativetui/boot/screen.js';
 import { AgentEventAdapter } from '../nativetui/event-adapter.js';
 import { ProcessTerminal } from '../nativetui/terminal.js';
-import type { AgentContext, AgentLoopOptions, ToolSchema } from './loop.js';
+import type { AgentContext, AgentLoopOptions } from './loop.js';
 import { runAgent } from './loop.js';
 import { buildAgentSystemPrompt } from './system-prompt.js';
 import type { AgentEvent } from '../nativetui/events.js';
@@ -24,10 +24,6 @@ export type RunHostOptions = {
   runAgentImpl?: (options: AgentLoopOptions) => AsyncGenerator<AgentEvent>;
   /** 测试注入 LLM 通道（缺省由 settings 建适配器）。 */
   adapter?: LlmAdapter;
-  toolSchemas?: ToolSchema[];
-  wordmark?: string;
-  startHint?: string;
-  agentId?: string;
 };
 
 /** 会话句柄：测试通过它驱动输入、等待轮次结束、退出。 */
@@ -48,7 +44,7 @@ const SYSTEM_AGENT_ID = 'main';
  */
 export function createNativeSession(options: RunHostOptions): NativeSession {
   const { settings, cwd } = options;
-  const agentId = options.agentId ?? SYSTEM_AGENT_ID;
+  const agentId = SYSTEM_AGENT_ID;
   const adapter = options.adapter ?? createAdapter(settings);
 
   const context: AgentContext = {
@@ -60,8 +56,8 @@ export function createNativeSession(options: RunHostOptions): NativeSession {
   const boot = createBootScreen(terminal, {
     model: settings.model,
     cwd,
-    wordmark: options.wordmark ?? 'myterminal',
-    startHint: options.startHint ?? 'type to start',
+    wordmark: 'myterminal',
+    startHint: 'type to start',
   });
   terminal.setTitle('myterminal');
   defaultContext.outputDirs.set(agentId, getAgentOutputDir(cwd, agentId));
@@ -80,6 +76,8 @@ export function createNativeSession(options: RunHostOptions): NativeSession {
   const quit = () => {
     ctrl?.abort();
     tui.stop();
+    // D8：输出目录登记必须收口，否则 .myterminal/subagent-outputs/<id> 只写不删
+    cleanupAgentOutputDir(agentId);
     resolveExited();
   };
 
@@ -108,6 +106,9 @@ export function createNativeSession(options: RunHostOptions): NativeSession {
     events.submit(text);
     context.messages.push({ role: 'user', content: [{ type: 'text', text }] });
     ctrl = new AbortController();
+    // timeoutSec：子代理路径靠 AbortSignal.timeout 兜底，主系统同样不能无限挂起
+    const timeoutSignal = AbortSignal.timeout(settings.timeoutSec * 1000);
+    const signal = AbortSignal.any([ctrl.signal, timeoutSignal]);
     try {
       const source = runner({
         adapter,
@@ -115,12 +116,11 @@ export function createNativeSession(options: RunHostOptions): NativeSession {
         context,
         cwd,
         agentId,
-        signal: ctrl.signal,
+        signal,
         maxTurns: settings.maxTurns,
         maxTokens: settings.maxOutput,
         compactThreshold: settings.compactThreshold,
         fallbackModel: settings.fallbackModel,
-        ...(options.toolSchemas ? { toolSchemas: options.toolSchemas } : {}),
       });
       for await (const ev of source) {
         if (ev.type === 'turn_end' && ev.stopReason === 'max_tokens') {
@@ -134,6 +134,9 @@ export function createNativeSession(options: RunHostOptions): NativeSession {
       ctrl = null;
       busy = false;
       settleIdle();
+      if (timeoutSignal.aborted) {
+        events.handle({ type: 'assistant_text', delta: `\n[error] Timeout after ${settings.timeoutSec}s` });
+      }
     }
   }
 

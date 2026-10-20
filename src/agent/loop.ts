@@ -45,10 +45,6 @@ export type AgentLoopOptions = {
   compactThreshold?: number;
   /** 决策 21：server_overload 降级模型。 */
   fallbackModel?: string;
-  /** 决策 17：只读模式（工具面过滤 + 执行层硬门禁）。 */
-  readOnly?: boolean;
-  /** ADR-0048 D8：后台输出落盘目录。 */
-  outputDir?: string;
   /** 覆盖工具面（测试注入）；缺省取 subagent 注册表。 */
   toolSchemas?: ToolSchema[];
 };
@@ -104,6 +100,13 @@ class EventQueue {
     settle.then(done, done);
   }
 
+  /** 消费者提前退出时调用：唤醒挂起的 drain() 并丢弃后续事件。 */
+  close(): void {
+    this.settled = true;
+    this.items.length = 0;
+    this.wake();
+  }
+
   async *drain(): AsyncGenerator<AgentEvent> {
     while (true) {
       if (this.items.length > 0) {
@@ -127,7 +130,8 @@ function replaceMessages(target: NormalizedMessage[], next: NormalizedMessage[])
   // microCompact 会原样返回同一数组引用——先快照，否则清空即抹掉历史
   const snapshot = next === target ? [...next] : next;
   target.length = 0;
-  target.push(...snapshot);
+  // 逐条 push：spread 在超长历史上会触发 RangeError
+  for (const m of snapshot) target.push(m);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -150,9 +154,8 @@ export async function* runAgent(options: AgentLoopOptions): AsyncGenerator<Agent
   const threshold = options.compactThreshold ?? 80_000;
 
   const toolSchemas =
-    options.toolSchemas ??
-    (() => {
-      const names = new Set(getToolNames({ readOnly: options.readOnly ?? false }));
+    options.toolSchemas ?? (() => {
+      const names = new Set(getToolNames());
       return getAllToolSchemas().filter((s) => names.has(s.name));
     })();
 
@@ -162,7 +165,7 @@ export async function* runAgent(options: AgentLoopOptions): AsyncGenerator<Agent
   let reactiveCompactUsed = false;
   let attempt = 0;
 
-  /** 决策 20：第 1 层微压缩 + （超阈值时）第 2 层 autocompact + 熔断。 */
+  /** 决策 20：第 1 层微压缩 + （超阈值时）第 2 层 autocompact；返回是否可继续。 */
   const compactIfNeeded = async (): Promise<boolean> => {
     replaceMessages(messages, microCompact(messages));
     if (estimateMessageTokens(messages) <= threshold) return true;
@@ -194,20 +197,38 @@ export async function* runAgent(options: AgentLoopOptions): AsyncGenerator<Agent
     // 决策 37：发送前配对检查
     replaceMessages(messages, normalizeMessages(messages));
 
+    // 决策 21：熔断器——与 executor 一致，调 API 前必须先过闸
+    try {
+      resilience.assertBreakerClosed();
+    } catch (err) {
+      yield { type: 'assistant_text', delta: `\n[error] ${(err as Error).message}` };
+      yield { type: 'turn_end', stopReason: 'error' };
+      return;
+    }
+
     // ── stream LLM（回调事件 → 队列 → yield）──
     const queue = new EventQueue();
     let stopReasonFromStream: string | undefined;
+    let emittedText = false;
     const pending = collectStream({
       adapter,
       chatParams: { model: currentModel, system: context.system, messages, tools: toolSchemas, maxTokens },
       signal,
       onChunk: (chunk: StreamChunk) => {
-        if (chunk.type === 'text_delta') queue.push({ type: 'assistant_text', delta: chunk.text });
+        if (chunk.type === 'text_delta') {
+          emittedText = true;
+          queue.push({ type: 'assistant_text', delta: chunk.text });
+        }
         if (chunk.type === 'message_end') stopReasonFromStream = chunk.stopReason;
       },
     });
     queue.watch(pending);
-    yield* queue.drain();
+    try {
+      yield* queue.drain();
+    } finally {
+      // 消费者提前退出（宿主 break）时释放队列，避免 collectStream 继续堆积无人读的事件
+      queue.close();
+    }
 
     let streamResult: Awaited<typeof pending>;
     try {
@@ -252,6 +273,14 @@ export async function* runAgent(options: AgentLoopOptions): AsyncGenerator<Agent
               ? `Network error after ${MAX_SERVER_RETRIES} retries: ${err.message}`
               : err.message;
         yield { type: 'assistant_text', delta: `\n[error] ${message}` };
+        yield { type: 'turn_end', stopReason: 'error' };
+        return;
+      }
+
+      // 整轮重试会重新流式——本轮已产出过文本时重试会在 transcript 里重复渲染，
+      // 故仅在无部分输出时重试（min-agent retryAssistantCall 同规则），否则判死。
+      if (emittedText) {
+        yield { type: 'assistant_text', delta: `\n[error] ${err.message}` };
         yield { type: 'turn_end', stopReason: 'error' };
         return;
       }
@@ -320,13 +349,7 @@ export async function* runAgent(options: AgentLoopOptions): AsyncGenerator<Agent
     // ── 执行工具（复用 subagent 管道：schema 校验/权限/hooks/审计/预算）──
     const results = await executeToolCalls(
       toolCalls,
-      {
-        cwd,
-        signal,
-        agentId,
-        readOnly: options.readOnly ?? false,
-        ...(options.outputDir ? { outputDir: options.outputDir } : {}),
-      },
+      { cwd, signal, agentId },
       () => {},
     );
 

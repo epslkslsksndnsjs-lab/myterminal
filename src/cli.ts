@@ -160,8 +160,8 @@ async function main(): Promise<void> {
       console.error('MyTerminal is not configured. Run `bun run dev` once to complete setup.');
       process.exit(1);
     }
-    if (!stored.subagent) {
-      console.error('Native agent requires subagent settings (model / baseUrl / apiKey). Configure them in the MyTerminal settings file.');
+    if (!stored.subagent || !stored.subagent.enabled) {
+      console.error('Native agent requires enabled subagent settings (model / baseUrl / apiKey). Configure them in the MyTerminal settings file.');
       process.exit(1);
     }
     const { runNativeTui } = await import('./agent/cli-host.js');

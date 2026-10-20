@@ -106,6 +106,25 @@ describe('native CLI host', () => {
     expect(transcriptText(s)).toContain('working')
   })
 
+  it('surfaces the turn timeout from settings.timeoutSec', async () => {
+    const { s } = session({
+      settings: settings({ timeoutSec: 0.05 }),
+      runAgentImpl: async function* (opts) {
+        await new Promise<void>((resolve) => {
+          if (opts.signal.aborted) return resolve()
+          opts.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        yield { type: 'turn_end', stopReason: 'aborted' }
+      },
+    })
+
+    s.boot.input.onSubmit('hang')
+    await s.idle()
+    await flushRender()
+
+    expect(transcriptText(s)).toContain('Timeout after 0.05s')
+  })
+
   it('exits when Escape is pressed while idle', async () => {
     const { s, term } = session()
     s.boot.input.onEscape!()

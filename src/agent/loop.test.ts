@@ -186,6 +186,28 @@ describe('runAgent', () => {
     expect(adapter.callCount).toBe(2)
   })
 
+  it('does not retry a turn that already streamed text (no duplicate rendering)', async () => {
+    // Text arrives, then the stream breaks with a retryable error.
+    let calls = 0
+    const adapter: LlmAdapter = {
+      provider: 'test',
+      async *stream(): AsyncGenerator<StreamChunk> {
+        calls++
+        yield { type: 'text_delta', text: 'partial output' }
+        throw new LlmError('rate_limit', 'mid-stream 429', 429, 1)
+      },
+      async create() {
+        throw new Error('unused')
+      },
+    }
+    const events = await collect(runAgent(baseOptions({ adapter })))
+
+    expect(calls).toBe(1)
+    expect(events.filter((e) => e.type === 'retry')).toHaveLength(0)
+    expect(events.filter((e) => e.type === 'assistant_text' && e.delta === 'partial output')).toHaveLength(1)
+    expect(events.at(-1)).toEqual({ type: 'turn_end', stopReason: 'error' })
+  })
+
   it('fails fast on an auth error without retrying', async () => {
     const adapter = scriptedAdapter([{ failure: new LlmError('auth', 'bad key', 401) }])
     const events = await collect(runAgent(baseOptions({ adapter })))
@@ -193,6 +215,17 @@ describe('runAgent', () => {
     expect(adapter.callCount).toBe(1)
     expect(events.some((e) => e.type === 'retry')).toBe(false)
     expect(events.at(-1)).toEqual({ type: 'turn_end', stopReason: 'error' })
+  })
+
+  it('stops calling the API once the circuit breaker trips', async () => {
+    const adapter = scriptedAdapter([{ failure: new LlmError('rate_limit', 'boom', 429, 1) }])
+    const events = await collect(runAgent(baseOptions({ adapter, maxTurns: 20 })))
+
+    // CB threshold is 5 consecutive failures; the 6th iteration must refuse
+    // the API call outright instead of hammering it.
+    expect(adapter.callCount).toBe(5)
+    expect(events.at(-1)).toEqual({ type: 'turn_end', stopReason: 'error' })
+    expect(events.some((e) => e.type === 'assistant_text' && e.delta.includes('Circuit breaker'))).toBe(true)
   })
 
   it('stops at maxTurns with an error turn_end', async () => {
