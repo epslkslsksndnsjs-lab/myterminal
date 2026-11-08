@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "workspaces": [
+    {
+      "id": "08e1819620808da3",
+      "workspaceDir": "/Users/Admin/myterminal",
+      "stateDir": "/Users/Admin/myterminal/.mt-runtime/workspaces/08e1819620808da3",
+      "lastHost": "127.0.0.1",
+      "lastPort": 3210,
+      "lastSeenAt": "2026-10-17T06:36:30.750Z",
+      "lastPid": 39034,
+      "lastStartedAt": "2026-10-17T06:36:30.750Z"
+    }
+  ]
+}

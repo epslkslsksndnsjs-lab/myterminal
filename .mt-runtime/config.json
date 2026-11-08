@@ -1,0 +1,28 @@
+{
+  "uiLanguage": "zh-CN",
+  "uiTheme": "light",
+  "passiveLockEnabled": false,
+  "actionsContinuationMode": "off",
+  "nonBlockingTasksEnabled": false,
+  "schemaVersion": 1,
+  "workspaceDir": "/Users/Admin/myterminal",
+  "host": "127.0.0.1",
+  "port": 3210,
+  "connectorKey": "39be66323e6dc30024f063c3ff14fcbd1d6a8eae83c23806",
+  "actionsToken": "adecb8004beaf366ce0e0672fcc5be25d7529c4f46ca979cf10348cc9a66cade",
+  "publicBaseUrl": "",
+  "maxOutputChars": 120000,
+  "commandTimeoutSec": 60,
+  "subagent": {
+    "model": "deepseek-flash",
+    "baseUrl": "https://api.deepseek.com/anthropic",
+    "apiKey": "sk-e0c7cfcaf3074e4ab97c00743fcc0a3d",
+    "contextWindow": 1000000,
+    "enabled": true,
+    "maxTurns": 700,
+    "timeoutSec": 7200,
+    "maxParallel": 2,
+    "compactThreshold": 80000,
+    "maxOutput": 32000
+  }
+}

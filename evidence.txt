@@ -1,0 +1,65 @@
+### CyberPunkMetalHead/new-listings-trading-bot
+  ﻿# New Listing Announcement Crypto Trading Bot
+  This is a cryptocurrency trading bot designed to detect new coin listing announcements on Binance and immediately
+  purchase the announced coin on a different exchange (currently configured to Poloniex).
+### duckdegen/apebot
+  Check out the launch announcement at https://twitter.com/jobstash_xyz/status/1631319596228567041 and join the telegram at https://telegram.me/jobstash
+  When a new token is listed in Binance, somewhere between 30-40 MM USD in volume pour in.
+  Bots then compete to buy up the token onchain as quickly as possible.
+### rickstaa/crypto-listings-sniper
+  ![crypto-sniper](https://github.com/rickstaa/crypto-listings-sniper/assets/17570430/11777a75-4064-4034-932e-b3c11403a181)
+  [Binance](https://www.binance.com/en)
+  Posts a Discord/Telegram message when a new exchange listing is found.
+### defidummy/listing-trading-bot
+  Gets the coin listing news from Binance and buys the coin on Gate.io before the pump.
+### n-urs/gate
+  telegram-keyword-GATE.IO-automated-binance-listing-spot-buy-example
+  Listens for three types of listing messages on Telegram:
+  1. Futures launch announcements containing "futures will launch"
+### georgGrankvist/CoinbaseListingSniper
+  Script that listens to the @CoinbaseAssets twitter to find information about new Coinbase listings,
+  and automatically buys 100 USDT worth of the new listing on Binance as soon as it is posted on Twitter.
+  expect some positive price action in an asset if it is listed on their platform.
+### Tymonoo/Bybit-snipe-bot
+  A  Telegram sniping bot for Bybit USDT-M futures.
+  The bot monitors selected Telegram channels for new token listings or delisting and automatically opens LONG positions with built-in risk management.
+  Real-time monitoring of Telegram channels for listing signals
+### CyberPunkMetalHead/binance-trading-bot-new-coins
+  binance-trading-bot-new-coins
+  This Binance trading bot detects new coins as soon as they are listed on the Binance exchange and automatically places sell and buy orders.
+  This open source crypto trading bot should able able to quickly detect new coins listings on Binance and quickly ride the price spike.
+### chainstacklabs/pumpfun-bonkfun-bot
+  | `SOLANA_NODE_WSS_ENDPOINT` | WebSocket endpoint (for `logs` / `blocks` listeners) |
+  | `SOLANA_PRIVATE_KEY` | Base58 private key of the trading wallet |
+  | `GEYSER_ENDPOINT`, `GEYSER_API_TOKEN`, `GEYSER_AUTH_TYPE` | For the `geyser` and `shreds` listeners (same endpoint, different RPC) |
+### brokxx/sell-sniper
+  Bot qui surveille un compte spot Hyperliquid et vend un token (KNTQ, TREAD…)
+  curl -fsSL https://raw.githubusercontent.com/brokxx/sell-sniper/master/lancer.sh | bash
+  Le script installe le bot dans `~/sell-sniper` (ou le met à jour), lance le
+### FLOCK4H/Dexter
+  Runtime & Safety`: wsLogs supervision, datastore, shutdown behavior, mainnet gates
+  safety gates: leave `DEXTER_MAINNET_DRY_RUN=true` and `DEXTER_ALLOW_MAINNET_LIVE=false` until you intentionally want live mainnet sends
+  live`: submit live transactions where the selected network and gates allow it
+### Bigbidbot/CEX_Sniper
+  This is the first bot (Sniper) that buys tokens when listed on centralized exchanges (as Binance, MEXC (temporary don't work), OKEX, HUOBI and Gate.io).
+  ( https://github.com/Bigbidbot/CEX_Sniper/releases )
+  "**amount_pay**": Enter the amount in USDT - for which the order will be placed   `(Keep in your wallet only the amount that you are willing to spend on this listing)` `Like: 20
+### JoeSvendsen/Bybit-listing-bot
+  Bybit Listing Notifier Bot
+  Polls Bybit REST API for new spot pairs every 5–10 seconds
+  Sends Telegram message immediately upon detecting a new listing
+### fxm84/hunter
+  2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+### mortdeus
+  🚀 Solana MEV Sniper Copy Trading Bot (Node.js & Rust) — PumpFun, Bonk, Raydium
+  Ultra-fast, customizable Solana copy trading, sniper, and MEV bot with advanced sell logic for maximum profit.
+  Why this matters for sniper, copy trading, and MEV bots:
+### topsecretagent007
+  [Rust GRPC Pumpfun Sniper Bot](./Rust-GRPC-Pumpfun-Sniper-Bot/)** - High-speed Rust-based sniper bot
+  🎯 Volume & Sniper Bots
+  [Moonshot Volume Sniper](./Moonshot-Volume-Sniper/)** - Volume-based sniper bot
+### 1fge/pump-fun-sniper-bot
+  PRIVATE_KEY`: The bot pulls the bot wallet's private key from this environment variable.
+  // Purchase coins with 0.05 Solana, priority fee of 200000 microlamports
+  git clone https://github.com/1fge/pump-fun-sniper-bot.git
+### Sarahtonein/mexc-scan

@@ -1,0 +1,17 @@
+1fge/pump-fun-sniper-bot | 300st 104fk Go pushed=2024-08-01 arch=True lic=none
+coffellas-cto/Solana-Copy-Trading-Bot | 411st 114fk Rust pushed=2026-04-17 arch=False lic=none
+cutupdev/Solana-Raydium-Sniper-Bot | 204st 61fk Rust pushed=2025-08-08 arch=False lic=none
+AxisBotV2/solana-sniper-bot | 99st 68fk TypeScript pushed=2024-07-25 arch=False lic=NOASSERTION
+Bigbidbot/CEX_Sniper | 11st 3fk None pushed=2024-02-27 arch=False lic=MIT
+manuelhb14/exchangesListingsBot | 23st 3fk Python pushed=2021-06-28 arch=False lic=none
+WonniPooh/Bittrex-Binance-Listing-Bot | 4st 1fk Python pushed=2020-07-24 arch=False lic=none
+RichieLoco/CoinSniper | 2st 1fk Java pushed=2025-09-11 arch=False lic=Apache-2.0
+zookyy/crypto-sniper | 291st 96fk JavaScript pushed=2024-03-19 arch=False lic=none
+2manycoco/mexc_parse_listings | 7st 0fk Python pushed=2025-03-21 arch=False lic=Apache-2.0
+everydaycodings/Binance-Listing-Bot | 8st 0fk Python pushed=2022-01-29 arch=False lic=none
+mouseless0x/Listing-Sniping-Bot | 37st 10fk JavaScript pushed=2022-09-01 arch=False lic=MIT
+yourarj/token-listing-sniper-bot | 60st 17fk Rust pushed=2023-09-12 arch=False lic=none
+Scott-778/coinmarketcap-sniper-bot | 131st 56fk JavaScript pushed=2022-08-21 arch=False lic=MIT
+titouannwtt/bot-sniping-kucoin | 13st 4fk Python pushed=2022-09-03 arch=False lic=none
+d1-dblaze/CEX-snipers | 3st 2fk Python pushed=2023-12-25 arch=False lic=none
+yamato79/kucoin-sniper | 9st 3fk JavaScript pushed=2021-10-06 arch=False lic=none
